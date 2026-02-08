@@ -1,0 +1,123 @@
+name: Deploy Frontend
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x, 22.x]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Run build
+        run: npm run build --if-present
+      
+      - name: Run tests
+        run: npm test --if-present
+
+  deploy:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: self-hosted
+    env:
+      PM2_HOME: C:\pm2
+      GIT_TERMINAL_PROMPT: 0
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Deploy Frontend
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $pm2 = "C:\Users\dev001\AppData\Roaming\npm\pm2.cmd"
+          $APP_DIR = "D:\kientt\liveChat\frontend-live-chat"
+          $ECOSYSTEM = "D:\kientt\liveChat\ecosystem.config.js"
+          $PM2_APP = "frontend-prod"
+          $WORK_DIR = "${{ github.workspace }}"
+
+          Write-Host "========================================" -ForegroundColor Cyan
+          Write-Host "🚀 Deploying Frontend..." -ForegroundColor Green
+          Write-Host "========================================" -ForegroundColor Cyan
+          Write-Host "📦 Source: $WORK_DIR"
+          Write-Host "📂 Target: $APP_DIR"
+          Write-Host "⚙️  Ecosystem: $ECOSYSTEM"
+          Write-Host ""
+          
+          # Sync files using robocopy (excluding node_modules, .next, .git)
+          Write-Host "📋 Syncing files..." -ForegroundColor Yellow
+          $result = robocopy "$WORK_DIR" "$APP_DIR" /MIR /XD node_modules .next .git /XF package-lock.json .env .env.local /R:3 /W:5 /NP
+          $exitCode = $LASTEXITCODE
+          Write-Host "Robocopy exit code: $exitCode" -ForegroundColor Gray
+          
+          # Robocopy exit codes 0-7 are success
+          if ($exitCode -gt 7) {
+              Write-Host "❌ Robocopy failed with exit code: $exitCode" -ForegroundColor Red
+              exit 1
+          }
+          
+          Set-Location $APP_DIR
+          
+          # Install dependencies
+          Write-Host ""
+          Write-Host "📦 Installing dependencies..." -ForegroundColor Yellow
+          npm install --prefer-offline --no-audit
+          
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "❌ npm install failed" -ForegroundColor Red
+              exit 1
+          }
+          
+          # Build Next.js
+          Write-Host ""
+          Write-Host "🔨 Building Next.js application..." -ForegroundColor Yellow
+          npm run build
+          
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "❌ Build failed" -ForegroundColor Red
+              exit 1
+          }
+          
+          # Restart PM2
+          Write-Host ""
+          Write-Host "🔄 Restarting PM2 application..." -ForegroundColor Yellow
+          & $pm2 restart $PM2_APP --update-env
+          
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "⚠️  PM2 restart failed, trying to start..." -ForegroundColor Yellow
+              & $pm2 start $ECOSYSTEM --only $PM2_APP
+          }
+          
+          & $pm2 save --force
+          
+          # Show PM2 status
+          Write-Host ""
+          Write-Host "📊 PM2 Status:" -ForegroundColor Cyan
+          & $pm2 list
+          
+          Write-Host ""
+          Write-Host "========================================" -ForegroundColor Cyan
+          Write-Host "✅ Frontend deployed successfully!" -ForegroundColor Green
+          Write-Host "========================================" -ForegroundColor Cyan

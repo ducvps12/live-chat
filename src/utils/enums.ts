@@ -1,0 +1,41 @@
+export enum SCREEN_RESPONSIVE {
+  MOBILE = "MOBILE",
+  SMALL_TABLET = "SMALL_TABLET",
+  TABLET = "TABLET",
+  DESKTOP = "DESKTOP",
+}
+
+export const SCREEN_BREAKPOINTS = {
+  MOBILE: 640,
+  SMALL_TABLET: 768,
+  TABLET: 1024,
+  DESKTOP: 1200,
+} as const;
+
+export type ScreenResponsiveKey = keyof typeof SCREEN_BREAKPOINTS;
+
+export const enum HTTP_STATUS {
+  STATUS_400 = 400,
+  UNAUTHORIZED_STATUS = 401,
+  NOT_FOUND = 404,
+  STATUS_409 = 409,
+  STATUS_410 = 410,
+  STATUS_422 = 422,
+  SERVER_ERROR = 500,
+  SERVER_ERROR_BUILD = 502,
+  SERVICE_UNAVAILABLE = 503,
+  GATEWAY_TIMEOUT = 504,
+  LOCKED_STATUS = 423,
+  STATUS_204 = 204,
+}
+
+export const enum ROLE_AUTH {
+  ADMIN = "ROLE_ADMIN",
+  USER = "ROLE_USER",
+  MEMBER = "ROLE_MEMBER",
+}
+
+export enum LANGUAGE {
+  vi = "vi",
+  en = "en"
+}

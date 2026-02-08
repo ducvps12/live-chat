@@ -1,0 +1,1263 @@
+{
+  "message": {
+    "gateway_error": "Lỗi kết nối máy chủ",
+    "server_error": "Lỗi máy chủ",
+    "connection_lost": "Mất kết nối",
+    "internet_error": "Không thể kết nối Internet. Vui lòng kiểm tra kết nối mạng.",
+    "unauthorized": "Phiên đăng nhập đã hết hạn"
+  },
+  "common": {
+    "ok": "Đồng ý",
+    "cancel": "Hủy",
+    "close": "Đóng",
+    "confirm": "Xác nhận",
+    "save": "Lưu",
+    "delete": "Xóa",
+    "edit": "Sửa",
+    "loading": "Đang tải...",
+    "error": "Lỗi",
+    "success": "Thành công"
+  },
+  "language": {
+    "en": "tiếng anh",
+    "vi": "tiếng việt"
+  },
+  "auth": {
+    "register": {
+      "title": "Tạo workspace Nemark Inbox",
+      "subtitle": "Bắt đầu dùng live chat trong 5 phút.",
+      "subtitleHighlight": "Không cần thẻ tín dụng.",
+      "inviteNote": "Bạn có thể mời team member sau khi tạo workspace.",
+      "step1": "Thông tin tài khoản",
+      "fullname": "Họ và tên",
+      "fullnamePlaceholder": "Ví dụ: Nguyễn Văn A",
+      "email": "Email công việc",
+      "emailPlaceholder": "name@company.com",
+      "emailNote": "Chúng tôi sẽ gửi mã xác nhận đến email này.",
+      "password": "Mật khẩu",
+      "passwordPlaceholder": "Tối thiểu 8 ký tự",
+      "strength": "Độ mạnh:",
+      "strengthWeak": "Yếu",
+      "terms": "Tôi đồng ý với",
+      "termsLink": "Điều khoản dịch vụ",
+      "privacyLink": "Chính sách bảo mật",
+      "submit": "Tạo workspace & Bắt đầu",
+      "or": "HOẶC",
+      "google": "Đăng ký với Google",
+      "secure": "Dữ liệu được mã hóa. Hủy đăng ký bất kỳ lúc nào.",
+      "footer": {
+        "terms": "Terms of Service",
+        "privacy": "Privacy Policy",
+        "security": "Security",
+        "contact": "Contact",
+        "agreement": "Bằng cách tạo tài khoản, bạn đồng ý với Quy định sử dụng của Nemark Inc."
+      },
+      "passwordConfirm": "Xác nhận mật khẩu",
+      "passwordConfirmPlaceholder": "Nhập lại mật khẩu"
+    },
+    "login": {
+      "title": "Đăng nhập Nemark Inbox",
+      "subtitle": "Chào mừng bạn quay trở lại.",
+      "email": "Email",
+      "password": "Mật khẩu",
+      "forgotPassword": "Quên mật khẩu?",
+      "submit": "Đăng nhập",
+      "noAccount": "Chưa có tài khoản?",
+      "registerLink": "Đăng ký ngay"
+    },
+    "features": {
+      "website": "Website",
+      "inbox": "Inbox",
+      "lead": "Lead",
+      "capture": {
+        "title": "Thu lead ngay lập tức",
+        "desc": "Tương tác tự động trong lúc khách đang xem website."
+      },
+      "missed": {
+        "title": "Không bỏ sót tin nhắn",
+        "desc": "Inbox tập trung đa kênh, phân công hội thoại cho team."
+      },
+      "sla": {
+        "title": "Đo lường hiệu suất SLA",
+        "desc": "Theo dõi thời gian phản hồi đầu tiên & chat bị nhỡ."
+      },
+      "footer": {
+        "rbac": "RBAC Scope",
+        "audit": "Audit Log",
+        "uptime": "99.9% Uptime"
+      }
+    }
+  },
+  "about": {
+    "title": "Giới thiệu"
+  },
+  "landing": {
+    "header": {
+      "logo": "Nemark",
+      "logoSuffix": "Inbox",
+      "nav": {
+        "product": "Sản phẩm",
+        "solutions": "Giải pháp",
+        "pricing": "Bảng giá",
+        "docs": "Tài liệu"
+      },
+      "login": "Đăng nhập",
+      "demo": "Xem demo 60s",
+      "cta": "Dùng thử miễn phí"
+    },
+    "hero": {
+      "badge": "Live Chat Widget • Unified Inbox • CRM-Lite",
+      "title": "Bắt chuyện ngay khi",
+      "titleHighlight": "khách đang xem.",
+      "subtitle": "Gắn widget trong 2 phút. Gom tất cả hội thoại về 1 nơi. Phân công thông minh, lưu contact, đo SLA — không bỏ sót bất kỳ lead nào.",
+      "ctaPrimary": "Dùng thử miễn phí",
+      "ctaSecondary": "Xem demo 60 giây",
+      "features": {
+        "noCard": "Không cần thẻ",
+        "quickSetup": "Setup 5 phút",
+        "support": "Hỗ trợ cài đặt"
+      },
+      "enterprise": {
+        "title": "Enterprise Ready",
+        "features": "RBAC • Audit Log • API/Webhooks"
+      },
+      "mockup": {
+        "widgetLabel": "Widget đẹp & nhanh",
+        "inboxLabel": "Inbox hợp nhất",
+        "slaLabel": "Báo cáo SLA",
+        "realtimeBadge": "Realtime",
+        "chatPlaceholder": "Nhập tin nhắn...",
+        "source": "NGUỒN",
+        "utmAds": "UTM: Quảng cáo",
+        "qualified": "Đã chọn lọc",
+        "responseTime": "Thời gian phản hồi"
+      }
+    },
+    "stats": {
+      "leadCaptured": {
+        "value": "+45%",
+        "label": "Thu Lead"
+      },
+      "responseTime": {
+        "value": "-20%",
+        "label": "Thời gian phản hồi"
+      },
+      "missedChats": {
+        "value": "0%",
+        "label": "Chat bị lỡ"
+      }
+    },
+    "problems": {
+      "title": "Tại sao khách rời đi",
+      "titleBreak": "khi chưa để lại lead?",
+      "items": {
+        "slow": {
+          "title": "Chờ phản hồi quá lâu",
+          "description": "Khách hàng kỳ vọng được chat ngay lập tức, không phải form email."
+        },
+        "lostContact": {
+          "title": "Chat xong nhưng mất contact",
+          "description": "Nhân viên quên lưu thông tin vào CRM hoặc Excel."
+        },
+        "noMetrics": {
+          "title": "Quản lý không đo lường được",
+          "description": "Không biết nhân viên nào support tốt, bao nhiêu lead bị bỏ lỡ."
+        }
+      }
+    },
+    "solutions": {
+      "items": {
+        "fast": {
+          "title": "Trả lời nhanh hơn",
+          "description": "Widget tải siêu nhẹ, thông báo realtime tới app mobile."
+        },
+        "noLoss": {
+          "title": "Không bỏ sót khách",
+          "description": "Tự động lưu contact vào CRM-lite ngay khi bắt đầu chat."
+        },
+        "transparent": {
+          "title": "Quản trị minh bạch",
+          "description": "Báo cáo SLA chi tiết: thời gian phản hồi, rate, active time."
+        }
+      }
+    },
+    "workflow": {
+      "title": "Luồng chuẩn để chốt nhanh",
+      "subtitle": "Từ lúc khách truy cập đến khi chốt đơn.",
+      "steps": {
+        "engage": {
+          "label": "01. ENGAGE",
+          "title": "Chủ động chào khách",
+          "description": "Thay vì đợi khách hỏi, widget tự động bật lời chào dựa trên hành vi (xem giá, ở lâu trên trang).",
+          "mockupText": "👋 Chào bạn, mình có mã giảm 20%..."
+        },
+        "capture": {
+          "label": "02. CAPTURE",
+          "title": "Thu thập thông tin",
+          "description": "Pre-chat form xin Tên & SĐT. Hoặc bot tự động hỏi thông tin trước khi nối máy tới tư vấn viên.",
+          "formName": "Nguyễn Văn A",
+          "formPhone": "0912 345 ***",
+          "formButton": "Bắt đầu chat"
+        },
+        "close": {
+          "label": "03. CLOSE",
+          "title": "Chốt & Lưu CRM",
+          "description": "Vừa chat vừa note. Tạo đơn hàng hoặc deal ngay trên màn hình chat. Dữ liệu đồng bộ realtime.",
+          "noteLabel": "NOTES",
+          "noteText": "Khách quan tâm gói Enterprise, đã gửi báo giá.",
+          "tagQualified": "Qualified Lead"
+        }
+      }
+    },
+    "features": {
+      "leadCapture": {
+        "title": "Thu lead tự nhiên",
+        "description": "Tăng 2x lượng lead mà không cần chạy thêm ads.",
+        "how": "HOW: Smart Triggers & Pre-chat form"
+      },
+      "unifiedInbox": {
+        "title": "Inbox hợp nhất",
+        "description": "Facebook, Zalo, Website về chung một mái nhà.",
+        "how": "HOW: Unified Channel API"
+      },
+      "autoAssign": {
+        "title": "Phân công Auto",
+        "description": "Chia chat đều cho nhân viên sales online.",
+        "how": "HOW: Round Robin Assignment"
+      },
+      "sla": {
+        "title": "SLA rõ ràng",
+        "description": "Minh bạch hiệu suất của từng nhân viên.",
+        "how": "HOW: Realtime Analytics Dashboard"
+      }
+    },
+    "inbox": {
+      "title": "Giao diện Inbox",
+      "titleBreak": "chuẩn tương lai",
+      "features": {
+        "threeColumn": "Thiết kế 3 cột tối ưu thao tác",
+        "hotkeys": "Phím tắt (Hotkeys) cực nhanh",
+        "darkMode": "Dark mode dịu mắt làm việc đêm"
+      },
+      "ctaPrimary": "Dùng thử miễn phí",
+      "ctaSecondary": "Xem demo inbox",
+      "docsLink": "Xem tài liệu cài widget",
+      "mockupMessage": "Dạ em gửi anh báo giá chi tiết ạ."
+    },
+    "useCases": {
+      "tabs": {
+        "sales": "Sales Team",
+        "support": "CSKH / Support",
+        "it": "IT / Dev"
+      },
+      "sales": {
+        "title": "Dành cho Sales Team",
+        "features": {
+          "notify": {
+            "title": "Báo khách mới",
+            "description": "Noti ngay khi có khách tiềm năng."
+          },
+          "autoAssign": {
+            "title": "Auto Assign",
+            "description": "Chia số công bằng, không tranh chấp."
+          },
+          "close": {
+            "title": "Chốt đơn",
+            "description": "Tạo deal ngay trong khung chat."
+          }
+        },
+        "ctaLink": "Tìm hiểu tính năng cho Sales →"
+      }
+    },
+    "testimonials": {
+      "title": "Được tin dùng bởi các team SaaS",
+      "items": {
+        "minhTuan": {
+          "name": "Minh Tuấn",
+          "title": "Head of Sales @ TechCorp",
+          "quote": "\"Tốc độ phản hồi tăng gấp đôi từ khi dùng Nemark. Giao diện rất sạch, anh em sales không cần training cũng biết dùng.\""
+        },
+        "lanAnh": {
+          "name": "Lan Anh",
+          "title": "CS Manager @ EduMall",
+          "quote": "\"Thích nhất tính năng SLA report. Giờ mình biết chính xác bạn nào support tốt, bạn nào chậm để điều chỉnh.\""
+        },
+        "david": {
+          "name": "David Nguyen",
+          "title": "Founder @ DesignBox",
+          "quote": "\"Widget cực nhẹ, load không ảnh hưởng site. Mình đã thử nhiều bên nhưng Nemark là mượt nhất.\""
+        }
+      },
+      "caseStudy": {
+        "badge": "Success Story",
+        "title": "AlphaFurni tăng 30% doanh thu trong 1 tháng",
+        "description": "Bằng cách sử dụng tính năng \"Chủ động chào khách\" với các khách xem sản phẩm Sofa trên 2 phút.",
+        "stats": {
+          "revenue": {
+            "value": "30%",
+            "label": "Doanh thu"
+          },
+          "leadQuality": {
+            "value": "2.5x",
+            "label": "Lead Qualify"
+          }
+        },
+        "cta": "Xem Case Study"
+      }
+    },
+    "security": {
+      "uptime": "99.99% Uptime SLA",
+      "encryption": "End-to-end Encryption",
+      "gdpr": "GDPR Compliant",
+      "link": "Xem trang Bảo mật"
+    },
+    "faq": {
+      "title": "Câu hỏi thường gặp",
+      "items": {
+        "free": {
+          "question": "Có bản miễn phí không?",
+          "answer": "Có, chúng tôi có gói Free vĩnh viễn cho 1 agent. Đầy đủ tính năng cơ bản để bạn bắt đầu."
+        },
+        "setup": {
+          "question": "Cài đặt có khó không?",
+          "answer": "Rất dễ. Bạn chỉ cần copy 1 đoạn mã JS dán vào thẻ head của website. Hoặc dùng plugin WordPress có sẵn."
+        },
+        "mobile": {
+          "question": "Có app mobile không?",
+          "answer": "Có đầy đủ app trên iOS và Android để bạn chat với khách mọi lúc mọi nơi."
+        }
+      }
+    },
+    "cta": {
+      "title": "Bật live chat chuyên nghiệp",
+      "titleBreak": "trong hôm nay.",
+      "subtitle": "Widget xịn • Inbox rõ • CRM-lite • SLA report",
+      "ctaPrimary": "Dùng thử miễn phí",
+      "ctaSecondary": "Yêu cầu demo",
+      "disclaimer": "Không cần thẻ • Hủy bất kỳ lúc nào"
+    },
+    "footer": {
+      "tagline": "Giải pháp Live Chat thế hệ mới cho doanh nghiệp hiện đại.",
+      "social": {
+        "twitter": "Twitter",
+        "linkedin": "LinkedIn",
+        "facebook": "Facebook"
+      },
+      "product": {
+        "title": "Sản phẩm",
+        "liveChat": "Live Chat",
+        "inbox": "Inbox",
+        "crmLite": "CRM Lite",
+        "mobileApp": "Mobile App"
+      },
+      "resources": {
+        "title": "Tài nguyên",
+        "blog": "Blog",
+        "helpCenter": "Help Center",
+        "developers": "Developers",
+        "caseStudies": "Case Studies"
+      },
+      "company": {
+        "title": "Công ty",
+        "about": "Về chúng tôi",
+        "contact": "Liên hệ",
+        "careers": "Tuyển dụng",
+        "legal": "Pháp lý"
+      },
+      "copyright": "© 2050 Nemark Inc. All rights reserved. Design artifact translated to 2024."
+    }
+  },
+  "product": {
+    "hero": {
+      "badge": "Live Chat + Inbox + CRM-lite + SLA",
+      "title": "Một nền tảng live chat giúp bạn thu lead và",
+      "titleHighlight": "chốt nhanh.",
+      "subtitle": "Không bỏ sót hội thoại nào. Trang bị cho đội Sales & CSKH công cụ mạnh mẽ nhất để làm hài lòng khách hàng ngay lập tức.",
+      "ctaPrimary": "Dùng thử miễn phí",
+      "ctaSecondary": "Xem demo 60 giây",
+      "features": {
+        "trial": "14 ngày dùng thử",
+        "noCard": "Không cần thẻ tín dụng"
+      },
+      "mockup": {
+        "greeting": "Xin chào! Em có thể giúp gì cho anh/chị ạ?",
+        "question": "Bên mình có hỗ trợ tích hợp Zalo không?",
+        "supportTeam": "Support Team",
+        "online": "Online",
+        "startChat": "Start Chat"
+      }
+    },
+    "modules": {
+      "title": "Modules",
+      "widget": "Live Chat Widget",
+      "inbox": "Inbox & Cộng tác",
+      "routing": "Routing & Assignment",
+      "tracking": "Visitor Tracking",
+      "crm": "CRM-lite: Contacts",
+      "reporting": "Reporting & SLA",
+      "rbac": "Phân quyền & Audit Log",
+      "api": "API & Webhooks",
+      "billing": "Gói dịch vụ & Billing",
+      "security": "Bảo mật & Tuân thủ"
+    },
+    "features": {
+      "widget": {
+        "title": "Live Chat Widget",
+        "subtitle": "Mở chat đúng lúc. Thu lead tự nhiên. Tăng tỉ lệ chuyển đổi mà không làm phiền.",
+        "list": {
+          "custom": "Tùy chỉnh thương hiệu: Màu sắc, Logo, Greeting message.",
+          "prechat": "Pre-chat Form thông minh để lọc khách hàng.",
+          "media": "Hỗ trợ gửi file đính kèm, emoji, voice message."
+        },
+        "setup": "Setup 2 phút (copy/paste snippet)",
+        "mockup": {
+          "greeting": "Chào bạn! Chúng tôi có thể giúp gì?",
+          "placeholder": "Nhập tin nhắn..."
+        }
+      },
+      "inbox": {
+        "title": "Inbox & Cộng tác",
+        "subtitle": "Một nơi duy nhất để trả lời nhanh—không lạc hội thoại, không tranh khách.",
+        "list": {
+          "unified": "Gom tin nhắn từ Web, Facebook, Zalo vào 1 view.",
+          "note": "Internal Note (@mention) để trao đổi nội bộ ngay trong chat.",
+          "typing": "Real-time typing preview: Thấy khách đang gõ gì."
+        },
+        "security": "Actions đều audit log + permission check",
+        "mockup": {
+          "list": "List hội thoại",
+          "info": "Thông tin khách",
+          "cta": "Xem demo phần này"
+        }
+      },
+      "routing": {
+        "title": "Routing & Assignment",
+        "subtitle": "Phân công minh bạch—nhanh, công bằng, đúng người online.",
+        "list": {
+          "roundRobin": "Auto-Assign Round Robin: Chia đều cơ hội cho Sales.",
+          "skill": "Skill-based routing: Chat kỹ thuật -> Dev, Chat giá -> Sales.",
+          "online": "Chỉ phân contact cho Agent đang có trạng thái \"Online\"."
+        },
+        "mockup": {
+          "title": "Assignment Rules",
+          "sales": "Sales Round Robin",
+          "salesCond": "If: Source = Pricing Page",
+          "tech": "Tech Support Priority",
+          "techCond": "If: Tag = Bug Report",
+          "active": "Active"
+        }
+      },
+      "tracking": {
+        "title": "Visitor Tracking",
+        "subtitle": "Agent thấy đúng ngữ cảnh—biết khách đến từ đâu để tư vấn trúng.",
+        "list": {
+          "realtime": "Hiển thị realtime trang khách đang xem & thời gian on-site.",
+          "source": "Tracking nguồn: Google, Facebook, Direct hay Referral.",
+          "utm": "UTM Tracking tự động gắn vào contact."
+        },
+        "mockup": {
+          "location": "Location",
+          "referrer": "Referrer",
+          "device": "Device",
+          "visits": "Visits",
+          "visiting": "Đang xem: /bang-gia (2m 10s)"
+        }
+      },
+      "crm": {
+        "title": "CRM-lite: Contacts & Leads",
+        "subtitle": "Từ visitor → contact → lead, có lịch sử tương tác đầy đủ để chăm sóc và chốt.",
+        "list": {
+          "auto": "Tự động tạo Contact khi khách để lại thông tin.",
+          "fields": "Quản lý thuộc tính: Email, Phone, Company, Status (Lead/Customer).",
+          "merge": "Merge duplicate contacts thông minh."
+        },
+        "mockup": {
+          "qualified": "Qualified Lead",
+          "chatted": "Chatted with Support",
+          "visited": "Visited Pricing Page"
+        }
+      },
+      "reporting": {
+        "title": "Reporting & SLA",
+        "subtitle": "Không còn mù số—đo phản hồi, đo hiệu suất, phát hiện missed chat.",
+        "list": {
+          "dashboard": "Dashboard trực quan về Volume chat, FRT (First Response Time).",
+          "agent": "Báo cáo hiệu suất từng nhân viên (Resolved count, Avg rating).",
+          "missed": "Danh sách Missed Chats để follow-up lại ngay."
+        },
+        "mockup": {
+          "frt": "Response Time (FRT)",
+          "total": "Total Conversations",
+          "missed": "Missed Chats"
+        }
+      },
+      "rbac": {
+        "title": "Phân quyền theo Scope & Audit Log",
+        "subtitle": "Không đọc trộm. Không lạm quyền. Mọi hành động đều truy vết được.",
+        "list": {
+          "roles": "Role-based access control (Admin, Manager, Agent)",
+          "scope": "Scope data theo Department",
+          "audit": "Audit Log chi tiết từng click"
+        },
+        "mockup": {
+          "title": "AUDIT LOG ENTRY",
+          "accessed": "accessed"
+        }
+      },
+      "api": {
+        "title": "API & Webhooks",
+        "subtitle": "Kết nối CRM/ERP/BI của bạn—đẩy event theo thời gian thực.",
+        "list": {
+          "webhooks": "Webhooks cho events: chat_start, chat_end, lead_created",
+          "rest": "REST API để sync contacts 2 chiều"
+        }
+      },
+      "billing": {
+        "title": "Gói dịch vụ & Billing",
+        "subtitle": "Minh bạch quota—nâng cấp khi cần, không gián đoạn vận hành.",
+        "list": {
+          "vat": "Quản lý hóa đơn VAT tự động",
+          "quota": "Cảnh báo khi sắp hết quota hội thoại"
+        },
+        "mockup": {
+          "plan": "Current Plan",
+          "usage": "Usage"
+        }
+      },
+      "security": {
+        "title": "Bảo mật & Tuân thủ",
+        "subtitle": "Dữ liệu khách hàng của bạn được bảo vệ theo chuẩn vận hành SaaS.",
+        "list": {
+          "isolation": "Data isolation cho từng tenant",
+          "retention": "Chính sách retention & xóa dữ liệu theo yêu cầu"
+        },
+        "mockup": {
+          "encryption": "End-to-end Encryption in Transit"
+        }
+      },
+      "promo": {
+        "title": "Bạn muốn xem Nemark chạy thật trên website của bạn?",
+        "subtitle": "Trải nghiệm đầy đủ tính năng trong 14 ngày.",
+        "ctaPrimary": "Dùng thử miễn phí",
+        "ctaSecondary": "Xem demo 60s"
+      }
+    },
+    "cta": {
+      "title": "Bắt đầu live chat chuyên nghiệp",
+      "titleBreak": "trong hôm nay.",
+      "subtitle": "Tăng tỉ lệ chuyển đổi lead lên tới 40% với công cụ hỗ trợ khách hàng tốt nhất.",
+      "button": "Dùng thử miễn phí",
+      "disclaimer": "Không cần thẻ tín dụng • Hủy bất kỳ lúc nào • Support 24/7"
+    },
+    "faq": {
+      "title": "Câu hỏi thường gặp",
+      "items": {
+        "coding": {
+          "question": "Cài đặt Widget có cần biết lập trình không?",
+          "answer": "Hoàn toàn không. Bạn chỉ cần copy 1 đoạn mã ngắn (script) mà chúng tôi cung cấp và dán vào website của bạn. Nếu bạn dùng WordPress, Shopify, chúng tôi có plugin hỗ trợ cài đặt trong 1 click."
+        },
+        "mobile": {
+          "question": "Tôi có thể chat trên điện thoại không?",
+          "answer": "Có. Nemark Inbox có ứng dụng di động cho cả iOS và Android, giúp bạn trả lời khách hàng mọi lúc mọi nơi mà không bỏ lỡ thông báo."
+        },
+        "free": {
+          "question": "Gói miễn phí có giới hạn tính năng không?",
+          "answer": "Gói Starter miễn phí cho phép 1 Agent và 100 hội thoại/tháng, đủ cho các cá nhân hoặc startup nhỏ. Các tính năng nâng cao như Routing, API sẽ cần gói Growth hoặc Pro."
+        },
+        "retention": {
+          "question": "Dữ liệu chat được lưu trữ bao lâu?",
+          "answer": "Tùy thuộc vào gói dịch vụ. Gói Starter lưu trữ 30 ngày. Gói Growth và Pro lưu trữ không giới hạn thời gian miễn là tài khoản còn hoạt động."
+        }
+      }
+    }
+  },
+  "solutions": {
+    "hero": {
+      "badge": "Giải pháp theo ngành & theo vai trò",
+      "title": "Chọn đúng kịch bản.",
+      "titleHighlight": "Triển khai live chat",
+      "titleEnd": "đúng cách.",
+      "subtitle": "Chúng tôi đã đóng gói kinh nghiệm từ 5,000+ doanh nghiệp thành các quy trình chuẩn. Chọn mô hình của bạn và bắt đầu tăng trưởng ngay lập tức.",
+      "ctaPrimary": "Dùng thử miễn phí",
+      "ctaSecondary": "Xem demo 60 giây",
+      "features": {
+        "setup": "Thiết lập trong 2 phút",
+        "noCard": "Không cần thẻ tín dụng"
+      }
+    },
+    "filter": {
+      "tabs": {
+        "industry": "Theo ngành",
+        "role": "Theo vai trò"
+      },
+      "searchPlaceholder": "Tìm ngành hoặc vai trò (VD: Bất động sản, Sale...)",
+      "industries": {
+        "label": "Ngành:",
+        "ecommerce": "TMĐT",
+        "saas": "SaaS",
+        "education": "Giáo dục",
+        "realestate": "BĐS",
+        "services": "Dịch vụ",
+        "agency": "Agency"
+      },
+      "roles": {
+        "label": "Vai trò:",
+        "sales": "Sales",
+        "support": "CSKH",
+        "techSupport": "Support",
+        "manager": "Founder/Manager",
+        "developer": "IT/Dev"
+      },
+      "clearFilter": "Xóa lọc"
+    },
+    "industries": {
+      "title": "Giải pháp",
+      "titleHighlight": "theo ngành",
+      "subtitle": "Kịch bản tối ưu hóa riêng biệt cho mô hình kinh doanh của bạn.",
+      "ecommerce": {
+        "title": "Thương mại điện tử",
+        "badge": "TMĐT",
+        "problem": "Khách bỏ giỏ hàng & hỏi giá nhiều.",
+        "result": "Tăng 25% tỷ lệ chốt đơn.",
+        "features": {
+          "discount": "Tự động gửi mã giảm giá",
+          "orderStatus": "Tích hợp trạng thái đơn hàng",
+          "segment": "Phân loại khách sỉ/lẻ"
+        },
+        "ctaView": "Xem kịch bản",
+        "ctaTry": "Dùng thử"
+      },
+      "saas": {
+        "title": "Software / SaaS",
+        "badge": "SaaS",
+        "problem": "Churn rate cao, user khó dùng.",
+        "result": "Giảm 40% ticket hỗ trợ lặp lại.",
+        "features": {
+          "onboarding": "Onboarding tour tự động",
+          "helpCenter": "Help Center trong chat",
+          "feedback": "Thu thập Feedback/Bug"
+        },
+        "ctaView": "Xem kịch bản",
+        "ctaTry": "Dùng thử"
+      },
+      "education": {
+        "title": "Giáo dục & Đào tạo",
+        "badge": "Giáo dục",
+        "problem": "Mất học viên tiềm năng ngoài giờ.",
+        "result": "Thu thập lead 24/7.",
+        "features": {
+          "courseBot": "Bot tư vấn khóa học",
+          "scheduling": "Đặt lịch test đầu vào",
+          "routing": "Phân luồng cho Sale"
+        },
+        "ctaView": "Xem kịch bản",
+        "ctaTry": "Dùng thử"
+      },
+      "realestate": {
+        "title": "Bất động sản",
+        "badge": "BĐS",
+        "problem": "Phản hồi chậm, khách bỏ đi.",
+        "result": "Đặt lịch xem nhà nhanh chóng.",
+        "features": {
+          "brochure": "Gửi brochure/location",
+          "requirements": "Lưu trữ nhu cầu chi tiết",
+          "reminder": "Nhắc lịch hẹn tự động"
+        },
+        "ctaView": "Xem kịch bản",
+        "ctaTry": "Dùng thử"
+      },
+      "services": {
+        "title": "Spa / Clinic / Salon",
+        "badge": "Dịch vụ",
+        "problem": "No-show, quên lịch hẹn.",
+        "result": "Tối ưu hóa lịch booking.",
+        "features": {
+          "booking": "Form đặt lịch trực quan",
+          "consultation": "Tư vấn liệu trình tự động",
+          "remarketing": "Re-marketing khách cũ"
+        },
+        "ctaView": "Xem kịch bản",
+        "ctaTry": "Dùng thử"
+      },
+      "agency": {
+        "title": "Agency",
+        "badge": "Agency",
+        "problem": "Quản lý nhiều Page rời rạc.",
+        "result": "Centralized Inbox cho 50+ brand.",
+        "features": {
+          "workspace": "Workspace riêng biệt",
+          "permissions": "Phân quyền nhân viên",
+          "reporting": "Báo cáo tổng hợp"
+        },
+        "ctaView": "Xem kịch bản",
+        "ctaTry": "Dùng thử"
+      }
+    },
+    "roles": {
+      "title": "Giải pháp",
+      "titleHighlight": "theo vai trò",
+      "subtitle": "Công cụ đắc lực cho từng vị trí trong doanh nghiệp.",
+      "sales": {
+        "title": "Sales",
+        "concern": "Chốt nóng lead, không bỏ sót khách.",
+        "tools": {
+          "scoring": "Lead scoring",
+          "assign": "Auto-assign",
+          "crm": "Mini CRM"
+        },
+        "metric": "Conversion Rate",
+        "cta": "Xem luồng công việc"
+      },
+      "support": {
+        "title": "CSKH",
+        "concern": "Phản hồi nhanh, khách hài lòng.",
+        "tools": {
+          "replies": "Saved Replies",
+          "typing": "Typing preview",
+          "routing": "Chat routing"
+        },
+        "metric": "First Response Time",
+        "cta": "Xem luồng công việc"
+      },
+      "techSupport": {
+        "title": "Tech Support",
+        "concern": "Xử lý vấn đề kỹ thuật triệt để.",
+        "tools": {
+          "ticket": "Ticket linking",
+          "notes": "Internal Note",
+          "files": "File sharing"
+        },
+        "metric": "Resolution Time",
+        "cta": "Xem luồng công việc"
+      },
+      "manager": {
+        "title": "Manager",
+        "concern": "Hiệu suất team & Chất lượng dịch vụ.",
+        "tools": {
+          "dashboard": "Real-time Dash",
+          "audit": "Audit logs",
+          "export": "Export data"
+        },
+        "metric": "CSAT & Team Load",
+        "cta": "Xem luồng công việc"
+      },
+      "developer": {
+        "title": "IT / Dev",
+        "concern": "Dễ tích hợp, bảo mật, ổn định.",
+        "tools": {
+          "webhooks": "Webhooks",
+          "api": "Rest API",
+          "sdk": "JS SDK"
+        },
+        "metric": "Uptime",
+        "cta": "Xem luồng công việc"
+      }
+    },
+    "playbook": {
+      "title": "Playbook gợi ý:",
+      "titleHighlight": "Quy trình chuẩn",
+      "step1": {
+        "number": "1",
+        "title": "Cài đặt cơ bản",
+        "description": "Cài widget lên web và bật Pre-chat form để thu thập thông tin.",
+        "cta": "Xem hướng dẫn"
+      },
+      "step2": {
+        "number": "2",
+        "title": "Setup Inbox",
+        "description": "Tạo cấu trúc inbox và gán quyền (scope) cho từng nhân viên.",
+        "cta": "Xem hướng dẫn"
+      },
+      "step3": {
+        "number": "3",
+        "title": "Tự động hóa",
+        "description": "Bật Auto-assign chia việc & cài đặt giờ làm việc (Presence).",
+        "cta": "Xem hướng dẫn"
+      },
+      "step4": {
+        "number": "4",
+        "title": "Tối ưu & Đo lường",
+        "description": "Theo dõi SLA, kiểm tra chat bị lỡ và cập nhật câu trả lời mẫu.",
+        "cta": "Dùng thử ngay"
+      }
+    },
+    "midCta": {
+      "title": "Bạn đã tìm thấy kịch bản phù hợp?",
+      "subtitle": "Nếu chưa, hãy để chuyên gia của chúng tôi tư vấn trực tiếp.",
+      "ctaDemo": "Xem demo",
+      "ctaTry": "Dùng thử miễn phí"
+    },
+    "stats": {
+      "conversations": "2.5M+",
+      "conversationsLabel": "Hội thoại/tháng",
+      "uptime": "99.9%",
+      "uptimeLabel": "Uptime"
+    },
+    "faq": {
+      "title": "Câu hỏi thường gặp",
+      "items": {
+        "customize": {
+          "question": "Tôi có thể tùy chỉnh kịch bản theo ý muốn không?",
+          "answer": "Hoàn toàn được. Các kịch bản trên là mẫu gợi ý dựa trên best-practice. Bạn có toàn quyền thêm bớt các bước, thay đổi nội dung tin nhắn và quy tắc phân luồng trong trang quản trị."
+        },
+        "integration": {
+          "question": "Nemark Inbox có tích hợp với CRM tôi đang dùng không?",
+          "answer": "Chúng tôi hỗ trợ tích hợp sẵn (native integration) với Salesforce, HubSpot, Pipedrive và Zoho. Ngoài ra bạn có thể dùng Webhook hoặc Zapier để kết nối với bất kỳ hệ thống nào khác."
+        },
+        "timeline": {
+          "question": "Thời gian triển khai mất bao lâu?",
+          "answer": "Rất nhanh. Với các kịch bản mẫu có sẵn, bạn chỉ mất khoảng 2 phút để cài widget lên web và khoảng 15 phút để cấu hình các luồng chat cơ bản."
+        },
+        "notFound": {
+          "question": "Tôi không tìm thấy ngành của mình ở đây?",
+          "answer": "Đừng lo lắng. Nguyên lý hội thoại là tương đồng. Hãy chọn ngành gần nhất với mô hình của bạn (ví dụ Dịch vụ) hoặc liên hệ đội ngũ hỗ trợ để được tư vấn setup riêng."
+        }
+      }
+    },
+    "finalCta": {
+      "title": "Bắt đầu với playbook đúng cho",
+      "titleHighlight": "ngành của bạn.",
+      "subtitle": "Triển khai dễ dàng, mở rộng không giới hạn.",
+      "button": "Dùng thử miễn phí ngay",
+      "disclaimer": "14 ngày dùng thử trọn vẹn tính năng Pro • Không cần thẻ tín dụng"
+    }
+  },
+  "demo": {
+    "hero": {
+      "badge": "Demo Tương Tác Sandbox",
+      "title": "Dán link website của bạn.",
+      "titleHighlight": "Xem widget live chat chạy ngay.",
+      "subtitle": "Trải nghiệm widget Nemark Inbox trên chính giao diện website của bạn mà không cần cài đặt code. Hoàn toàn miễn phí và an toàn.",
+      "inputPlaceholder": "https://tenmiencuaban.com",
+      "ctaPreview": "Mở preview",
+      "orText": "Hoặc xem demo mẫu:",
+      "templates": {
+        "ecommerce": "TMĐT",
+        "saas": "SaaS",
+        "landing": "Landing Page"
+      },
+      "security": "Preview chạy trong trình duyệt, Nemark không lưu nội dung trang bạn xem."
+    },
+    "preview": {
+      "browserUrl": "https://demo-store.nemark.com",
+      "previewMode": "Preview Mode",
+      "chatTitle": "Hỗ trợ khách hàng",
+      "chatSubtitle": "Chúng tôi thường trả lời trong vài phút",
+      "agentMessage": "Chào bạn! 👋 Tôi có thể giúp gì cho bạn hôm nay?",
+      "userMessage": "Cho mình hỏi về giá gói Enterprise?",
+      "poweredBy": "Powered by Nemark",
+      "loading": "Calibrating layout..."
+    },
+    "controls": {
+      "title": "Cấu hình Widget",
+      "livePreview": "Live Preview",
+      "theme": {
+        "label": "Giao diện (Theme)",
+        "auto": "Auto",
+        "light": "Light",
+        "dark": "Dark"
+      },
+      "color": {
+        "label": "Màu chủ đạo"
+      },
+      "position": {
+        "label": "Vị trí hiển thị",
+        "bottomRight": "Góc phải dưới"
+      },
+      "utm": {
+        "label": "Giả lập nguồn khách (UTM)",
+        "googleAds": "Google Ads",
+        "facebook": "Facebook",
+        "direct": "Direct"
+      },
+      "ctaCopy": "Copy snippet để cài thật",
+      "ctaTry": "Dùng thử miễn phí"
+    },
+    "steps": {
+      "step1": {
+        "number": "1",
+        "title": "Mở & Gửi tin",
+        "description": "Khách truy cập mở widget và gửi tin nhắn đầu tiên."
+      },
+      "step2": {
+        "number": "2",
+        "title": "Agent trả lời",
+        "description": "Nhân viên nhận thông báo và trả lời realtime."
+      },
+      "step3": {
+        "number": "3",
+        "title": "Tag & Note",
+        "description": "Gắn thẻ phân loại và ghi chú nội bộ cho team."
+      },
+      "step4": {
+        "number": "4",
+        "title": "Lưu Contact",
+        "description": "Thông tin khách hàng tự động được lưu vào CRM."
+      }
+    },
+    "results": {
+      "title": "Kết quả bạn sẽ nhận được",
+      "subtitle": "Dựa trên số liệu thực tế từ 2,000+ doanh nghiệp",
+      "leadQuality": {
+        "value": "+45%",
+        "title": "Lead chất lượng",
+        "description": "Khách hàng chat có khả năng mua hàng cao gấp 3 lần."
+      },
+      "responseTime": {
+        "value": "-80%",
+        "title": "Thời gian phản hồi",
+        "description": "Giảm thời gian chờ đợi của khách hàng xuống dưới 1 phút."
+      },
+      "missedChat": {
+        "value": "0%",
+        "title": "Missed Chat",
+        "description": "Với tính năng chia inbox tự động và thông báo đa kênh."
+      },
+      "transparency": {
+        "value": "100%",
+        "title": "Minh bạch vận hành",
+        "description": "Báo cáo chi tiết hiệu suất từng nhân viên theo thời gian thực."
+      }
+    },
+    "cta": {
+      "title": "Sẵn sàng thử trên website của bạn?",
+      "workflow": {
+        "copy": "Copy snippet",
+        "receive": "Nhận chat",
+        "save": "Lưu contact",
+        "measure": "Đo SLA"
+      },
+      "ctaPrimary": "Dùng thử miễn phí",
+      "ctaSecondary": "Yêu cầu demo cho team",
+      "disclaimer": "*Không cần thẻ tín dụng. Cài đặt trong 2 phút."
+    }
+  },
+  "dashboard": {
+    "title": "Workspace Dashboard",
+    "seoDescription": "Xem thống kê workspace, hiệu suất đội ngũ và hoạt động gần đây.",
+    "subtitle": "Chào mừng trở lại 👋 Dưới đây là hoạt động của Acme Corp hôm nay.",
+    "justNow": "vừa xong",
+    "export": "Export",
+    "actionRequired": {
+      "title": "Cần xử lý ngay",
+      "missedChats": "{{count}} chat bị bỏ lỡ trong 30 phút qua",
+      "slaWarning": "SLA phản hồi sắp vượt ngưỡng ({{count}} tickets)",
+      "goToInbox": "Vào Inbox",
+      "assignAgent": "Phân bổ Agent"
+    },
+    "stats": {
+      "totalConversations": "Tổng hội thoại",
+      "openPending": "Đang mở / Chờ xử lý",
+      "firstResponse": "Phản hồi đầu tiên",
+      "missedChats": "Chat bị bỏ lỡ",
+      "vs7Days": "So với 7 ngày trước",
+      "assignPending": "Cần gán agent cho ticket chờ",
+      "target": "Target ≤ 3m",
+      "last24h": "Trong 24h qua",
+      "viewDetails": "Xem chi tiết →"
+    },
+    "charts": {
+      "conversationTrend": "Xu hướng hội thoại",
+      "openVsClosed": "Số lượng Open vs Closed",
+      "days7": "7 ngày qua",
+      "days30": "30 ngày qua",
+      "allInboxes": "Tất cả Inbox",
+      "days": {
+        "mon": "T2",
+        "tue": "T3",
+        "wed": "T4",
+        "thu": "T5",
+        "fri": "T6",
+        "sat": "T7",
+        "sun": "CN"
+      },
+      "conversations": "hội thoại"
+    },
+    "team": {
+      "title": "Đội ngũ",
+      "overloaded": "Overloaded",
+      "agentOnline": "Agent Online",
+      "avgPerformance": "Hiệu suất trung bình",
+      "chatsPerAgent": "chats / agent",
+      "higherThanRecommended": "Cao hơn khuyến nghị ({{count}})",
+      "viewDetails": "Xem chi tiết đội ngũ",
+      "inviteAgent": "Mời thêm Agent"
+    },
+    "business": {
+      "title": "Kết quả kinh doanh hôm nay",
+      "leadsCaptured": "Leads Captured",
+      "qualifiedLeads": "Qualified Leads",
+      "conversionRate": "Conversion Rate",
+      "pipelineValue": "Pipeline Value"
+    },
+    "system": {
+      "title": "System Health",
+      "allHealthy": "All Healthy",
+      "channels": "Channels",
+      "automation": "Automation",
+      "api": "API & Webhooks",
+      "connected": "Connected",
+      "running": "Running",
+      "healthy": "Healthy"
+    },
+    "billing": {
+      "title": "Billing & Plan",
+      "upgrade": "Upgrade",
+      "proPlan": "Pro Plan",
+      "quotaUsed": "{{percentage}}% quota used",
+      "mauUsage": "{{current}} / {{total}} MAU",
+      "storageUsage": "{{used}} / {{total}} Lưu trữ",
+      "expiryWarning": "Gói dịch vụ sẽ hết hạn sau {{days}} ngày."
+    },
+    "lastUpdated": "Cập nhật lúc: {{time}}"
+  },
+  "sidebar": {
+    "dashboard": "Dashboard",
+    "inbox": "Inbox",
+    "contacts": "Contacts",
+    "reports": "Reports",
+    "automation": "Automation",
+    "integrations": "Integrations",
+    "settings": "Settings",
+    "billing": "Billing",
+    "soon": "Sắp ra mắt",
+    "searchPlaceholder": "Tìm hội thoại, liên hệ…",
+    "appName": "Nemark Inbox",
+    "expandSidebar": "Mở rộng sidebar",
+    "collapseSidebar": "Thu gọn sidebar",
+    "role": {
+      "owner": "Chủ sở hữu",
+      "admin": "Quản trị viên",
+      "agent": "Nhân viên"
+    },
+    "plan": {
+      "pro": "Pro"
+    }
+  },
+  "team": {
+    "title": "Đội ngũ",
+    "overloaded": "Overloaded",
+    "agentOnline": "Agent Online",
+    "avgPerformance": "Hiệu suất trung bình",
+    "chatsPerAgent": "chats / agent",
+    "higherThanRecommended": "Cao hơn khuyến nghị ({{count}})",
+    "viewDetails": "Xem chi tiết đội ngũ",
+    "inviteAgent": "Mời thêm Agent"
+  },
+  "customers": {
+    "hero": {
+      "badge": "Kết quả thực tế",
+      "title": "Các đội Sales & CSKH dùng Nemark Inbox để",
+      "titleHighlight1": "phản hồi nhanh",
+      "titleHighlight2": "chốt nhiều hơn.",
+      "subtitle": "Khám phá cách hơn 2,000 doanh nghiệp đang sử dụng hội thoại làm vũ khí cạnh tranh chính để tăng trưởng doanh thu bền vững.",
+      "ctaPrimary": "Dùng thử miễn phí",
+      "ctaSecondary": "Yêu cầu demo",
+      "features": {
+        "trial": "14 ngày dùng thử miễn phí",
+        "noCard": "Không cần thẻ tín dụng"
+      },
+      "search": {
+        "placeholder": "Tìm theo ngành, quy mô, use case...",
+        "toggleLabel": "Hiển thị case nổi bật trước"
+      },
+      "filters": {
+        "industry": "Ngành:",
+        "role": "Vai trò:",
+        "goal": "Mục tiêu:"
+      }
+    },
+    "stats": {
+      "leads": "+32%",
+      "leadsLabel": "Lead để lại thông tin",
+      "frt": "-41%",
+      "frtLabel": "First Response Time",
+      "missed": "-28%",
+      "missedLabel": "Missed Chats"
+    },
+    "library": {
+      "title": "Thư viện Case Study",
+      "sortLatest": "Mới nhất",
+      "loadMore": "Xem thêm case study"
+    },
+    "testimonials": {
+      "title": "Khách hàng nói gì về",
+      "titleHighlight": "Nemark Inbox",
+      "quote1": "Trước đây chúng tôi mất trung bình 30 phút để phản hồi khách. Với Nemark Inbox, con số này giảm xuống dưới 2 phút. Doanh số tăng rõ rệt.",
+      "author1": "Hoàng Minh",
+      "role1": "Sales Manager, TechFlow",
+      "quote2": "Tính năng phân công chat tự động là cứu cánh cho team 20 người của tôi. Không còn ai phải hỏi \"khách này của ai?\" nữa.",
+      "author2": "Thảo Trang",
+      "role2": "Head of CS, BeautyBox",
+      "quote3": "Setup cực kỳ đơn giản. Chỉ mất 5 phút gắn code là website đã có live chat xịn xò. Giao diện quản lý rất clean và dễ dùng.",
+      "author3": "Tuấn Anh",
+      "role3": "Founder, Startup Gear"
+    },
+    "playbook": {
+      "title": "Áp dụng ngay",
+      "titleHighlight": "Playbook tăng trưởng",
+      "subtitle": "Các module tính năng được thiết kế để giải quyết từng bài toán cụ thể.",
+      "modules": {
+        "leadCapture": {
+          "title": "Thu lead tự nhiên",
+          "feature1": "Chatbot chào khách",
+          "feature2": "Form thu thập thông tin",
+          "feature3": "Trigger theo hành vi"
+        },
+        "noMiss": {
+          "title": "Không bỏ sót",
+          "feature1": "Gom tin nhắn đa kênh",
+          "feature2": "Thông báo real-time",
+          "feature3": "Auto-reply ngoài giờ"
+        },
+        "assignment": {
+          "title": "Phân công minh bạch",
+          "feature1": "Chia lead Round-robin",
+          "feature2": "Gán theo kỹ năng",
+          "feature3": "Chuyển hội thoại mượt"
+        },
+        "analytics": {
+          "title": "Quản trị bằng số",
+          "feature1": "Báo cáo thời gian phản hồi",
+          "feature2": "Hiệu suất nhân viên",
+          "feature3": "Rating & Feedback"
+        }
+      },
+      "viewModule": "Xem module"
+    },
+    "cta": {
+      "title": "Muốn tạo kết quả tương tự",
+      "titleBreak": "trên website của bạn?",
+      "features": {
+        "setup": "Setup 5 phút",
+        "inbox": "Inbox rõ",
+        "crm": "CRM-lite",
+        "sla": "SLA report"
+      },
+      "ctaPrimary": "Dùng thử miễn phí",
+      "ctaSecondary": "Yêu cầu demo"
+    }
+  },
+  "pricing": {
+    "seo": {
+      "title": "Bảng giá Nemark Inbox - Chọn gói phù hợp với quy mô team",
+      "description": "Bắt đầu miễn phí. Nâng gói trong 1 click khi tăng trưởng. Không gián đoạn inbox."
+    },
+    "hero": {
+      "badge": "Bảng giá minh bạch",
+      "title": "Chọn gói phù hợp với",
+      "titleHighlight": "quy mô team của bạn.",
+      "subtitle": "Bắt đầu miễn phí. Khi tăng trưởng, nâng gói trong 1 click — không gián đoạn inbox.",
+      "monthly": "Theo tháng",
+      "yearly": "Theo năm",
+      "yearlyDiscount": "Tiết kiệm 20%",
+      "ctaPrimary": "Dùng thử miễn phí",
+      "ctaSecondary": "Liên hệ sales",
+      "noCard": "Không cần thẻ",
+      "cancelAnytime": "Hủy bất kỳ lúc nào",
+      "setupSupport": "Hỗ trợ cài đặt"
+    },
+    "plans": {
+      "starter": {
+        "desc": "Dành cho cá nhân & team nhỏ.",
+        "unit": "/tháng"
+      },
+      "growth": {
+        "desc": "Dành cho startup đang tăng trưởng.",
+        "unit": "/agent/tháng"
+      },
+      "enterprise": {
+        "desc": "Bảo mật & quản trị cấp cao.",
+        "price": "Liên hệ"
+      }
+    },
+    "popularBadge": "Phổ biến nhất",
+    "worthIt": "Tính năng đáng tiền:",
+    "features": {
+      "basicWidget": "Live Chat Widget cơ bản",
+      "unifiedInbox": "Inbox gộp (FB, Zalo)",
+      "apps": "Desktop & Mobile App",
+      "emailSupport": "Email Support",
+      "allStarter": "Mọi tính năng Starter",
+      "automation": "Automation Rules & Workflows",
+      "advancedReports": "Báo cáo nâng cao & Team performance",
+      "chatSupport": "Chat Support 24/7",
+      "allGrowth": "Mọi tính năng Growth",
+      "successManager": "Dedicated Success Manager",
+      "sla": "SLA uptime 99.99%",
+      "apiLimit": "API Rate Limit tùy chỉnh"
+    },
+    "cta": {
+      "startTrial": "Bắt đầu dùng thử",
+      "contactSales": "Liên hệ Sales",
+      "title": "Bắt đầu thu lead từ live chat",
+      "titleHighlight": "ngay hôm nay.",
+      "primary": "Dùng thử miễn phí",
+      "secondary": "Liên hệ sales",
+      "subtitle": "Setup trong 2 phút • Hỗ trợ tiếng Việt 100%"
+    },
+    "enterprise": {
+      "subtitle": "Demo theo use-case + tư vấn triển khai"
+    },
+    "quota": {
+      "title": "Quota được tính như thế nào?",
+      "subtitle": "Mọi giới hạn đều minh bạch. Bạn luôn thấy mức sử dụng hiện tại (Usage) ngay trong cài đặt workspace.",
+      "visibility": "Bạn luôn thấy usage hiện tại trong app",
+      "agent": "Số lượng nhân viên được truy cập vào hệ thống đồng thời.",
+      "conversation": "Số cuộc hội thoại mới được tạo ra mỗi tháng.",
+      "retention": "Thời gian tin nhắn được lưu trữ và có thể tìm kiếm lại."
+    },
+    "comparison": {
+      "title": "So sánh chi tiết tính năng",
+      "subtitle": "Đi sâu vào từng chi tiết để chọn đúng công cụ.",
+      "feature": "Tính năng"
+    },
+    "addons": {
+      "title": "Gói mở rộng (Add-ons)",
+      "buy": "Mua thêm",
+      "conversations": {
+        "name": "Thêm Conversations",
+        "desc": "Khi vượt quá quota tháng."
+      },
+      "retention": {
+        "name": "Thêm Retention",
+        "desc": "Mở rộng lưu trữ lịch sử."
+      },
+      "automation": {
+        "name": "Automation Workflows",
+        "desc": "Tự động hóa nâng cao."
+      },
+      "omnichannel": {
+        "name": "Omnichannel Plus",
+        "desc": "Tích hợp WhatsApp, IG."
+      }
+    },
+    "faq": {
+      "title": "Câu hỏi về Billing",
+      "upgrade": {
+        "q": "Tôi có thể nâng cấp/hạ cấp gói bất cứ lúc nào không?",
+        "a": "Có. Việc thay đổi gói sẽ có hiệu lực ngay lập tức. Hệ thống sẽ tự động tính toán chênh lệch (proration) và cộng vào credits hoặc trừ vào hóa đơn tiếp theo của bạn."
+      },
+      "agent": {
+        "q": "\"Agent\" được tính như thế nào?",
+        "a": "Chúng tôi tính tiền dựa trên số lượng \"ghế\" (seats) mà bạn mua. Bạn có thể thêm/xóa người dùng vào các ghế này. Ví dụ gói Growth bao gồm 5 agents, bạn có thể mời tối đa 5 người vào team."
+      },
+      "refund": {
+        "q": "Chính sách hoàn tiền (Refund) ra sao?",
+        "a": "Chúng tôi có chính sách hoàn tiền trong 7 ngày đầu tiên nếu bạn không hài lòng với dịch vụ mà không cần lý do."
+      },
+      "card": {
+        "q": "Tôi có cần thẻ tín dụng để dùng thử không?",
+        "a": "Không. Bạn chỉ cần email để bắt đầu dùng thử 14 ngày gói Growth. Chúng tôi chỉ yêu cầu thông tin thanh toán khi bạn quyết định mua chính thức."
+      }
+    },
+    "security": {
+      "rbac": "RBAC theo scope",
+      "audit": "Audit log",
+      "retention": "Retention theo plan",
+      "export": "Export kiểm soát quyền",
+      "api": "API/Webhooks",
+      "learnMore": "Xem chi tiết bảo mật"
+    }
+  }
+}
