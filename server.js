@@ -59,7 +59,7 @@ nextApp.prepare().then(async () => {
     let dbConnected = false;
     try {
         const { connectMySQL } = require('./src/server/infra/mysql/mysql');
-        const { runAutoSeed } = require('./src/server/infra/mysql/autoSeed');
+        const { runAutoSeed } = require('./src/server/infra/sql/autoSeed');
         await connectMySQL();
         await runAutoSeed();
         dbConnected = true;

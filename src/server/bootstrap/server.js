@@ -1,5 +1,5 @@
 const { connectMySQL } = require('../infra/mysql/mysql');
-const { runAutoSeed } = require('../infra/mysql/autoSeed');
+const { runAutoSeed } = require('../infra/sql/autoSeed');
 const createApp = require('./express');
 const { initSocket } = require('./socket');
 const env = require('../config/env');

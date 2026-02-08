@@ -12,8 +12,7 @@ const messageRepo = require('./message.repo');
 const readRepo = require('./read.repo');
 const widgetRepo = require('./widget.repo');
 
-// Services
-const messageService = require('./message.mongo.service');
+// Services (MongoDB service removed — using MySQL only)
 
 /**
  * Get widget by SiteKey with validation

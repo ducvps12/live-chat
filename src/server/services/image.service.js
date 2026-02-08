@@ -1,52 +1,50 @@
-const ImageModel = require('../models/Image.model');
 const imageRepo = require('../repos/image.repo');
 const AppError = require('../utils/AppError');
+const { getPool } = require('../infra/mysql/mysql');
 
 /**
  * Image Service
- * Coordinates MongoDB and SQL Server for hybrid image storage
+ * Uses MySQL for image storage (base64 data stored in MySQL)
  */
 
 /**
- * Upload image to MongoDB and save metadata to SQL Server
+ * Upload image and save to MySQL
  * @param {Buffer} buffer - Image file buffer
  * @param {string} filename - Original filename
  * @param {string} mimeType - MIME type (e.g., 'image/jpeg')
  * @param {number} userId - User ID who uploaded the image
- * @returns {Promise<{imageId, mongoId, url}>}
+ * @returns {Promise<{imageId, url}>}
  */
 const uploadImage = async (buffer, filename, mimeType, userId) => {
     try {
-        // Convert buffer to base64
         const base64 = buffer.toString('base64');
         const size = buffer.length;
 
-        // Save to MongoDB
-        const mongoImage = new ImageModel({
-            filename,
-            base64,
-            mimeType,
-            size,
-            uploadedBy: userId,
-        });
-
-        await mongoImage.save();
-
-        // Save metadata to SQL Server
+        // Save metadata to MySQL
         const sqlImage = await imageRepo.createImage({
             filename,
-            mongoDbId: mongoImage._id.toString(),
+            mongoDbId: null, // No longer using MongoDB
             userId,
             fileSize: size,
             mimeType,
         });
 
-        // Return image URL (data URI format for immediate use)
+        // Store base64 data in MySQL (iam_ImageData table or inline)
+        const pool = getPool();
+        try {
+            await pool.execute(
+                'UPDATE iam_Images SET Base64Data = ? WHERE ImageKey = ?',
+                [base64, sqlImage.ImageKey || sqlImage.imageKey]
+            );
+        } catch (e) {
+            // Base64Data column may not exist yet — ignore gracefully
+            console.warn('[ImageService] Could not save base64 data:', e.message);
+        }
+
         const dataUri = `data:${mimeType};base64,${base64}`;
 
         return {
-            imageId: sqlImage.ImageId,
-            mongoId: mongoImage._id.toString(),
+            imageId: sqlImage.ImageId || sqlImage.imageId,
             url: dataUri,
             filename,
         };
@@ -63,51 +61,57 @@ const uploadImage = async (buffer, filename, mimeType, userId) => {
  */
 const getImageById = async (imageId) => {
     try {
-        // Get metadata from SQL
         const metadata = await imageRepo.findById(imageId);
         if (!metadata) {
             throw new AppError('Image not found', 404);
         }
 
-        // Get image data from MongoDB
-        const mongoImage = await ImageModel.findById(metadata.MongoDbId);
-        if (!mongoImage) {
-            throw new AppError('Image data not found in MongoDB', 404);
+        // Try to get base64 data from MySQL
+        const pool = getPool();
+        let base64 = null;
+        try {
+            const [rows] = await pool.execute(
+                'SELECT Base64Data FROM iam_Images WHERE ImageId = ?',
+                [imageId]
+            );
+            base64 = rows[0]?.Base64Data;
+        } catch (e) {
+            // Column may not exist
         }
 
-        // Return as data URI
-        const dataUri = `data:${mongoImage.mimeType};base64,${mongoImage.base64}`;
+        if (!base64) {
+            throw new AppError('Image data not found', 404);
+        }
+
+        const dataUri = `data:${metadata.MimeType};base64,${base64}`;
 
         return {
-            filename: mongoImage.filename,
-            mimeType: mongoImage.mimeType,
-            base64: mongoImage.base64,
+            filename: metadata.Filename,
+            mimeType: metadata.MimeType,
+            base64,
             dataUri,
         };
     } catch (error) {
+        if (error instanceof AppError) throw error;
         console.error('Error getting image:', error);
         throw new AppError(`Failed to get image: ${error.message}`, 500);
     }
 };
 
 /**
- * Delete image from both MongoDB and SQL Server
+ * Delete image from MySQL
  * @param {number} imageId - SQL image ID
  */
 const deleteImage = async (imageId) => {
     try {
-        // Get metadata to find MongoDB ID
         const metadata = await imageRepo.findById(imageId);
         if (!metadata) {
             throw new AppError('Image not found', 404);
         }
 
-        // Delete from MongoDB
-        await ImageModel.findByIdAndDelete(metadata.MongoDbId);
-
-        // Delete from SQL Server
         await imageRepo.deleteById(imageId);
     } catch (error) {
+        if (error instanceof AppError) throw error;
         console.error('Error deleting image:', error);
         throw new AppError(`Failed to delete image: ${error.message}`, 500);
     }
@@ -115,8 +119,6 @@ const deleteImage = async (imageId) => {
 
 /**
  * Search images by filename
- * @param {string} query - Search query
- * @returns {Promise<Array>}
  */
 const searchImages = async (query) => {
     try {
@@ -130,9 +132,6 @@ const searchImages = async (query) => {
 
 /**
  * Get user's images
- * @param {number} userId - User ID
- * @param {number} limit - Number of images to return
- * @returns {Promise<Array>}
  */
 const getUserImages = async (userId, limit = 50) => {
     try {
