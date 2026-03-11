@@ -1016,7 +1016,27 @@ export default function InboxPage() {
                                 Inbox
                             </h2>
                         </div>
-                        <Badge count={totalUnreadCount} overflowCount={99} />
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <Tooltip title="Zalo Cá nhân">
+                                <Button
+                                    size="small"
+                                    onClick={() => router.push(`/workspace/${workspaceId}/remote-session`)}
+                                    style={{
+                                        background: '#0068ff',
+                                        borderColor: '#0068ff',
+                                        color: '#fff',
+                                        fontWeight: 600,
+                                        fontSize: 12,
+                                        borderRadius: 6,
+                                        padding: '2px 10px',
+                                        height: 26,
+                                    }}
+                                >
+                                    Zalo
+                                </Button>
+                            </Tooltip>
+                            <Badge count={totalUnreadCount} overflowCount={99} />
+                        </div>
                     </div>
 
                     {/* Search + filter */}

@@ -36,6 +36,12 @@ export const PERMISSIONS = {
     // Settings
     SETTINGS_READ: 'settings:read',
     SETTINGS_UPDATE: 'settings:update',
+
+    // Remote Session
+    REMOTE_SESSION_CREATE: 'remote_session:create',
+    REMOTE_SESSION_VIEW: 'remote_session:view',
+    REMOTE_SESSION_CONTROL: 'remote_session:control',
+    REMOTE_SESSION_REVOKE: 'remote_session:revoke',
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -57,6 +63,8 @@ export const ROLE_PERMISSIONS: Record<string, PermissionKey[]> = {
         PERMISSIONS.CONVERSATION_ASSIGN,
         PERMISSIONS.CONVERSATION_CLOSE,
         PERMISSIONS.SETTINGS_READ,
+        PERMISSIONS.REMOTE_SESSION_VIEW,
+        PERMISSIONS.REMOTE_SESSION_CONTROL,
     ],
 
     member: [
@@ -65,6 +73,7 @@ export const ROLE_PERMISSIONS: Record<string, PermissionKey[]> = {
         PERMISSIONS.TEAM_READ,
         PERMISSIONS.CONVERSATION_READ,
         PERMISSIONS.SETTINGS_READ,
+        PERMISSIONS.REMOTE_SESSION_VIEW,
     ],
 };
 

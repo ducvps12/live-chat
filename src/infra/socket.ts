@@ -6,6 +6,9 @@ import { security } from './security';
 import { messageRepo } from '../modules/conversation/repos/message.repo';
 import { conversationRepo } from '../modules/conversation/repos/conversation.repo';
 import { presenceStore } from './presence';
+import { browserPool } from './browserPool';
+import { startScreencast, stopScreencast, dispatchMouse, dispatchKeyboard, dispatchScroll, detectLoginState } from './sessionStream';
+import { externalSessionRepo } from '../modules/external-session/repos/externalSession.repo';
 
 let io: Server;
 
@@ -401,6 +404,205 @@ export function initSocketGateway(server: http.Server): Server {
             console.error('[SLA Cron] Error checking SLA:', err);
         }
     }, 5 * 60 * 1000);
+
+    // ────────── Remote Session Namespace ──────────
+    const remoteNs = io.of('/remote');
+
+    // Auth middleware (JWT same as agent)
+    remoteNs.use((socket, next) => {
+        const token = socket.handshake.auth?.token || socket.handshake.query?.token;
+        if (!token) return next(new Error('MISSING_TOKEN'));
+        try {
+            const decoded = jwt.verify(token as string, env.JWT_SECRET) as any;
+            (socket as any).data = {
+                type: 'agent',
+                id: decoded.id || decoded.userId,
+                name: decoded.name || 'Unknown',
+                workspaceId: socket.handshake.query?.workspaceId || decoded.workspaceId,
+            } as SocketData;
+            next();
+        } catch {
+            next(new Error('INVALID_TOKEN'));
+        }
+    });
+
+    // Track active screencasts per socket
+    const activeScreencasts = new Map<string, string>(); // socketId → sessionId
+
+    remoteNs.on('connection', (socket: Socket) => {
+        const data = (socket as any).data as SocketData;
+        console.log(`[Remote] User ${data.name} (${data.id}) connected`);
+
+        // ── Join a browser session ──
+        socket.on('session:join', async ({ sessionId }: { sessionId: string }) => {
+            try {
+                const instance = browserPool.get(sessionId);
+                if (!instance || instance.status !== 'running') {
+                    socket.emit('session:error', { message: 'Phiên trình duyệt không hoạt động' });
+                    return;
+                }
+
+                const room = `remote:${sessionId}`;
+                socket.join(room);
+
+                // Track viewer
+                await externalSessionRepo.addViewer(sessionId, data.id);
+                await externalSessionRepo.logAudit({
+                    sessionId, workspaceId: data.workspaceId || '', userId: data.id, action: 'viewer_joined',
+                });
+
+                // Broadcast viewer list + control state
+                const session = await externalSessionRepo.findById(sessionId);
+                remoteNs.to(room).emit('viewers:updated', session?.viewers || []);
+                remoteNs.to(room).emit('control:changed', { userId: session?.controlledBy?.toString() || null });
+                socket.emit('session:status', { status: session?.status });
+
+                // Start screencast — send base64 data URL instead of raw Buffer
+                activeScreencasts.set(socket.id, sessionId);
+                if (!instance.browser.connected) {
+                    socket.emit('session:error', { message: 'Trình duyệt đã mất kết nối' });
+                    return;
+                }
+                startScreencast(instance.cdpSession, (frameBuffer) => {
+                    const base64 = frameBuffer.toString('base64');
+                    socket.emit('session:frame', { image: `data:image/jpeg;base64,${base64}` });
+                });
+
+                // Check login state
+                const loginState = await detectLoginState(instance.page);
+                socket.emit('session:loginState', { state: loginState });
+
+                console.log(`[Remote] ${data.name} joined session ${sessionId}`);
+            } catch (err: any) {
+                socket.emit('session:error', { message: err.message });
+            }
+        });
+
+        // ── Leave session ──
+        socket.on('session:leave', async ({ sessionId }: { sessionId: string }) => {
+            socket.leave(`remote:${sessionId}`);
+            activeScreencasts.delete(socket.id);
+            await externalSessionRepo.removeViewer(sessionId, data.id);
+            const session = await externalSessionRepo.findById(sessionId);
+            remoteNs.to(`remote:${sessionId}`).emit('viewers:updated', session?.viewers || []);
+        });
+
+        // ── Mouse input (control-locked) ──
+        socket.on('input:mouse', async (p: any) => {
+            try {
+                const session = await externalSessionRepo.findById(p.sessionId);
+                if (!session || session.controlledBy?.toString() !== data.id) return;
+                const inst = browserPool.get(p.sessionId);
+                if (!inst) return;
+                await dispatchMouse(inst.cdpSession, p.type, p.x, p.y, p.button || 'left', p.clickCount || 1);
+            } catch { /* silent */ }
+        });
+
+        // ── Keyboard input (control-locked) ──
+        socket.on('input:keyboard', async (p: any) => {
+            try {
+                const session = await externalSessionRepo.findById(p.sessionId);
+                if (!session || session.controlledBy?.toString() !== data.id) return;
+                const inst = browserPool.get(p.sessionId);
+                if (!inst) return;
+                await dispatchKeyboard(inst.cdpSession, p.type, p.key, p.code || '', p.text || '');
+            } catch { /* silent */ }
+        });
+
+        // ── Scroll input (control-locked) ──
+        socket.on('input:scroll', async (p: any) => {
+            try {
+                const session = await externalSessionRepo.findById(p.sessionId);
+                if (!session || session.controlledBy?.toString() !== data.id) return;
+                const inst = browserPool.get(p.sessionId);
+                if (!inst) return;
+                await dispatchScroll(inst.cdpSession, p.x, p.y, p.deltaX, p.deltaY);
+            } catch { /* silent */ }
+        });
+
+        // ── Take control ──
+        socket.on('control:take', async ({ sessionId }: { sessionId: string }) => {
+            try {
+                await externalSessionRepo.setController(sessionId, data.id);
+                await externalSessionRepo.logAudit({
+                    sessionId, workspaceId: data.workspaceId || '', userId: data.id, action: 'control_taken',
+                });
+                remoteNs.to(`remote:${sessionId}`).emit('control:changed', { userId: data.id, name: data.name });
+            } catch (err: any) {
+                socket.emit('session:error', { message: err.message });
+            }
+        });
+
+        // ── Release control ──
+        socket.on('control:release', async ({ sessionId }: { sessionId: string }) => {
+            try {
+                const session = await externalSessionRepo.findById(sessionId);
+                if (session?.controlledBy?.toString() !== data.id) return;
+                await externalSessionRepo.setController(sessionId, null);
+                await externalSessionRepo.logAudit({
+                    sessionId, workspaceId: data.workspaceId || '', userId: data.id, action: 'control_released',
+                });
+                remoteNs.to(`remote:${sessionId}`).emit('control:changed', { userId: null, name: null });
+            } catch { /* silent */ }
+        });
+
+        // ── Manual login check ──
+        socket.on('session:checkLogin', async ({ sessionId }: { sessionId: string }) => {
+            try {
+                const inst = browserPool.get(sessionId);
+                if (!inst) return;
+                const state = await detectLoginState(inst.page);
+                socket.emit('session:loginState', { state });
+                if (state === 'logged_in') {
+                    const session = await externalSessionRepo.findById(sessionId);
+                    if (session && session.status === 'pending_login') {
+                        await externalSessionRepo.updateStatus(sessionId, 'connected', { connectedAt: new Date() });
+                        await externalSessionRepo.logAudit({
+                            sessionId, workspaceId: data.workspaceId || '', userId: data.id, action: 'login_success',
+                        });
+                        remoteNs.to(`remote:${sessionId}`).emit('session:status', { status: 'connected' });
+                        remoteNs.to(`remote:${sessionId}`).emit('session:loginDetected', {});
+                    }
+                }
+            } catch { /* silent */ }
+        });
+
+        // ── Disconnect cleanup ──
+        socket.on('disconnect', async () => {
+            const sessionId = activeScreencasts.get(socket.id);
+            if (sessionId) {
+                activeScreencasts.delete(socket.id);
+                await externalSessionRepo.removeViewer(sessionId, data.id);
+                const session = await externalSessionRepo.findById(sessionId);
+                if (session?.controlledBy?.toString() === data.id) {
+                    await externalSessionRepo.setController(sessionId, null);
+                    remoteNs.to(`remote:${sessionId}`).emit('control:changed', { userId: null, name: null });
+                }
+                const updated = await externalSessionRepo.findById(sessionId);
+                remoteNs.to(`remote:${sessionId}`).emit('viewers:updated', updated?.viewers || []);
+            }
+            console.log(`[Remote] User ${data.name} disconnected`);
+        });
+    });
+
+    // ── Login state polling (auto-detect QR→connected) ──
+    setInterval(async () => {
+        try {
+            for (const inst of browserPool.listActive()) {
+                const session = await externalSessionRepo.findById(inst.sessionId);
+                if (!session || session.status !== 'pending_login') continue;
+                const browserInst = browserPool.get(inst.sessionId);
+                if (!browserInst) continue;
+                const state = await detectLoginState(browserInst.page);
+                if (state === 'logged_in') {
+                    await externalSessionRepo.updateStatus(inst.sessionId, 'connected', { connectedAt: new Date() });
+                    remoteNs.to(`remote:${inst.sessionId}`).emit('session:status', { status: 'connected' });
+                    remoteNs.to(`remote:${inst.sessionId}`).emit('session:loginDetected', {});
+                    console.log(`[Remote] Auto-detected login for session ${inst.sessionId}`);
+                }
+            }
+        } catch { /* silent */ }
+    }, 5000);
 
     return io;
 }
