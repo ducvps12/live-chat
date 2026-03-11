@@ -7,7 +7,7 @@ import { messageRepo } from '../modules/conversation/repos/message.repo';
 import { conversationRepo } from '../modules/conversation/repos/conversation.repo';
 import { presenceStore } from './presence';
 import { browserPool } from './browserPool';
-import { startScreencast, stopScreencast, dispatchMouse, dispatchKeyboard, dispatchScroll, detectLoginState } from './sessionStream';
+import { startScreencast, stopScreencast, dispatchMouse, dispatchKeyboard, dispatchScroll, detectLoginState, scrapeZaloConversations, scrapeZaloMessages } from './sessionStream';
 import { externalSessionRepo } from '../modules/external-session/repos/externalSession.repo';
 
 let io: Server;
@@ -565,6 +565,72 @@ export function initSocketGateway(server: http.Server): Server {
                     }
                 }
             } catch { /* silent */ }
+        });
+
+        // ── Scrape Zalo conversations ──
+        socket.on('zalo:getConversations', async ({ sessionId }: { sessionId: string }) => {
+            try {
+                const inst = browserPool.get(sessionId);
+                if (!inst || inst.status !== 'running') {
+                    socket.emit('zalo:conversations', { conversations: [], error: 'Browser not running' });
+                    return;
+                }
+                const conversations = await scrapeZaloConversations(inst.page);
+                console.log(`[ZaloScrape] Found ${conversations.length} conversations for session ${sessionId}`);
+                socket.emit('zalo:conversations', { conversations });
+            } catch (err: any) {
+                socket.emit('zalo:conversations', { conversations: [], error: err.message });
+            }
+        });
+
+        // ── Scrape Zalo messages for a conversation ──
+        socket.on('zalo:getMessages', async ({ sessionId, convIndex }: { sessionId: string; convIndex: number }) => {
+            try {
+                const inst = browserPool.get(sessionId);
+                if (!inst || inst.status !== 'running') {
+                    socket.emit('zalo:messages', { messages: [], error: 'Browser not running' });
+                    return;
+                }
+                const messages = await scrapeZaloMessages(inst.page, convIndex);
+                console.log(`[ZaloScrape] Found ${messages.length} messages for conv ${convIndex}`);
+                socket.emit('zalo:messages', { messages });
+            } catch (err: any) {
+                socket.emit('zalo:messages', { messages: [], error: err.message });
+            }
+        });
+
+        // ── Debug: dump Zalo DOM structure ──
+        socket.on('zalo:debugDOM', async ({ sessionId }: { sessionId: string }) => {
+            try {
+                const inst = browserPool.get(sessionId);
+                if (!inst || inst.status !== 'running') {
+                    socket.emit('zalo:domDump', { error: 'Browser not running' });
+                    return;
+                }
+                const dump = await inst.page.evaluate(() => {
+                    const body = document.body;
+                    // Get all div elements with their classes (first 3 levels deep)
+                    const getStructure = (el: Element, depth: number): any => {
+                        if (depth > 4) return null;
+                        const children = Array.from(el.children).slice(0, 20).map(c => getStructure(c, depth + 1)).filter(Boolean);
+                        const text = el.childNodes.length === 1 && el.childNodes[0].nodeType === 3
+                            ? (el.textContent?.trim().substring(0, 50) || '') : '';
+                        return {
+                            tag: el.tagName.toLowerCase(),
+                            cls: el.className?.toString().substring(0, 100) || '',
+                            id: el.id || '',
+                            text: text,
+                            childCount: el.children.length,
+                            children: children.length > 0 ? children : undefined,
+                        };
+                    };
+                    return getStructure(body, 0);
+                });
+                console.log('[ZaloDebug] DOM dump:', JSON.stringify(dump, null, 2).substring(0, 5000));
+                socket.emit('zalo:domDump', { dump });
+            } catch (err: any) {
+                socket.emit('zalo:domDump', { error: err.message });
+            }
         });
 
         // ── Disconnect cleanup ──

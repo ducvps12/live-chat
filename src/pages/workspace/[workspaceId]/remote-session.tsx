@@ -170,6 +170,48 @@ export default function ZaloPersonalPage() {
             setQrLoading(false);
             if (checkLoginRef.current) clearInterval(checkLoginRef.current);
             fetchAccounts();
+            // Auto-fetch conversations after login
+            if (selectedAccountId) {
+                socket.emit('zalo:getConversations', { sessionId: selectedAccountId });
+            }
+        });
+
+        // Listen for scraped Zalo conversations
+        socket.on('zalo:conversations', (data: { conversations: any[]; error?: string }) => {
+            if (data.error) {
+                console.warn('[Zalo] Conversation scrape error:', data.error);
+                return;
+            }
+            const mapped: ZaloConversation[] = data.conversations.map((c: any) => ({
+                _id: c.id,
+                contactName: c.contactName,
+                lastMessage: c.lastMessage,
+                lastMessageAt: c.lastMessageAt,
+                unreadCount: c.unreadCount || 0,
+                status: 'open',
+                tags: [],
+                assignedTo: null,
+                contactAvatar: c.avatarUrl,
+            }));
+            setConversations(mapped);
+        });
+
+        // Listen for scraped Zalo messages
+        socket.on('zalo:messages', (data: { messages: any[]; error?: string }) => {
+            if (data.error) {
+                console.warn('[Zalo] Message scrape error:', data.error);
+                return;
+            }
+            const mapped: ZaloMessage[] = data.messages.map((m: any) => ({
+                _id: m.id,
+                conversationId: 'active',
+                sender: { type: m.senderType === 'me' ? 'agent' as const : 'customer' as const, name: m.senderName },
+                content: m.content,
+                type: m.type || 'text',
+                status: 'read' as const,
+                createdAt: m.createdAt,
+            }));
+            setMessages(mapped);
         });
 
         // Listen for QR frame from backend (sent as { image: dataUrl })
@@ -230,9 +272,9 @@ export default function ZaloPersonalPage() {
             return;
         }
         const account = accounts.find(a => a._id === selectedAccountId);
-        if (account?.status === 'connected') {
-            // TODO: Replace with real API when backend supports Zalo conversations
-            setConversations(DEMO_CONVERSATIONS);
+        if (account?.status === 'connected' && socketRef.current) {
+            // Scrape real Zalo conversations from Puppeteer browser
+            socketRef.current.emit('zalo:getConversations', { sessionId: selectedAccountId });
         } else {
             setConversations([]);
         }
@@ -245,8 +287,11 @@ export default function ZaloPersonalPage() {
             setMessages([]);
             return;
         }
-        // TODO: Replace with real API
-        setMessages(DEMO_MESSAGES.filter(m => m.conversationId === selectedConvId));
+        // Find the index of this conversation in the list and scrape messages
+        const convIndex = conversations.findIndex(c => c._id === selectedConvId);
+        if (convIndex >= 0 && selectedAccountId && socketRef.current) {
+            socketRef.current.emit('zalo:getMessages', { sessionId: selectedAccountId, convIndex });
+        }
     }, [selectedConvId]);
 
     // ── Auto-scroll ──
@@ -711,60 +756,24 @@ export default function ZaloPersonalPage() {
                                     {selectedAccount.status === 'pending_login' && (
                                         <>
                                             {showQr ? (
-                                                /* QR code display */
-                                                <div style={{ width: '100%', marginBottom: 16 }}>
-                                                    {qrLoading && !qrFrameUrl ? (
-                                                        <div style={{ padding: 40, textAlign: 'center' as const }}>
-                                                            <Spin size="large" />
-                                                            <div style={{ marginTop: 12, color: '#888', fontSize: 13 }}>
-                                                                Đang tải mã QR...
-                                                            </div>
-                                                        </div>
-                                                    ) : qrFrameUrl ? (
-                                                        <div style={{ textAlign: 'center' as const }}>
-                                                            <div style={{
-                                                                border: '2px solid #e5e7eb',
-                                                                borderRadius: 12,
-                                                                overflow: 'hidden',
-                                                                display: 'inline-block',
-                                                                maxWidth: 300,
-                                                            }}>
-                                                                <img
-                                                                    src={qrFrameUrl}
-                                                                    alt="Zalo QR Code"
-                                                                    style={{ width: '100%', display: 'block' }}
-                                                                />
-                                                            </div>
-                                                            <div style={{ fontSize: 12, color: '#888', marginTop: 8 }}>
-                                                                Quét mã QR bằng ứng dụng Zalo
-                                                            </div>
-                                                        </div>
-                                                    ) : (
-                                                        <div style={{ padding: 40, textAlign: 'center' as const, color: '#999', fontSize: 13 }}>
-                                                            Không nhận được hình ảnh QR. Thử lại.
-                                                        </div>
-                                                    )}
-                                                    <Button
-                                                        type="default"
-                                                        onClick={handleCloseQr}
-                                                        style={{ marginTop: 12, borderRadius: 8 }}
-                                                        block
-                                                    >
-                                                        Đóng
-                                                    </Button>
-                                                </div>
+                                                /* QR button in loading/active state */
+                                                <Button
+                                                    type="default"
+                                                    onClick={handleCloseQr}
+                                                    style={{ borderRadius: 8, marginBottom: 16 }}
+                                                    block
+                                                >
+                                                    Đóng mã QR
+                                                </Button>
                                             ) : (
                                                 /* Show QR button */
                                                 <Button
                                                     type="primary"
                                                     icon={<QrcodeOutlined />}
+                                                    onClick={() => selectedAccountId && handleShowQr(selectedAccountId)}
                                                     size="large"
-                                                    onClick={() => handleShowQr(selectedAccount._id)}
-                                                    style={{
-                                                        background: '#0068ff', borderColor: '#0068ff',
-                                                        borderRadius: 10, padding: '6px 24px', height: 42,
-                                                        fontWeight: 600, marginBottom: 16,
-                                                    }}
+                                                    style={{ borderRadius: 8, fontWeight: 600, height: 48, fontSize: 15, marginBottom: 16 }}
+                                                    block
                                                 >
                                                     Hiển thị mã QR
                                                 </Button>
@@ -1013,6 +1022,59 @@ export default function ZaloPersonalPage() {
                         style={{ borderRadius: 8 }}
                     />
                 </div>
+            </Modal>
+
+            {/* ═══ QR Code Popup Modal ═══ */}
+            <Modal
+                title={null}
+                open={showQr}
+                footer={null}
+                onCancel={handleCloseQr}
+                centered
+                width={680}
+                styles={{
+                    body: { padding: '32px 24px', textAlign: 'center' as const },
+                }}
+                destroyOnClose
+            >
+                <div style={{ marginBottom: 16 }}>
+                    <QrcodeOutlined style={{ fontSize: 36, color: '#f97316' }} />
+                    <div style={{ fontSize: 20, fontWeight: 700, color: '#222', marginTop: 8 }}>
+                        Quét mã QR để đăng nhập Zalo
+                    </div>
+                    <div style={{ fontSize: 13, color: '#888', marginTop: 4 }}>
+                        Mở ứng dụng Zalo trên điện thoại → Thêm → Quét mã QR
+                    </div>
+                </div>
+
+                {qrLoading && !qrFrameUrl ? (
+                    <div style={{ padding: '60px 0' }}>
+                        <Spin size="large" />
+                        <div style={{ marginTop: 16, color: '#888', fontSize: 14 }}>
+                            Đang khởi động trình duyệt và tải mã QR...
+                        </div>
+                    </div>
+                ) : qrFrameUrl ? (
+                    <div style={{
+                        border: '3px solid #e5e7eb',
+                        borderRadius: 16,
+                        overflow: 'hidden',
+                        display: 'inline-block',
+                        maxWidth: 640,
+                        width: '100%',
+                        boxShadow: '0 4px 24px rgba(0,0,0,0.08)',
+                    }}>
+                        <img
+                            src={qrFrameUrl}
+                            alt="Zalo QR Code"
+                            style={{ width: '100%', display: 'block' }}
+                        />
+                    </div>
+                ) : (
+                    <div style={{ padding: '60px 0', color: '#999', fontSize: 14 }}>
+                        Không nhận được hình ảnh QR. Bấm "Hiển thị mã QR" để thử lại.
+                    </div>
+                )}
             </Modal>
 
             {/* Responsive CSS */}
