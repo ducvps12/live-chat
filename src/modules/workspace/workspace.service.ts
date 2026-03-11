@@ -1,0 +1,198 @@
+import { workspaceRepo } from './repos/workspace.repo';
+import { widgetRepo } from './repos/widget.repo';
+import { offlineMessageRepo } from './repos/offlineMessage.repo';
+import { AppError } from '../../middlewares/errorHandler';
+
+export const workspaceService = {
+    async createWorkspace(name: string, slug: string, ownerId: string) {
+        const existing = await workspaceRepo.findBySlug(slug);
+        if (existing) throw new AppError('Slug đã được sử dụng', 409, 'DUPLICATE_SLUG');
+
+        const workspace = await workspaceRepo.create({
+            name,
+            slug,
+            ownerId: ownerId as any,
+            members: [{ userId: ownerId as any, role: 'owner', joinedAt: new Date() }],
+        });
+
+        return workspace;
+    },
+
+    async getWorkspace(id: string) {
+        const ws = await workspaceRepo.findById(id);
+        if (!ws || !ws.isActive) throw new AppError('Workspace không tồn tại', 404, 'NOT_FOUND');
+        return ws;
+    },
+
+    async getMyWorkspaces(userId: string) {
+        return workspaceRepo.findByMemberUserId(userId);
+    },
+
+    async updateWorkspace(id: string, data: any) {
+        const ws = await workspaceRepo.update(id, data);
+        if (!ws) throw new AppError('Workspace không tồn tại', 404, 'NOT_FOUND');
+        return ws;
+    },
+
+    async addMember(workspaceId: string, userId: string, role: string) {
+        const ws = await workspaceRepo.findById(workspaceId);
+        if (!ws) throw new AppError('Workspace không tồn tại', 404, 'NOT_FOUND');
+
+        const alreadyMember = ws.members.find((m) => m.userId.toString() === userId);
+        if (alreadyMember) throw new AppError('User đã là thành viên', 409, 'ALREADY_MEMBER');
+
+        return workspaceRepo.addMember(workspaceId, { userId, role });
+    },
+
+    async removeMember(workspaceId: string, userId: string) {
+        return workspaceRepo.removeMember(workspaceId, userId);
+    },
+
+    async deleteWorkspace(id: string) {
+        await workspaceRepo.delete(id);
+    },
+
+    async getMembers(workspaceId: string) {
+        return workspaceRepo.getMembers(workspaceId);
+    },
+
+    // ── Tag registry CRUD ──
+
+    async getTags(workspaceId: string) {
+        return workspaceRepo.getTags(workspaceId);
+    },
+
+    async addTag(workspaceId: string, tag: string) {
+        if (!tag || tag.trim().length === 0) throw new AppError('Tag không được rỗng', 400, 'VALIDATION_ERROR');
+        return workspaceRepo.addTag(workspaceId, tag.trim().toLowerCase());
+    },
+
+    async removeTag(workspaceId: string, tag: string) {
+        return workspaceRepo.removeTag(workspaceId, tag);
+    },
+
+    async updateTag(workspaceId: string, oldTag: string, newTag: string) {
+        if (!newTag || newTag.trim().length === 0) throw new AppError('Tag mới không được rỗng', 400, 'VALIDATION_ERROR');
+        return workspaceRepo.updateTag(workspaceId, oldTag, newTag.trim().toLowerCase());
+    },
+};
+
+export const widgetService = {
+    async createWidget(workspaceId: string, data: any) {
+        return widgetRepo.create({ ...data, workspaceId: workspaceId as any });
+    },
+
+    async getWidget(id: string) {
+        const w = await widgetRepo.findById(id);
+        if (!w || !w.isActive) throw new AppError('Widget không tồn tại', 404, 'NOT_FOUND');
+        return w;
+    },
+
+    async getWidgetsByWorkspace(workspaceId: string) {
+        return widgetRepo.findByWorkspace(workspaceId);
+    },
+
+    async updateWidget(id: string, data: any) {
+        const w = await widgetRepo.update(id, data);
+        if (!w) throw new AppError('Widget không tồn tại', 404, 'NOT_FOUND');
+        return w;
+    },
+
+    async deleteWidget(id: string) {
+        await widgetRepo.delete(id);
+    },
+
+    /**
+     * Check if a domain is allowed to load the widget.
+     * Returns true if allowed, false if blocked.
+     */
+    async checkDomain(widgetId: string, origin: string): Promise<boolean> {
+        const widget = await widgetRepo.findById(widgetId);
+        if (!widget || !widget.isActive) return false;
+
+        const { mode, domains } = widget.domainRules;
+        // Normalise: extract hostname from origin
+        let hostname: string;
+        try {
+            hostname = new URL(origin).hostname;
+        } catch {
+            hostname = origin; // fallback if just a hostname string
+        }
+
+        const matches = domains.some((d) => {
+            // Support wildcard: *.example.com
+            if (d.startsWith('*.')) {
+                const suffix = d.slice(2);
+                return hostname === suffix || hostname.endsWith('.' + suffix);
+            }
+            return hostname === d;
+        });
+
+        if (mode === 'allowlist') return matches;
+        if (mode === 'blocklist') return !matches;
+        return true;
+    },
+
+    /**
+     * Public endpoint to load widget config (no auth needed).
+     * Used by the embedded widget script.
+     */
+    async getPublicConfig(widgetId: string) {
+        const widget = await widgetRepo.findById(widgetId);
+        if (!widget || !widget.isActive) throw new AppError('Widget không tồn tại', 404, 'NOT_FOUND');
+
+        // Populate workspace for business hours
+        const workspace = await workspaceRepo.findById(widget.workspaceId.toString());
+        const bh = workspace?.settings?.businessHours;
+        const tz = workspace?.settings?.timezone || 'Asia/Ho_Chi_Minh';
+
+        return {
+            id: widget._id,
+            config: widget.config,
+            domainRules: widget.domainRules,
+            businessHours: {
+                enabled: bh?.enabled || false,
+                timezone: tz,
+                schedule: bh?.schedule || [],
+                holidays: bh?.holidays || [],
+            },
+        };
+    },
+};
+
+export const offlineMessageService = {
+    async createOfflineMessage(widgetId: string, data: { name: string; email: string; message: string; visitorId: string }) {
+        const widget = await widgetRepo.findById(widgetId);
+        if (!widget || !widget.isActive) throw new AppError('Widget không tồn tại', 404, 'NOT_FOUND');
+
+        return offlineMessageRepo.create({
+            widgetId: widget._id as any,
+            workspaceId: widget.workspaceId,
+            visitorId: data.visitorId,
+            name: data.name,
+            email: data.email,
+            message: data.message,
+            status: 'pending',
+        });
+    },
+
+    async getOfflineMessages(workspaceId: string, options?: { status?: string; page?: number; limit?: number }) {
+        return offlineMessageRepo.findByWorkspace(workspaceId, options);
+    },
+
+    async markAsRead(id: string) {
+        const msg = await offlineMessageRepo.updateStatus(id, 'read');
+        if (!msg) throw new AppError('Tin nhắn không tồn tại', 404, 'NOT_FOUND');
+        return msg;
+    },
+
+    async markAsReplied(id: string) {
+        const msg = await offlineMessageRepo.updateStatus(id, 'replied');
+        if (!msg) throw new AppError('Tin nhắn không tồn tại', 404, 'NOT_FOUND');
+        return msg;
+    },
+
+    async countPending(workspaceId: string) {
+        return offlineMessageRepo.countPending(workspaceId);
+    },
+};
