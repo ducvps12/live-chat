@@ -7,8 +7,8 @@ import { messageRepo } from '../modules/conversation/repos/message.repo';
 import { conversationRepo } from '../modules/conversation/repos/conversation.repo';
 import { presenceStore } from './presence';
 import { browserPool } from './browserPool';
-import { startScreencast, stopScreencast, dispatchMouse, dispatchKeyboard, dispatchScroll, detectLoginState, scrapeZaloConversations, scrapeZaloMessages, sendZaloMessage, debugScrapeZalo, startZaloMessageListener, stopZaloMessageListener } from './sessionStream';
-import { createZaloSession, getZaloConversations, getZaloMessages, sendZaloMsg, destroyZaloSession, isZaloSessionConnected } from './zaloService';
+import { startScreencast, stopScreencast, dispatchMouse, dispatchKeyboard, dispatchScroll, detectLoginState } from './sessionStream';
+import { createZaloSession, restoreZaloSession, getZaloConversations, getZaloMessages, sendZaloMsg, destroyZaloSession, isZaloSessionConnected, hasStoredCredentials, logoutZaloSession } from './zaloService';
 import { externalSessionRepo } from '../modules/external-session/repos/externalSession.repo';
 
 let io: Server;
@@ -547,7 +547,7 @@ export function initSocketGateway(server: http.Server): Server {
             } catch { /* silent */ }
         });
 
-        // ── Manual login check ──
+        // ── Manual login check (for non-Zalo sessions only) ──
         socket.on('session:checkLogin', async ({ sessionId }: { sessionId: string }) => {
             try {
                 const inst = browserPool.get(sessionId);
@@ -563,14 +563,6 @@ export function initSocketGateway(server: http.Server): Server {
                         });
                         remoteNs.to(`remote:${sessionId}`).emit('session:status', { status: 'connected' });
                         remoteNs.to(`remote:${sessionId}`).emit('session:loginDetected', {});
-
-                        // ── Start realtime message listener ──
-                        const browserForRT = browserPool.get(sessionId);
-                        if (browserForRT?.page) {
-                            startZaloMessageListener(browserForRT.page, sessionId, (msg) => {
-                                remoteNs.to(`remote:${sessionId}`).emit('zalo:newMessage', msg);
-                            }).catch((err: any) => console.error('[ZaloRT] Hook error:', err.message));
-                        }
                     }
                 }
             } catch { /* silent */ }
@@ -621,98 +613,96 @@ export function initSocketGateway(server: http.Server): Server {
             }
         });
 
-        // ── Get Zalo conversations (zca-js preferred, Puppeteer fallback) ──
+        // ── Restore zca-js session from saved credentials (no QR needed) ──
+        socket.on('zalo:restoreSession', async ({ sessionId }: { sessionId: string }) => {
+            try {
+                console.log(`[ZaloZCA] Attempting session restore for ${sessionId}...`);
+
+                if (isZaloSessionConnected(sessionId)) {
+                    console.log(`[ZaloZCA] Session ${sessionId} already connected`);
+                    socket.emit('zalo:zcaConnected', { sessionId });
+                    return;
+                }
+
+                const restored = await restoreZaloSession(
+                    sessionId,
+                    // onMessage
+                    (msg) => {
+                        remoteNs.to(`remote:${sessionId}`).emit('zalo:newMessage', {
+                            msgId: msg.msgId,
+                            content: msg.content,
+                            senderId: msg.senderId,
+                            senderName: msg.senderName,
+                            conversationId: msg.threadId,
+                            isGroup: msg.threadType === 'group',
+                            isSelf: msg.isSelf,
+                            timestamp: msg.timestamp,
+                            msgType: msg.msgType,
+                            threadType: msg.threadType,
+                        });
+                    },
+                    // onError
+                    (error) => {
+                        socket.emit('zalo:zcaError', { sessionId, error });
+                    },
+                );
+
+                if (restored) {
+                    await externalSessionRepo.updateStatus(sessionId, 'connected', { connectedAt: new Date() });
+                    socket.emit('session:status', { status: 'connected' });
+                    socket.emit('zalo:zcaConnected', { sessionId });
+                    console.log(`[ZaloZCA] Session ${sessionId} restored successfully!`);
+                } else {
+                    socket.emit('zalo:zcaError', { sessionId, error: 'Không có session đã lưu — vui lòng quét QR' });
+                }
+            } catch (err: any) {
+                console.error(`[ZaloZCA] restoreSession error:`, err);
+                socket.emit('zalo:zcaError', { sessionId, error: err.message });
+            }
+        });
+
+        // ── Get Zalo conversations (pure zca-js) ──
         socket.on('zalo:getConversations', async ({ sessionId }: { sessionId: string }) => {
             try {
-                // Try zca-js first
-                if (isZaloSessionConnected(sessionId)) {
-                    console.log(`[Zalo] Getting conversations via zca-js for ${sessionId}...`);
-                    const conversations = await getZaloConversations(sessionId);
-                    console.log(`[Zalo] zca-js returned ${conversations.length} conversations`);
-
-                    // Map to frontend format
-                    const mapped = conversations.map((c, i) => ({
-                        _id: `zca_${c.threadId}`,
-                        contactName: c.displayName,
-                        avatar: c.avatar || '',
-                        lastMsg: c.lastMessage || '',
-                        lastMsgTime: c.lastMessageAt || '',
-                        threadId: c.threadId,
-                        threadType: c.threadType,
-                    }));
-
-                    socket.emit('zalo:conversations', { conversations: mapped });
+                if (!isZaloSessionConnected(sessionId)) {
+                    socket.emit('zalo:conversations', { conversations: [], error: 'Zalo chưa kết nối — vui lòng quét QR hoặc đợi restore session' });
                     return;
                 }
 
-                // Fallback to Puppeteer scraping
-                const inst = browserPool.get(sessionId);
-                if (!inst || inst.status !== 'running') {
-                    console.warn(`[Zalo] getConversations: browser not running for ${sessionId}`);
-                    socket.emit('zalo:conversations', { conversations: [], error: 'Trình duyệt chưa chạy' });
-                    return;
-                }
-                if (!inst.browser.connected) {
-                    socket.emit('zalo:conversations', { conversations: [], error: 'Trình duyệt bị ngắt kết nối' });
-                    return;
-                }
+                console.log(`[Zalo] Getting conversations via zca-js for ${sessionId}...`);
+                const conversations = await getZaloConversations(sessionId);
+                console.log(`[Zalo] zca-js returned ${conversations.length} conversations`);
 
-                console.log(`[Zalo] Scraping conversations via Puppeteer for session ${sessionId}...`);
-                let conversations = await scrapeZaloConversations(inst.page);
+                const mapped = conversations.map((c) => ({
+                    _id: `zca_${c.threadId}`,
+                    contactName: c.displayName,
+                    avatar: c.avatar || '',
+                    lastMsg: c.lastMessage || '',
+                    lastMsgTime: c.lastMessageAt || '',
+                    threadId: c.threadId,
+                    threadType: c.threadType,
+                }));
 
-                if (conversations.length === 0) {
-                    console.log(`[Zalo] First attempt returned 0, retrying in 3s...`);
-                    await new Promise(r => setTimeout(r, 3000));
-                    conversations = await scrapeZaloConversations(inst.page);
-                }
-
-                if (conversations.length === 0) {
-                    console.log(`[Zalo] Still 0 conversations after retry, capturing debug info...`);
-                    const debugInfo = await debugScrapeZalo(inst.page);
-                    socket.emit('zalo:conversations', {
-                        conversations: [],
-                        error: 'Không tìm thấy hội thoại',
-                        debug: debugInfo.domInfo,
-                        screenshot: debugInfo.screenshot ? `data:image/jpeg;base64,${debugInfo.screenshot}` : null,
-                    });
-                    return;
-                }
-
-                console.log(`[Zalo] Found ${conversations.length} conversations for session ${sessionId}`);
-                socket.emit('zalo:conversations', { conversations });
+                socket.emit('zalo:conversations', { conversations: mapped });
             } catch (err: any) {
                 console.error(`[Zalo] getConversations error:`, err);
                 socket.emit('zalo:conversations', { conversations: [], error: err.message || 'Lỗi không xác định' });
             }
         });
 
-        // ── Get Zalo messages (zca-js preferred, Puppeteer fallback) ──
-        socket.on('zalo:getMessages', async ({ sessionId, contactName, threadId, threadType }: {
+        // ── Get Zalo messages (pure zca-js) ──
+        socket.on('zalo:getMessages', async ({ sessionId, threadId, threadType }: {
             sessionId: string; contactName?: string; threadId?: string; threadType?: 'user' | 'group';
         }) => {
             try {
-                // Try zca-js first
-                if (isZaloSessionConnected(sessionId) && threadId) {
-                    console.log(`[Zalo] Getting messages via zca-js for thread ${threadId}...`);
-                    const messages = await getZaloMessages(sessionId, threadId, threadType || 'user');
-                    console.log(`[Zalo] zca-js returned ${messages.length} messages`);
-                    socket.emit('zalo:messages', { messages });
+                if (!isZaloSessionConnected(sessionId) || !threadId) {
+                    socket.emit('zalo:messages', { messages: [], error: !threadId ? 'Thiếu threadId' : 'Zalo chưa kết nối' });
                     return;
                 }
 
-                // Fallback to Puppeteer scraping
-                const inst = browserPool.get(sessionId);
-                if (!inst || inst.status !== 'running') {
-                    socket.emit('zalo:messages', { messages: [], error: 'Trình duyệt chưa chạy' });
-                    return;
-                }
-                if (!inst.browser.connected) {
-                    socket.emit('zalo:messages', { messages: [], error: 'Trình duyệt bị ngắt kết nối' });
-                    return;
-                }
-
-                console.log(`[Zalo] Scraping messages via Puppeteer for "${contactName}"...`);
-                const messages = await scrapeZaloMessages(inst.page, contactName || '');
+                console.log(`[Zalo] Getting messages via zca-js for thread ${threadId}...`);
+                const messages = await getZaloMessages(sessionId, threadId, threadType || 'user');
+                console.log(`[Zalo] zca-js returned ${messages.length} messages`);
                 socket.emit('zalo:messages', { messages });
             } catch (err: any) {
                 console.error(`[Zalo] getMessages error:`, err);
@@ -720,47 +710,25 @@ export function initSocketGateway(server: http.Server): Server {
             }
         });
 
-        // ── Send message (zca-js preferred, Puppeteer fallback) ──
-        socket.on('zalo:sendMessage', async ({ sessionId, text, contactName, threadId, threadType }: {
+        // ── Send message (pure zca-js) ──
+        socket.on('zalo:sendMessage', async ({ sessionId, text, threadId, threadType }: {
             sessionId: string; text: string; contactName?: string; threadId?: string; threadType?: 'user' | 'group';
         }) => {
             try {
-                // Try zca-js first
-                if (isZaloSessionConnected(sessionId) && threadId) {
-                    console.log(`[Zalo] Sending via zca-js to ${threadType} ${threadId}: "${text.substring(0, 50)}"...`);
-                    const result = await sendZaloMsg(sessionId, threadId, threadType || 'user', text);
-                    socket.emit('zalo:messageSent', result);
-
-                    if (result.success) {
-                        // Re-fetch messages after send
-                        await new Promise(r => setTimeout(r, 500));
-                        const messages = await getZaloMessages(sessionId, threadId, threadType || 'user');
-                        socket.emit('zalo:messages', { messages });
-                    }
+                if (!isZaloSessionConnected(sessionId) || !threadId) {
+                    socket.emit('zalo:messageSent', { success: false, error: !threadId ? 'Thiếu threadId' : 'Zalo chưa kết nối' });
                     return;
                 }
 
-                // Fallback to Puppeteer
-                const inst = browserPool.get(sessionId);
-                if (!inst || inst.status !== 'running') {
-                    socket.emit('zalo:messageSent', { success: false, error: 'Trình duyệt chưa chạy' });
-                    return;
-                }
-                if (!inst.browser.connected) {
-                    socket.emit('zalo:messageSent', { success: false, error: 'Trình duyệt bị ngắt kết nối' });
-                    return;
-                }
+                console.log(`[Zalo] Sending via zca-js to ${threadType} ${threadId}: "${text.substring(0, 50)}"...`);
+                const result = await sendZaloMsg(sessionId, threadId, threadType || 'user', text);
+                socket.emit('zalo:messageSent', result);
 
-                console.log(`[Zalo] Sending via Puppeteer to "${contactName || 'current'}": "${text.substring(0, 50)}"`);
-                const success = await sendZaloMessage(inst.page, text, contactName);
-
-                if (success) {
-                    socket.emit('zalo:messageSent', { success: true });
-                    await new Promise(r => setTimeout(r, 1000));
-                    const messages = await scrapeZaloMessages(inst.page, '');
+                if (result.success) {
+                    // Re-fetch messages after send for updated list
+                    await new Promise(r => setTimeout(r, 300));
+                    const messages = await getZaloMessages(sessionId, threadId, threadType || 'user');
                     socket.emit('zalo:messages', { messages });
-                } else {
-                    socket.emit('zalo:messageSent', { success: false, error: 'Không tìm thấy ô nhập tin nhắn' });
                 }
             } catch (err: any) {
                 console.error(`[Zalo] sendMessage error:`, err);
@@ -768,37 +736,15 @@ export function initSocketGateway(server: http.Server): Server {
             }
         });
 
-        // ── Debug: dump Zalo DOM structure ──
-        socket.on('zalo:debugDOM', async ({ sessionId }: { sessionId: string }) => {
+        // ── Logout Zalo (clear credentials) ──
+        socket.on('zalo:logout', async ({ sessionId }: { sessionId: string }) => {
             try {
-                const inst = browserPool.get(sessionId);
-                if (!inst || inst.status !== 'running') {
-                    socket.emit('zalo:domDump', { error: 'Browser not running' });
-                    return;
-                }
-                const dump = await inst.page.evaluate(() => {
-                    const body = document.body;
-                    // Get all div elements with their classes (first 3 levels deep)
-                    const getStructure = (el: Element, depth: number): any => {
-                        if (depth > 4) return null;
-                        const children = Array.from(el.children).slice(0, 20).map(c => getStructure(c, depth + 1)).filter(Boolean);
-                        const text = el.childNodes.length === 1 && el.childNodes[0].nodeType === 3
-                            ? (el.textContent?.trim().substring(0, 50) || '') : '';
-                        return {
-                            tag: el.tagName.toLowerCase(),
-                            cls: el.className?.toString().substring(0, 100) || '',
-                            id: el.id || '',
-                            text: text,
-                            childCount: el.children.length,
-                            children: children.length > 0 ? children : undefined,
-                        };
-                    };
-                    return getStructure(body, 0);
-                });
-                console.log('[ZaloDebug] DOM dump:', JSON.stringify(dump, null, 2).substring(0, 5000));
-                socket.emit('zalo:domDump', { dump });
+                logoutZaloSession(sessionId);
+                await externalSessionRepo.updateStatus(sessionId, 'disconnected');
+                socket.emit('session:status', { status: 'disconnected' });
+                console.log(`[ZaloZCA] Session ${sessionId} logged out`);
             } catch (err: any) {
-                socket.emit('zalo:domDump', { error: err.message });
+                socket.emit('zalo:zcaError', { sessionId, error: err.message });
             }
         });
 
@@ -819,33 +765,6 @@ export function initSocketGateway(server: http.Server): Server {
             console.log(`[Remote] User ${data.name} disconnected`);
         });
     });
-
-    // ── Login state polling (auto-detect QR→connected) ──
-    setInterval(async () => {
-        try {
-            for (const inst of browserPool.listActive()) {
-                const session = await externalSessionRepo.findById(inst.sessionId);
-                if (!session || session.status !== 'pending_login') continue;
-                const browserInst = browserPool.get(inst.sessionId);
-                if (!browserInst) continue;
-                const state = await detectLoginState(browserInst.page);
-                if (state === 'logged_in') {
-                    await externalSessionRepo.updateStatus(inst.sessionId, 'connected', { connectedAt: new Date() });
-                    remoteNs.to(`remote:${inst.sessionId}`).emit('session:status', { status: 'connected' });
-                    remoteNs.to(`remote:${inst.sessionId}`).emit('session:loginDetected', {});
-                    console.log(`[Remote] Auto-detected login for session ${inst.sessionId}`);
-
-                    // ── Start realtime message listener ──
-                    const browserForRT = browserPool.get(inst.sessionId);
-                    if (browserForRT?.page) {
-                        startZaloMessageListener(browserForRT.page, inst.sessionId, (msg) => {
-                            remoteNs.to(`remote:${inst.sessionId}`).emit('zalo:newMessage', msg);
-                        }).catch((err: any) => console.error('[ZaloRT] Auto-hook error:', err.message));
-                    }
-                }
-            }
-        } catch { /* silent */ }
-    }, 5000);
 
     return io;
 }

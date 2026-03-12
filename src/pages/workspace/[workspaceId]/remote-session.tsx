@@ -136,7 +136,6 @@ export default function ZaloPersonalPage() {
 
     // ── Message loading state ──
     const [loadingMessages, setLoadingMessages] = useState(false);
-    const msgPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
     // ── QR display state ──
     const [qrFrameUrl, setQrFrameUrl] = useState<string | null>(null);
@@ -180,15 +179,6 @@ export default function ZaloPersonalPage() {
             setQrLoading(false);
             if (checkLoginRef.current) clearInterval(checkLoginRef.current);
             fetchAccounts();
-            // Auto-fetch conversations after login (with delay to let Zalo load)
-            if (selectedAccountId) {
-                setScanningConvs(true);
-                setTimeout(() => {
-                    socket.emit('zalo:getConversations', { sessionId: selectedAccountId });
-                }, 3000);
-                // Also try to start zca-js native session for better messaging
-                socket.emit('zalo:connectZCA', { sessionId: selectedAccountId });
-            }
         });
 
         // Listen for scraped Zalo conversations
@@ -301,9 +291,14 @@ export default function ZaloPersonalPage() {
         // ── zca-js events (native Zalo API) ──
         socket.on('zalo:zcaConnected', ({ sessionId: sid }: { sessionId: string }) => {
             console.log(`[ZaloZCA] Session ${sid} connected via zca-js!`);
-            message.success('Đã kết nối Zalo qua zca-js (Native API)!');
-            fetchAccounts();
-            // Auto-fetch conversations
+            message.success('Đã kết nối Zalo qua zca-js!');
+            // Don't call fetchAccounts() here — it triggers accounts state change
+            // which re-runs the auto-restore effect and causes infinite loop.
+            // Conversations are fetched below instead.
+            setShowQr(false);
+            setQrFrameUrl(null);
+            setQrLoading(false);
+            setScanningConvs(true);
             setTimeout(() => {
                 socket.emit('zalo:getConversations', { sessionId: sid });
             }, 1000);
@@ -311,7 +306,10 @@ export default function ZaloPersonalPage() {
 
         socket.on('zalo:zcaError', ({ sessionId: sid, error }: { sessionId: string; error: string }) => {
             console.error(`[ZaloZCA] Error for session ${sid}:`, error);
-            message.error('Lỗi kết nối zca-js: ' + error);
+            // Don't show toast for expected restore failures (user will see QR instead)
+            if (!error.includes('session đã lưu') && !error.includes('quét QR')) {
+                message.error('Lỗi kết nối zca-js: ' + error);
+            }
         });
 
         socket.on('zalo:qrCode', ({ qrDataUrl }: { sessionId: string; qrDataUrl: string }) => {
@@ -322,45 +320,14 @@ export default function ZaloPersonalPage() {
             setShowQr(true);
         });
 
-        // Listen for QR frame from backend (sent as { image: dataUrl })
-        socket.on('session:frame', (frameData: any) => {
-            try {
-                let dataUrl: string | null = null;
-                if (frameData?.image && typeof frameData.image === 'string') {
-                    // New format: { image: "data:image/jpeg;base64,..." }
-                    dataUrl = frameData.image;
-                } else if (typeof frameData === 'string') {
-                    dataUrl = frameData.startsWith('data:') ? frameData : `data:image/jpeg;base64,${frameData}`;
-                } else if (frameData instanceof ArrayBuffer || frameData instanceof Uint8Array) {
-                    // Legacy: raw buffer fallback
-                    const bytes = new Uint8Array(frameData instanceof ArrayBuffer ? frameData : frameData.buffer);
-                    let binary = '';
-                    const chunkSize = 8192;
-                    for (let i = 0; i < bytes.length; i += chunkSize) {
-                        binary += String.fromCharCode.apply(null, Array.from(bytes.slice(i, i + chunkSize)));
-                    }
-                    dataUrl = `data:image/jpeg;base64,${btoa(binary)}`;
-                }
-                if (dataUrl) {
-                    setQrFrameUrl(dataUrl);
-                    setQrLoading(false);
-                    // Stop retries once we get a frame
-                    if ((handleShowQr as any)?._cleanup) {
-                        (handleShowQr as any)._cleanup();
-                        (handleShowQr as any)._cleanup = null;
-                    }
-                }
-            } catch (e) {
-                console.warn('[QR] Failed to process frame:', e);
-            }
-        });
+        // Listen for QR code from zca-js (direct image, no browser screencast needed)
+        // (already handled by zalo:qrCode listener above)
 
         return () => {
             socket.disconnect();
             socketRef.current = null;
             if (checkLoginRef.current) clearInterval(checkLoginRef.current);
             if (scanIntervalRef.current) clearInterval(scanIntervalRef.current);
-            if (msgPollRef.current) clearInterval(msgPollRef.current);
         };
     }, [token, workspaceId, fetchAccounts]);
 
@@ -392,14 +359,16 @@ export default function ZaloPersonalPage() {
         }
         const account = accounts.find(a => a._id === selectedAccountId);
         if (account?.status === 'connected' && socketRef.current) {
-            // Auto-scan on account selection
+            // Auto-restore zca-js session (only once per account selection)
+            socketRef.current.emit('zalo:restoreSession', { sessionId: selectedAccountId });
             setScanningConvs(true);
             socketRef.current.emit('zalo:getConversations', { sessionId: selectedAccountId });
         } else {
             setConversations([]);
         }
         setSelectedConvId(null);
-    }, [selectedAccountId, accounts]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [selectedAccountId]); // Only run when selectedAccountId changes, NOT on accounts change
 
     // ── Auto-poll conversations every 30s when account is connected ──
     useEffect(() => {
@@ -484,7 +453,7 @@ export default function ZaloPersonalPage() {
         } catch (err: any) { message.error(err.response?.data?.message || 'Kết nối lại thất bại'); }
     };
 
-    // ── Show QR: try join first (fast), reconnect only if browser not alive ──
+    // ── Show QR: start zca-js QR login (pure native, no Puppeteer) ──
     const handleShowQr = async (accountId: string) => {
         const socket = socketRef.current;
         if (!socket) return;
@@ -493,49 +462,9 @@ export default function ZaloPersonalPage() {
         setShowQr(true);
         setQrFrameUrl(null);
 
-        let attempts = 0;
-        const maxAttempts = 3;
-        let stopped = false;
-
-        // Handle error → reconnect browser then retry join
-        const errorHandler = async (err: { message: string }) => {
-            if (stopped) return;
-            attempts++;
-            if (attempts <= maxAttempts) {
-                console.log(`[QR] Browser not ready (${err.message}). Reconnecting... (${attempts}/${maxAttempts})`);
-                try {
-                    await httpClient.post(`/external-sessions/${workspaceId}/sessions/${accountId}/reconnect`);
-                    console.log(`[QR] Reconnect OK, joining in 1s...`);
-                } catch (e: any) {
-                    console.warn(`[QR] Reconnect failed: ${e.message}`);
-                }
-                await new Promise(r => setTimeout(r, 1000));
-                if (!stopped) {
-                    socket.emit('session:join', { sessionId: accountId });
-                }
-            } else {
-                setQrLoading(false);
-                message.error('Không thể khởi động trình duyệt. Vui lòng thử lại sau.');
-            }
-        };
-        socket.on('session:error', errorHandler);
-
-        // Cleanup function
-        const cleanup = () => {
-            stopped = true;
-            socket.off('session:error', errorHandler);
-        };
-        (handleShowQr as any)._cleanup = cleanup;
-
-        // Fast path: try join immediately (works if browser already running)
-        console.log(`[QR] Trying fast join...`);
-        socket.emit('session:join', { sessionId: accountId });
-
-        // Start login detection polling
-        if (checkLoginRef.current) clearInterval(checkLoginRef.current);
-        checkLoginRef.current = setInterval(() => {
-            socket.emit('session:checkLogin', { sessionId: accountId });
-        }, 3000);
+        // Start zca-js QR login directly
+        console.log('[QR] Starting zca-js QR login...');
+        socket.emit('zalo:connectZCA', { sessionId: accountId });
     };
 
     const handleCloseQr = () => {
@@ -548,10 +477,6 @@ export default function ZaloPersonalPage() {
         setQrFrameUrl(null);
         setQrLoading(false);
         if (checkLoginRef.current) { clearInterval(checkLoginRef.current); checkLoginRef.current = null; }
-        // Leave the session
-        if (socketRef.current && selectedAccountId) {
-            socketRef.current.emit('session:leave', { sessionId: selectedAccountId });
-        }
     };
 
     const revokeAccount = async (accountId: string) => {

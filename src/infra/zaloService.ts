@@ -1,32 +1,43 @@
 /**
- * ZaloPersonalService — Native Zalo API integration using zca-js.
- * Based on patterns from OpenClaw's @openclaw/zalouser plugin.
+ * ZaloPersonalService — Pure zca-js integration (No Puppeteer).
+ * Based on OpenClaw's @openclaw/zalouser plugin patterns.
  *
- * Key design:
- *  - QR Login via loginQR callback
- *  - Realtime message listener with watchdog (~1-2s latency)
- *  - In-memory message cache for DM history (zca-js has no getUserChatHistory)
- *  - getGroupChatHistory for group message history
- *  - getAllFriends returns User[] directly (not {data: []})
- *  - getAllGroups returns {gridVerMap} which needs getGroupInfo for details
+ * Architecture:
+ *  - QR Login: zalo.loginQR → QR image sent to frontend → credentials saved
+ *  - Session Restore: zalo.login(savedCredentials) — instant reconnect, no QR
+ *  - Realtime Listener: api.listener.on('message') with watchdog timer
+ *  - Message Cache: in-memory cache for DM history (no getUserChatHistory API)
+ *  - Group History: getGroupChatHistory(groupId, count)
+ *  - Conversations: getAllFriends() + getAllGroups() + getGroupInfo()
  *
  * IMPORTANT: Only 1 web listener per Zalo account at a time.
  */
 import { Zalo, ThreadType } from 'zca-js';
 import { LoginQRCallbackEventType } from 'zca-js';
 import type { LoginQRCallbackEvent } from 'zca-js';
+import fs from 'fs';
+import path from 'path';
 
-// ── Constants (from OpenClaw patterns) ──
+// ── Constants ──
 const LISTENER_WATCHDOG_INTERVAL_MS = 30_000;
 const LISTENER_WATCHDOG_MAX_GAP_MS = 35_000;
 const MESSAGE_CACHE_MAX_PER_THREAD = 100;
 const GROUP_INFO_CHUNK_SIZE = 80;
+const CREDENTIALS_DIR = path.resolve(process.cwd(), 'data', 'zalo-sessions');
 
 // ── Types ──
+export interface StoredCredentials {
+    imei: string;
+    cookie: any;
+    userAgent: string;
+    language?: string;
+    createdAt: string;
+    lastUsedAt: string;
+}
+
 export interface ZaloSession {
     sessionId: string;
-    zalo: InstanceType<typeof Zalo>;
-    api: any; // zca-js API instance (returned from loginQR)
+    api: any;
     status: 'qr_pending' | 'connected' | 'disconnected' | 'error';
     listenerStarted: boolean;
     onMessage?: (msg: ZaloIncomingMessage) => void;
@@ -60,8 +71,68 @@ export interface ZaloConversationItem {
 
 // ── Stores ──
 const sessions = new Map<string, ZaloSession>();
-// In-memory message cache per thread (since zca-js has no DM history API)
 const messageCache = new Map<string, ZaloIncomingMessage[]>();
+
+// ========================
+// CREDENTIAL PERSISTENCE
+// ========================
+
+function ensureCredentialsDir(): void {
+    if (!fs.existsSync(CREDENTIALS_DIR)) {
+        fs.mkdirSync(CREDENTIALS_DIR, { recursive: true });
+    }
+}
+
+function credentialsPath(sessionId: string): string {
+    return path.join(CREDENTIALS_DIR, `${sessionId}.json`);
+}
+
+function writeCredentials(sessionId: string, creds: Omit<StoredCredentials, 'createdAt' | 'lastUsedAt'>): void {
+    ensureCredentialsDir();
+    const stored: StoredCredentials = {
+        ...creds,
+        createdAt: new Date().toISOString(),
+        lastUsedAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(credentialsPath(sessionId), JSON.stringify(stored, null, 2), 'utf-8');
+    console.log(`[ZaloService] Credentials saved for session ${sessionId}`);
+}
+
+function readCredentials(sessionId: string): StoredCredentials | null {
+    const filePath = credentialsPath(sessionId);
+    if (!fs.existsSync(filePath)) return null;
+    try {
+        const raw = fs.readFileSync(filePath, 'utf-8');
+        return JSON.parse(raw) as StoredCredentials;
+    } catch {
+        return null;
+    }
+}
+
+function updateLastUsed(sessionId: string): void {
+    const creds = readCredentials(sessionId);
+    if (!creds) return;
+    creds.lastUsedAt = new Date().toISOString();
+    try {
+        fs.writeFileSync(credentialsPath(sessionId), JSON.stringify(creds, null, 2), 'utf-8');
+    } catch { /* silent */ }
+}
+
+function clearCredentials(sessionId: string): void {
+    const filePath = credentialsPath(sessionId);
+    if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+        console.log(`[ZaloService] Credentials cleared for session ${sessionId}`);
+    }
+}
+
+export function hasStoredCredentials(sessionId: string): boolean {
+    return readCredentials(sessionId) !== null;
+}
+
+// ========================
+// MESSAGE CACHE
+// ========================
 
 function cacheMessage(sessionId: string, msg: ZaloIncomingMessage): void {
     const key = `${sessionId}:${msg.threadId}`;
@@ -70,10 +141,8 @@ function cacheMessage(sessionId: string, msg: ZaloIncomingMessage): void {
         list = [];
         messageCache.set(key, list);
     }
-    // Avoid duplicates
     if (list.some(m => m.msgId === msg.msgId)) return;
     list.push(msg);
-    // Trim to max
     if (list.length > MESSAGE_CACHE_MAX_PER_THREAD) {
         list.splice(0, list.length - MESSAGE_CACHE_MAX_PER_THREAD);
     }
@@ -82,6 +151,10 @@ function cacheMessage(sessionId: string, msg: ZaloIncomingMessage): void {
 function getCachedMessages(sessionId: string, threadId: string): ZaloIncomingMessage[] {
     return messageCache.get(`${sessionId}:${threadId}`) || [];
 }
+
+// ========================
+// HELPERS
+// ========================
 
 function normalizeMessageContent(content: unknown): string {
     if (typeof content === 'string') return content;
@@ -94,9 +167,19 @@ function normalizeMessageContent(content: unknown): string {
     return combined || '[Media/Sticker]';
 }
 
-/**
- * Create a new Zalo session and start QR login.
- */
+function resolveTimestamp(ts: unknown): number {
+    if (typeof ts === 'number' && Number.isFinite(ts)) {
+        return ts > 1_000_000_000_000 ? ts : ts * 1000;
+    }
+    const parsed = parseInt(String(ts || ''), 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) return Date.now();
+    return parsed > 1_000_000_000_000 ? parsed : parsed * 1000;
+}
+
+// ========================
+// QR LOGIN (new session)
+// ========================
+
 export async function createZaloSession(
     sessionId: string,
     onQR: (qrDataUrl: string) => void,
@@ -109,13 +192,12 @@ export async function createZaloSession(
             await destroyZaloSession(sessionId);
         }
 
-        console.log(`[ZaloService] Creating session ${sessionId}...`);
+        console.log(`[ZaloService] Creating QR login session ${sessionId}...`);
 
-        const zalo = new Zalo();
+        const zalo = new Zalo({ logging: false, selfListen: false });
 
         const session: ZaloSession = {
             sessionId,
-            zalo,
             api: null,
             status: 'qr_pending',
             listenerStarted: false,
@@ -126,29 +208,48 @@ export async function createZaloSession(
 
         sessions.set(sessionId, session);
 
-        // Login via QR with callback for QR events
-        const api = await zalo.loginQR({}, (event: LoginQRCallbackEvent) => {
+        // Capture credentials from GotLoginInfo event (OpenClaw pattern)
+        let capturedCredentials: Omit<StoredCredentials, 'createdAt' | 'lastUsedAt'> | null = null;
+
+        const api = await zalo.loginQR(undefined, (event: LoginQRCallbackEvent) => {
             try {
-                if (event.type === LoginQRCallbackEventType.QRCodeGenerated) {
-                    console.log(`[ZaloService] QR code generated for session ${sessionId}`);
-                    if (event.data?.image) {
-                        // Ensure proper data URL format (OpenClaw pattern)
-                        const image = (event.data.image as string).replace(/^data:image\/png;base64,/, '');
-                        const qrDataUrl = image.startsWith('data:image')
-                            ? image
-                            : `data:image/png;base64,${image}`;
-                        onQR(qrDataUrl);
+                switch (event.type) {
+                    case LoginQRCallbackEventType.QRCodeGenerated: {
+                        console.log(`[ZaloService] QR code generated for session ${sessionId}`);
+                        const rawImage = (event.data as any)?.image;
+                        if (rawImage) {
+                            const image = String(rawImage).replace(/^data:image\/png;base64,/, '');
+                            const qrDataUrl = image.startsWith('data:image')
+                                ? image
+                                : `data:image/png;base64,${image}`;
+                            onQR(qrDataUrl);
+                        }
+                        break;
                     }
-                } else if (event.type === LoginQRCallbackEventType.QRCodeScanned) {
-                    console.log(`[ZaloService] QR scanned by ${(event.data as any)?.display_name || 'user'}`);
-                } else if (event.type === LoginQRCallbackEventType.QRCodeExpired) {
-                    console.log(`[ZaloService] QR expired, retrying...`);
-                    try { (event as any).actions?.retry?.(); } catch { /* ignore */ }
-                } else if (event.type === LoginQRCallbackEventType.QRCodeDeclined) {
-                    console.log(`[ZaloService] QR login declined`);
+                    case LoginQRCallbackEventType.QRCodeExpired: {
+                        console.log(`[ZaloService] QR expired, auto-retrying...`);
+                        try { (event as any).actions?.retry?.(); } catch { /* ignore */ }
+                        break;
+                    }
+                    case LoginQRCallbackEventType.QRCodeDeclined: {
+                        console.log(`[ZaloService] QR login declined`);
+                        break;
+                    }
+                    case LoginQRCallbackEventType.GotLoginInfo: {
+                        // Capture credentials for persistence (OpenClaw pattern)
+                        const data = event.data as any;
+                        capturedCredentials = {
+                            imei: data.imei,
+                            cookie: data.cookie,
+                            userAgent: data.userAgent,
+                        };
+                        console.log(`[ZaloService] Captured login credentials for ${sessionId}`);
+                        break;
+                    }
+                    default:
+                        break;
                 }
-                // GotLoginInfo (type=4) is handled internally by zca-js loginQR
-            } catch (err: any) {
+            } catch (err) {
                 console.error(`[ZaloService] QR callback error:`, err);
             }
         });
@@ -157,30 +258,118 @@ export async function createZaloSession(
             throw new Error('Login failed — no API returned');
         }
 
+        // Fallback: get credentials from API context if not captured from event
+        if (!capturedCredentials) {
+            try {
+                const ctx = api.getContext();
+                const cookieJar = api.getCookie();
+                const cookieJson = cookieJar?.toJSON?.();
+                capturedCredentials = {
+                    imei: ctx.imei,
+                    cookie: cookieJson?.cookies ?? [],
+                    userAgent: ctx.userAgent,
+                    language: ctx.language,
+                };
+                console.log(`[ZaloService] Captured credentials from API context for ${sessionId}`);
+            } catch (err) {
+                console.warn(`[ZaloService] Could not extract credentials from context:`, err);
+            }
+        }
+
+        // Save credentials for future session restore
+        if (capturedCredentials) {
+            writeCredentials(sessionId, capturedCredentials);
+        }
+
         // Login succeeded
         session.api = api;
         session.status = 'connected';
         session.connectedAt = new Date();
-        console.log(`[ZaloService] Session ${sessionId} connected!`);
+        console.log(`[ZaloService] Session ${sessionId} connected via QR login!`);
 
-        // Start message listener with watchdog
         startMessageListener(sessionId);
-
         onLogin(session);
 
     } catch (err: any) {
-        console.error(`[ZaloService] Session ${sessionId} creation failed:`, err);
+        console.error(`[ZaloService] Session ${sessionId} QR login failed:`, err);
         const session = sessions.get(sessionId);
-        if (session) {
-            session.status = 'error';
-        }
+        if (session) session.status = 'error';
         onError(err.message || 'Lỗi đăng nhập Zalo');
     }
 }
 
-/**
- * Start the realtime message listener with watchdog timer (OpenClaw pattern).
- */
+// ========================
+// SESSION RESTORE (no QR)
+// ========================
+
+export async function restoreZaloSession(
+    sessionId: string,
+    onMessage: (msg: ZaloIncomingMessage) => void,
+    onError: (error: string) => void,
+): Promise<boolean> {
+    const creds = readCredentials(sessionId);
+    if (!creds) {
+        console.log(`[ZaloService] No stored credentials for session ${sessionId}`);
+        return false;
+    }
+
+    // Already connected?
+    if (isZaloSessionConnected(sessionId)) {
+        console.log(`[ZaloService] Session ${sessionId} already connected`);
+        return true;
+    }
+
+    // Destroy any stale session
+    if (sessions.has(sessionId)) {
+        await destroyZaloSession(sessionId);
+    }
+
+    try {
+        console.log(`[ZaloService] Restoring session ${sessionId} from saved credentials...`);
+
+        const zalo = new Zalo({ logging: false, selfListen: false });
+        const api = await zalo.login({
+            imei: creds.imei,
+            cookie: creds.cookie,
+            userAgent: creds.userAgent,
+        });
+
+        if (!api) {
+            throw new Error('Session restore failed — no API returned');
+        }
+
+        updateLastUsed(sessionId);
+
+        const session: ZaloSession = {
+            sessionId,
+            api,
+            status: 'connected',
+            listenerStarted: false,
+            onMessage,
+            onError,
+            createdAt: new Date(creds.createdAt),
+            connectedAt: new Date(),
+        };
+
+        sessions.set(sessionId, session);
+        console.log(`[ZaloService] Session ${sessionId} restored successfully!`);
+
+        startMessageListener(sessionId);
+        return true;
+
+    } catch (err: any) {
+        console.error(`[ZaloService] Session ${sessionId} restore failed:`, err);
+        // Clear invalid credentials
+        clearCredentials(sessionId);
+        onError(err.message || 'Session restore failed — credentials expired');
+        return false;
+    }
+}
+
+// ========================
+// MESSAGE LISTENER
+// ========================
+
 function startMessageListener(sessionId: string): void {
     const session = sessions.get(sessionId);
     if (!session || !session.api || session.listenerStarted) return;
@@ -209,13 +398,12 @@ function startMessageListener(sessionId: string): void {
 
                 console.log(`[ZaloService] New message in ${threadType} ${message.threadId}: "${incomingMsg.content.substring(0, 50)}" (self=${incomingMsg.isSelf})`);
 
-                // Cache message for history retrieval
                 cacheMessage(sessionId, incomingMsg);
 
                 if (session.onMessage) {
                     session.onMessage(incomingMsg);
                 }
-            } catch (err: any) {
+            } catch (err) {
                 console.error(`[ZaloService] Message processing error:`, err);
             }
         };
@@ -239,21 +427,21 @@ function startMessageListener(sessionId: string): void {
         session.api.listener.start();
         session.listenerStarted = true;
 
-        // Watchdog timer (OpenClaw pattern: detect stale connections)
+        // Watchdog timer
         session.watchdogTimer = setInterval(() => {
             if (!session.listenerStarted) return;
             const now = Date.now();
             const gap = now - (session.lastWatchdogTickAt || now);
             session.lastWatchdogTickAt = now;
             if (gap > LISTENER_WATCHDOG_MAX_GAP_MS) {
-                console.error(`[ZaloService] Watchdog gap detected (${Math.round(gap / 1000)}s) for ${sessionId}`);
+                console.error(`[ZaloService] Watchdog gap (${Math.round(gap / 1000)}s) for ${sessionId}`);
                 cleanupListener(sessionId);
-                session.onError?.('Listener watchdog timeout — connection may be stale');
+                session.onError?.('Listener watchdog timeout');
             }
         }, LISTENER_WATCHDOG_INTERVAL_MS);
 
-        console.log(`[ZaloService] Message listener started for session ${sessionId} (with watchdog)`);
-    } catch (err: any) {
+        console.log(`[ZaloService] Listener started for session ${sessionId} (with watchdog)`);
+    } catch (err) {
         console.error(`[ZaloService] Failed to start listener for ${sessionId}:`, err);
     }
 }
@@ -265,25 +453,14 @@ function cleanupListener(sessionId: string): void {
         clearInterval(session.watchdogTimer);
         session.watchdogTimer = undefined;
     }
-    try {
-        session.api?.listener?.stop();
-    } catch { /* ignore */ }
+    try { session.api?.listener?.stop(); } catch { /* ignore */ }
     session.listenerStarted = false;
 }
 
-function resolveTimestamp(ts: unknown): number {
-    if (typeof ts === 'number' && Number.isFinite(ts)) {
-        return ts > 1_000_000_000_000 ? ts : ts * 1000;
-    }
-    const parsed = parseInt(String(ts || ''), 10);
-    if (!Number.isFinite(parsed) || parsed <= 0) return Date.now();
-    return parsed > 1_000_000_000_000 ? parsed : parsed * 1000;
-}
+// ========================
+// CONVERSATIONS
+// ========================
 
-/**
- * Get all conversations (friends + groups) for a session.
- * Fixed: getAllFriends returns User[] directly, getAllGroups returns {gridVerMap}.
- */
 export async function getZaloConversations(sessionId: string): Promise<ZaloConversationItem[]> {
     const session = sessions.get(sessionId);
     if (!session || !session.api || session.status !== 'connected') {
@@ -294,10 +471,9 @@ export async function getZaloConversations(sessionId: string): Promise<ZaloConve
     try {
         const conversations: ZaloConversationItem[] = [];
 
-        // Get friends list — getAllFriends() returns User[] directly (NOT {data: []})
+        // Friends — getAllFriends() returns User[] directly
         try {
             const friends = await session.api.getAllFriends();
-            // zca-js returns the array directly
             const friendList = Array.isArray(friends) ? friends : [];
             for (const f of friendList) {
                 const threadId = String(f.userId || f.uid || f.id || '');
@@ -316,15 +492,13 @@ export async function getZaloConversations(sessionId: string): Promise<ZaloConve
             console.error(`[ZaloService] Failed to get friends:`, err.message);
         }
 
-        // Get groups list — getAllGroups() returns {gridVerMap: Record<id, version>}
-        // Then getGroupInfo(ids) returns {gridInfoMap: Record<id, GroupInfo>}
+        // Groups — getAllGroups() returns {gridVerMap}, then getGroupInfo for details
         try {
             const allGroups = await session.api.getAllGroups();
             const gridVerMap = allGroups?.gridVerMap || {};
             const groupIds = Object.keys(gridVerMap);
 
             if (groupIds.length > 0) {
-                // Fetch group details in chunks (OpenClaw pattern)
                 for (let i = 0; i < groupIds.length; i += GROUP_INFO_CHUNK_SIZE) {
                     const chunk = groupIds.slice(i, i + GROUP_INFO_CHUNK_SIZE);
                     try {
@@ -342,7 +516,6 @@ export async function getZaloConversations(sessionId: string): Promise<ZaloConve
                         }
                     } catch (err: any) {
                         console.error(`[ZaloService] getGroupInfo chunk error:`, err.message);
-                        // Still add by ID even without details
                         for (const gid of chunk) {
                             conversations.push({
                                 threadId: gid,
@@ -362,19 +535,16 @@ export async function getZaloConversations(sessionId: string): Promise<ZaloConve
         }
 
         return conversations;
-    } catch (err: any) {
+    } catch (err) {
         console.error(`[ZaloService] getConversations error:`, err);
         return [];
     }
 }
 
-/**
- * Get message history for a specific thread.
- *
- * - Group: uses getGroupChatHistory(groupId, count) → {groupMsgs: GroupMessage[]}
- * - User DM: zca-js has NO getUserChatHistory API, returns cached messages
- *   from the realtime listener instead.
- */
+// ========================
+// MESSAGES
+// ========================
+
 export async function getZaloMessages(
     sessionId: string,
     threadId: string,
@@ -388,17 +558,13 @@ export async function getZaloMessages(
 
     try {
         if (threadType === 'group') {
-            // Group: use getGroupChatHistory — returns {groupMsgs: GroupMessage[]}
             try {
                 const history = await session.api.getGroupChatHistory(threadId, count);
-                // Response shape: { lastActionId, lastActionIdOther, more, groupMsgs: GroupMessage[] }
-                // Each GroupMessage has: { type, data: TGroupMessage, threadId, isSelf }
-                // TGroupMessage has: { msgId, content, uidFrom, dName, ts, ... }
                 const groupMsgs = history?.groupMsgs || [];
-                console.log(`[ZaloService] getGroupChatHistory returned ${groupMsgs.length} messages for ${threadId}`);
+                console.log(`[ZaloService] getGroupChatHistory: ${groupMsgs.length} messages for ${threadId}`);
 
                 return groupMsgs.map((gm: any, i: number) => {
-                    const data = gm.data || gm; // GroupMessage.data or raw
+                    const data = gm.data || gm;
                     const content = normalizeMessageContent(data.content);
                     const ts = resolveTimestamp(data.ts);
                     return {
@@ -413,23 +579,16 @@ export async function getZaloMessages(
                 });
             } catch (err: any) {
                 console.error(`[ZaloService] getGroupChatHistory error:`, err.message);
-                // Fall back to cache
                 const cached = getCachedMessages(sessionId, threadId);
                 return cached.slice(-count).map(mapCachedToOutput);
             }
         } else {
-            // User DM: zca-js has NO getUserChatHistory API
-            // Return messages accumulated from the realtime listener
+            // User DM: no native API — return cached messages from listener
             const cached = getCachedMessages(sessionId, threadId);
-            console.log(`[ZaloService] Returning ${cached.length} cached DM messages for ${threadId}`);
-
-            if (cached.length === 0) {
-                console.log(`[ZaloService] No cached messages for DM ${threadId}. Messages will appear as they arrive in realtime.`);
-            }
-
+            console.log(`[ZaloService] DM history: ${cached.length} cached messages for ${threadId}`);
             return cached.slice(-count).map(mapCachedToOutput);
         }
-    } catch (err: any) {
+    } catch (err) {
         console.error(`[ZaloService] getMessages error:`, err);
         return [];
     }
@@ -447,10 +606,10 @@ function mapCachedToOutput(msg: ZaloIncomingMessage) {
     };
 }
 
-/**
- * Send a message to a Zalo thread.
- * zca-js accepts plain string for simple text messages.
- */
+// ========================
+// SEND MESSAGE
+// ========================
+
 export async function sendZaloMsg(
     sessionId: string,
     threadId: string,
@@ -464,20 +623,12 @@ export async function sendZaloMsg(
 
     try {
         const type = threadType === 'group' ? ThreadType.Group : ThreadType.User;
-
-        // Send plain string (OpenClaw pattern — simpler and works reliably)
-        const result = await session.api.sendMessage(
-            text,
-            threadId,
-            type,
-        );
-
-        // Extract message ID from response
+        const result = await session.api.sendMessage(text, threadId, type);
         const msgId = result?.msgId ?? result?.message?.msgId ?? result?.attachment?.[0]?.msgId;
 
-        console.log(`[ZaloService] Sent message to ${threadType} ${threadId}: "${text.substring(0, 50)}" (msgId=${msgId})`);
+        console.log(`[ZaloService] Sent to ${threadType} ${threadId}: "${text.substring(0, 50)}" (msgId=${msgId})`);
 
-        // Cache the sent message for history
+        // Cache sent message
         cacheMessage(sessionId, {
             msgId: msgId ? String(msgId) : `sent_${Date.now()}`,
             threadId,
@@ -491,26 +642,24 @@ export async function sendZaloMsg(
         });
 
         return { success: true, msgId: msgId ? String(msgId) : undefined };
-
     } catch (err: any) {
         console.error(`[ZaloService] sendMessage error:`, err);
         return { success: false, error: err.message || 'Lỗi gửi tin nhắn' };
     }
 }
 
-/**
- * Destroy a Zalo session and cleanup.
- */
+// ========================
+// SESSION MANAGEMENT
+// ========================
+
 export async function destroyZaloSession(sessionId: string): Promise<void> {
     const session = sessions.get(sessionId);
     if (!session) return;
 
     cleanupListener(sessionId);
-
     session.status = 'disconnected';
     sessions.delete(sessionId);
 
-    // Clean message cache for this session
     for (const key of messageCache.keys()) {
         if (key.startsWith(`${sessionId}:`)) {
             messageCache.delete(key);
@@ -520,25 +669,22 @@ export async function destroyZaloSession(sessionId: string): Promise<void> {
     console.log(`[ZaloService] Session ${sessionId} destroyed`);
 }
 
-/**
- * Get session status.
- */
+export function logoutZaloSession(sessionId: string): void {
+    clearCredentials(sessionId);
+    destroyZaloSession(sessionId);
+    console.log(`[ZaloService] Session ${sessionId} logged out and credentials cleared`);
+}
+
 export function getZaloSessionStatus(sessionId: string): string {
     const session = sessions.get(sessionId);
     return session?.status || 'not_found';
 }
 
-/**
- * Check if a session exists and is connected.
- */
 export function isZaloSessionConnected(sessionId: string): boolean {
     const session = sessions.get(sessionId);
     return session?.status === 'connected' && !!session.api;
 }
 
-/**
- * Get all active session IDs.
- */
 export function getActiveZaloSessions(): string[] {
     return Array.from(sessions.entries())
         .filter(([_, s]) => s.status === 'connected')
