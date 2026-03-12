@@ -72,6 +72,8 @@ export interface ZaloConversationItem {
 // ── Stores ──
 const sessions = new Map<string, ZaloSession>();
 const messageCache = new Map<string, ZaloIncomingMessage[]>();
+// Track recent conversation activity for sorting (like phone app)
+const recentConvActivity = new Map<string, { threadId: string; lastMsgAt: number; lastMsg: string; senderName: string }>();
 
 // ========================
 // CREDENTIAL PERSISTENCE
@@ -146,6 +148,14 @@ function cacheMessage(sessionId: string, msg: ZaloIncomingMessage): void {
     if (list.length > MESSAGE_CACHE_MAX_PER_THREAD) {
         list.splice(0, list.length - MESSAGE_CACHE_MAX_PER_THREAD);
     }
+
+    // Track recent conversation activity (for sorting like phone app)
+    recentConvActivity.set(key, {
+        threadId: msg.threadId,
+        lastMsgAt: msg.timestamp,
+        lastMsg: msg.content.substring(0, 80),
+        senderName: msg.senderName,
+    });
 }
 
 function getCachedMessages(sessionId: string, threadId: string): ZaloIncomingMessage[] {
@@ -533,6 +543,31 @@ export async function getZaloConversations(sessionId: string): Promise<ZaloConve
         } catch (err: any) {
             console.error(`[ZaloService] Failed to get groups:`, err.message);
         }
+
+        // Enrich conversations with recent activity data and sort like phone app
+        for (const conv of conversations) {
+            const activityKey = `${sessionId}:${conv.threadId}`;
+            const activity = recentConvActivity.get(activityKey);
+            if (activity) {
+                conv.lastMessage = activity.lastMsg;
+                conv.lastMessageAt = new Date(activity.lastMsgAt).toISOString();
+            }
+        }
+
+        // Sort: conversations with recent messages first (newest first),
+        // then conversations without activity go to the bottom (alphabetically)
+        conversations.sort((a, b) => {
+            const aTime = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
+            const bTime = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
+
+            // Both have activity → sort by most recent first
+            if (aTime > 0 && bTime > 0) return bTime - aTime;
+            // One has activity, the other doesn't → active one first
+            if (aTime > 0) return -1;
+            if (bTime > 0) return 1;
+            // Neither has activity → alphabetical
+            return (a.displayName || '').localeCompare(b.displayName || '');
+        });
 
         return conversations;
     } catch (err) {
