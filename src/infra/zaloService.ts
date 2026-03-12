@@ -580,6 +580,45 @@ export async function getZaloConversations(sessionId: string): Promise<ZaloConve
 // MESSAGES
 // ========================
 
+/**
+ * Register custom DM history API on the zca-js instance.
+ * Calls Zalo's internal `chat/api/message/history` endpoint (same pattern as getGroupChatHistory).
+ */
+function registerDMHistoryAPI(session: ZaloSession): void {
+    if (!session.api || (session as any)._dmHistoryRegistered) return;
+    try {
+        session.api.custom('getDMHistory', async ({ ctx, utils, props }: any) => {
+            const { peerUid, count = 30 } = props;
+            // Zalo's internal chat service map
+            const api = (session as any)._rawApi || session.api;
+            const chatBaseUrl = api?.zpwServiceMap?.chat?.[0];
+            if (!chatBaseUrl) {
+                throw new Error('Chat service URL not available');
+            }
+            const serviceURL = utils.makeURL(`${chatBaseUrl}/api/message/history`);
+            const params = {
+                peerUid,
+                count,
+                msgId: 0, // Start from most recent
+            };
+            const encryptedParams = utils.encodeAES(JSON.stringify(params));
+            if (!encryptedParams) throw new Error('Failed to encrypt params');
+            const response = await utils.request(utils.makeURL(serviceURL, { params: encryptedParams }), {
+                method: 'GET',
+            });
+            return utils.resolve(response, (result: any) => {
+                let data = result.data;
+                if (typeof data === 'string') data = JSON.parse(data);
+                return data;
+            });
+        });
+        (session as any)._dmHistoryRegistered = true;
+        console.log('[ZaloService] Custom getDMHistory API registered');
+    } catch (err: any) {
+        console.warn('[ZaloService] Failed to register getDMHistory:', err.message);
+    }
+}
+
 export async function getZaloMessages(
     sessionId: string,
     threadId: string,
@@ -618,9 +657,39 @@ export async function getZaloMessages(
                 return cached.slice(-count).map(mapCachedToOutput);
             }
         } else {
-            // User DM: no native API — return cached messages from listener
+            // User DM: try custom getDMHistory API first, fallback to cache
+            try {
+                registerDMHistoryAPI(session);
+                const dmHistory = await (session.api as any).getDMHistory({ peerUid: threadId, count });
+                const msgs = dmHistory?.msgs || dmHistory?.groupMsgs || [];
+                
+                if (msgs.length > 0) {
+                    console.log(`[ZaloService] getDMHistory: ${msgs.length} messages for DM ${threadId}`);
+                    const ownId = session.api.getOwnId?.() || '';
+                    return msgs.map((m: any, i: number) => {
+                        const data = m.data || m;
+                        const content = normalizeMessageContent(data.content);
+                        const ts = resolveTimestamp(data.ts);
+                        const senderId = data.uidFrom || data.uid || '';
+                        const isSelf = m.isSelf ?? (String(senderId) === String(ownId));
+                        return {
+                            id: data.msgId || `zca_dm_${Date.now()}_${i}`,
+                            content,
+                            senderType: isSelf ? 'me' : 'other',
+                            senderName: data.dName || (isSelf ? 'Bạn' : 'Người gửi'),
+                            createdAt: new Date(ts).toISOString(),
+                            type: typeof data.content === 'string' ? 'text' : 'media',
+                            senderId,
+                        };
+                    });
+                }
+            } catch (err: any) {
+                console.warn(`[ZaloService] getDMHistory failed (fallback to cache):`, err.message);
+            }
+
+            // Fallback: return cached messages from listener
             const cached = getCachedMessages(sessionId, threadId);
-            console.log(`[ZaloService] DM history: ${cached.length} cached messages for ${threadId}`);
+            console.log(`[ZaloService] DM cache: ${cached.length} messages for ${threadId}`);
             return cached.slice(-count).map(mapCachedToOutput);
         }
     } catch (err) {
