@@ -42,6 +42,8 @@ interface ZaloConversation {
     status: 'open' | 'pending' | 'closed';
     tags?: string[];
     assignedTo?: { _id: string; name: string } | null;
+    threadId?: string;      // zca-js thread ID (stable Zalo ID)
+    threadType?: 'user' | 'group'; // zca-js thread type
 }
 
 interface ZaloMessage {
@@ -128,6 +130,14 @@ export default function ZaloPersonalPage() {
     const [inputText, setInputText] = useState('');
     const [sending, setSending] = useState(false);
 
+    // ── Scanning state ──
+    const [scanningConvs, setScanningConvs] = useState(false);
+    const scanIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+    // ── Message loading state ──
+    const [loadingMessages, setLoadingMessages] = useState(false);
+    const msgPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
     // ── QR display state ──
     const [qrFrameUrl, setQrFrameUrl] = useState<string | null>(null);
     const [showQr, setShowQr] = useState(false);
@@ -170,48 +180,146 @@ export default function ZaloPersonalPage() {
             setQrLoading(false);
             if (checkLoginRef.current) clearInterval(checkLoginRef.current);
             fetchAccounts();
-            // Auto-fetch conversations after login
+            // Auto-fetch conversations after login (with delay to let Zalo load)
             if (selectedAccountId) {
-                socket.emit('zalo:getConversations', { sessionId: selectedAccountId });
+                setScanningConvs(true);
+                setTimeout(() => {
+                    socket.emit('zalo:getConversations', { sessionId: selectedAccountId });
+                }, 3000);
+                // Also try to start zca-js native session for better messaging
+                socket.emit('zalo:connectZCA', { sessionId: selectedAccountId });
             }
         });
 
         // Listen for scraped Zalo conversations
-        socket.on('zalo:conversations', (data: { conversations: any[]; error?: string }) => {
+        socket.on('zalo:conversations', (data: { conversations: any[]; error?: string; debug?: string; screenshot?: string }) => {
+            const wasManualScan = scanningConvs;
+            setScanningConvs(false);
             if (data.error) {
                 console.warn('[Zalo] Conversation scrape error:', data.error);
+                if (data.debug) {
+                    console.log('[Zalo] Debug DOM info:\n', data.debug);
+                }
+                if (data.screenshot) {
+                    console.log('[Zalo] Debug screenshot available — check modal or console');
+                    // Show the screenshot in a modal so user can see what Puppeteer sees
+                    Modal.info({
+                        title: 'Debug: Trình duyệt Zalo đang hiển thị gì?',
+                        width: 700,
+                        content: (
+                            <div>
+                                <p style={{ color: '#666', marginBottom: 8 }}>
+                                    Ảnh chụp màn hình từ trình duyệt Puppeteer (trình duyệt headless đang chạy phía server).
+                                    Nếu trang chưa load xong hoặc đang ở trang login, hội thoại sẽ không quét được.
+                                </p>
+                                <img
+                                    src={data.screenshot}
+                                    alt="Puppeteer screenshot"
+                                    style={{ width: '100%', border: '1px solid #ddd', borderRadius: 8 }}
+                                />
+                                {data.debug && (
+                                    <pre style={{ marginTop: 12, fontSize: 11, background: '#f5f5f5', padding: 8, borderRadius: 6, maxHeight: 200, overflow: 'auto', whiteSpace: 'pre-wrap' }}>
+                                        {data.debug}
+                                    </pre>
+                                )}
+                            </div>
+                        ),
+                    });
+                }
+                if (wasManualScan) {
+                    message.warning('Không quét được hội thoại: ' + data.error);
+                }
                 return;
             }
             const mapped: ZaloConversation[] = data.conversations.map((c: any) => ({
-                _id: c.id,
-                contactName: c.contactName,
-                lastMessage: c.lastMessage,
-                lastMessageAt: c.lastMessageAt,
+                _id: c._id || c.id || `zca_${c.threadId || Date.now()}`,
+                contactName: c.contactName || c.displayName || 'Unknown',
+                lastMessage: c.lastMessage || c.lastMsg || '',
+                lastMessageAt: c.lastMessageAt || c.lastMsgTime || '',
                 unreadCount: c.unreadCount || 0,
-                status: 'open',
+                status: 'open' as const,
                 tags: [],
                 assignedTo: null,
-                contactAvatar: c.avatarUrl,
+                contactAvatar: c.avatarUrl || c.avatar || '',
+                threadId: c.threadId || '',
+                threadType: c.threadType || 'user',
             }));
             setConversations(mapped);
+            if (wasManualScan && mapped.length > 0) {
+                message.success(`Đã tìm thấy ${mapped.length} hội thoại`);
+            }
         });
 
         // Listen for scraped Zalo messages
         socket.on('zalo:messages', (data: { messages: any[]; error?: string }) => {
+            setLoadingMessages(false);
             if (data.error) {
                 console.warn('[Zalo] Message scrape error:', data.error);
                 return;
             }
-            const mapped: ZaloMessage[] = data.messages.map((m: any) => ({
-                _id: m.id,
-                conversationId: 'active',
-                sender: { type: m.senderType === 'me' ? 'agent' as const : 'customer' as const, name: m.senderName },
-                content: m.content,
-                type: m.type || 'text',
-                status: 'read' as const,
-                createdAt: m.createdAt,
-            }));
-            setMessages(mapped);
+            if (data.messages.length > 0) {
+                const mapped: ZaloMessage[] = data.messages.map((m: any) => ({
+                    _id: m.id,
+                    conversationId: 'active',
+                    sender: { type: m.senderType === 'me' ? 'agent' as const : 'customer' as const, name: m.senderName },
+                    content: m.content,
+                    type: m.type || 'text',
+                    status: 'read' as const,
+                    createdAt: m.createdAt,
+                }));
+                setMessages(mapped);
+            }
+        });
+
+        // ── Realtime: listen for new Zalo messages pushed via WebSocket intercept ──
+        socket.on('zalo:newMessage', (msg: any) => {
+            console.log('[ZaloRT] New realtime message:', msg);
+            const newMsg: ZaloMessage = {
+                _id: msg.msgId || `rt_${Date.now()}`,
+                conversationId: msg.conversationId || 'active',
+                sender: {
+                    type: msg.senderId ? 'customer' as const : 'agent' as const,
+                    name: msg.senderName || 'Khách',
+                },
+                content: msg.content || '',
+                type: msg.msgType || 'text',
+                status: 'delivered' as const,
+                createdAt: msg.timestamp ? new Date(msg.timestamp).toISOString() : new Date().toISOString(),
+            };
+            // Append without duplicates
+            setMessages(prev => {
+                const exists = prev.some(m => m._id === newMsg._id);
+                if (exists) return prev;
+                return [...prev, newMsg];
+            });
+            // Show notification for incoming messages
+            if (newMsg.sender.type === 'customer') {
+                message.info(`${newMsg.sender.name}: ${newMsg.content.substring(0, 50)}`, 3);
+            }
+        });
+
+        // ── zca-js events (native Zalo API) ──
+        socket.on('zalo:zcaConnected', ({ sessionId: sid }: { sessionId: string }) => {
+            console.log(`[ZaloZCA] Session ${sid} connected via zca-js!`);
+            message.success('Đã kết nối Zalo qua zca-js (Native API)!');
+            fetchAccounts();
+            // Auto-fetch conversations
+            setTimeout(() => {
+                socket.emit('zalo:getConversations', { sessionId: sid });
+            }, 1000);
+        });
+
+        socket.on('zalo:zcaError', ({ sessionId: sid, error }: { sessionId: string; error: string }) => {
+            console.error(`[ZaloZCA] Error for session ${sid}:`, error);
+            message.error('Lỗi kết nối zca-js: ' + error);
+        });
+
+        socket.on('zalo:qrCode', ({ qrDataUrl }: { sessionId: string; qrDataUrl: string }) => {
+            console.log('[ZaloZCA] Received QR code for login');
+            // Display QR code to user
+            setQrFrameUrl(qrDataUrl);
+            setQrLoading(false);
+            setShowQr(true);
         });
 
         // Listen for QR frame from backend (sent as { image: dataUrl })
@@ -251,8 +359,19 @@ export default function ZaloPersonalPage() {
             socket.disconnect();
             socketRef.current = null;
             if (checkLoginRef.current) clearInterval(checkLoginRef.current);
+            if (scanIntervalRef.current) clearInterval(scanIntervalRef.current);
+            if (msgPollRef.current) clearInterval(msgPollRef.current);
         };
     }, [token, workspaceId, fetchAccounts]);
+
+    // ── Scan conversations function ──
+    const handleScanConversations = useCallback(() => {
+        if (!selectedAccountId || !socketRef.current) return;
+        const account = accounts.find(a => a._id === selectedAccountId);
+        if (account?.status !== 'connected') return;
+        setScanningConvs(true);
+        socketRef.current.emit('zalo:getConversations', { sessionId: selectedAccountId });
+    }, [selectedAccountId, accounts]);
 
     // ── Load conversations when account changes ──
     const prevAccountIdRef = useRef<string | null>(null);
@@ -273,7 +392,8 @@ export default function ZaloPersonalPage() {
         }
         const account = accounts.find(a => a._id === selectedAccountId);
         if (account?.status === 'connected' && socketRef.current) {
-            // Scrape real Zalo conversations from Puppeteer browser
+            // Auto-scan on account selection
+            setScanningConvs(true);
             socketRef.current.emit('zalo:getConversations', { sessionId: selectedAccountId });
         } else {
             setConversations([]);
@@ -281,22 +401,65 @@ export default function ZaloPersonalPage() {
         setSelectedConvId(null);
     }, [selectedAccountId, accounts]);
 
-    // ── Load messages when conversation changes ──
+    // ── Auto-poll conversations every 30s when account is connected ──
+    useEffect(() => {
+        // Clear any existing interval
+        if (scanIntervalRef.current) {
+            clearInterval(scanIntervalRef.current);
+            scanIntervalRef.current = null;
+        }
+
+        const account = accounts.find(a => a._id === selectedAccountId);
+        if (account?.status === 'connected' && selectedAccountId && socketRef.current) {
+            scanIntervalRef.current = setInterval(() => {
+                if (socketRef.current && selectedAccountId) {
+                    socketRef.current.emit('zalo:getConversations', { sessionId: selectedAccountId });
+                }
+            }, 45000); // Re-scan every 45s
+        }
+
+        return () => {
+            if (scanIntervalRef.current) {
+                clearInterval(scanIntervalRef.current);
+                scanIntervalRef.current = null;
+            }
+        };
+    }, [selectedAccountId, accounts]);
+
+    // ── Load messages when conversation changes (ONE-TIME, no polling) ──
     useEffect(() => {
         if (!selectedConvId) {
             setMessages([]);
+            setLoadingMessages(false);
             return;
         }
-        // Find the index of this conversation in the list and scrape messages
-        const convIndex = conversations.findIndex(c => c._id === selectedConvId);
-        if (convIndex >= 0 && selectedAccountId && socketRef.current) {
-            socketRef.current.emit('zalo:getMessages', { sessionId: selectedAccountId, convIndex });
-        }
-    }, [selectedConvId]);
 
-    // ── Auto-scroll ──
+        // Find the conversation and load messages once
+        const conv = conversations.find(c => c._id === selectedConvId);
+        if (conv && selectedAccountId && socketRef.current) {
+            setLoadingMessages(true);
+            setMessages([]);
+            socketRef.current.emit('zalo:getMessages', {
+                sessionId: selectedAccountId,
+                contactName: conv.contactName,
+                threadId: conv.threadId || '',
+                threadType: conv.threadType || 'user',
+            });
+            // No polling — realtime listener (zalo:newMessage) handles new messages
+        }
+    }, [selectedConvId, selectedAccountId, conversations]);
+
+    // ── Auto-scroll only on new messages (not on initial load or poll) ──
+    const prevMsgCountRef = useRef(0);
     useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        // Only scroll if messages grew (new message arrived), not on full reload
+        if (messages.length > prevMsgCountRef.current && prevMsgCountRef.current > 0) {
+            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        } else if (prevMsgCountRef.current === 0 && messages.length > 0) {
+            // First load: scroll to bottom immediately
+            messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+        }
+        prevMsgCountRef.current = messages.length;
     }, [messages]);
 
     // ── Account CRUD ──
@@ -413,6 +576,7 @@ export default function ZaloPersonalPage() {
         setInputText('');
         setSending(true);
 
+        // Optimistic: add temp message immediately for UX
         const tempMsg: ZaloMessage = {
             _id: 'tmp_' + Date.now(),
             conversationId: selectedConvId,
@@ -423,11 +587,41 @@ export default function ZaloPersonalPage() {
         };
         setMessages(prev => [...prev, tempMsg]);
 
-        // TODO: Replace with real API
-        setTimeout(() => {
-            setMessages(prev => prev.map(m => m._id === tempMsg._id ? { ...m, _id: 'real_' + Date.now(), status: 'sent' as const } : m));
+        // Send via Zalo Web (Puppeteer)
+        if (socketRef.current && selectedAccountId) {
+            const activeConv = conversations.find(c => c._id === selectedConvId);
+            socketRef.current.emit('zalo:sendMessage', {
+                sessionId: selectedAccountId,
+                text,
+                contactName: activeConv?.contactName || '',
+                threadId: activeConv?.threadId || '',
+                threadType: activeConv?.threadType || 'user',
+            });
+
+            // Listen for send result
+            const onSent = (data: { success: boolean; error?: string }) => {
+                setSending(false);
+                if (!data.success) {
+                    message.error('Gửi tin nhắn thất bại: ' + (data.error || 'Lỗi không xác định'));
+                    // Remove temp message on failure
+                    setMessages(prev => prev.filter(m => m._id !== tempMsg._id));
+                } else {
+                    // Update temp message status
+                    setMessages(prev => prev.map(m => m._id === tempMsg._id ? { ...m, _id: 'real_' + Date.now(), status: 'sent' as const } : m));
+                }
+                socketRef.current?.off('zalo:messageSent', onSent);
+            };
+            socketRef.current.on('zalo:messageSent', onSent);
+
+            // Timeout fallback
+            setTimeout(() => {
+                socketRef.current?.off('zalo:messageSent', onSent);
+                setSending(false);
+            }, 10000);
+        } else {
+            message.error('Socket chưa kết nối');
             setSending(false);
-        }, 500);
+        }
     };
 
     // ── File upload placeholder ──
@@ -623,12 +817,30 @@ export default function ZaloPersonalPage() {
                             <>
                                 {/* Conv sidebar header */}
                                 <div style={styles.convSidebarHeader}>
-                                    <div style={{ fontWeight: 600, fontSize: 14, color: '#222' }}>
+                                    <div style={{ fontWeight: 600, fontSize: 14, color: '#222', flex: 1 }}>
                                         Hội thoại
                                         <span style={{ fontSize: 11, color: '#999', fontWeight: 400, marginLeft: 6 }}>
                                             {selectedAccount.label}
                                         </span>
                                     </div>
+                                    <Tooltip title="Quét hội thoại từ Zalo">
+                                        <Button
+                                            type="primary"
+                                            size="small"
+                                            icon={<ReloadOutlined spin={scanningConvs} />}
+                                            loading={scanningConvs}
+                                            onClick={handleScanConversations}
+                                            style={{
+                                                background: '#0068ff',
+                                                borderColor: '#0068ff',
+                                                borderRadius: 6,
+                                                fontWeight: 600,
+                                                fontSize: 11,
+                                            }}
+                                        >
+                                            {scanningConvs ? 'Đang quét...' : 'Quét'}
+                                        </Button>
+                                    </Tooltip>
                                 </div>
 
                                 {/* Search + Filter */}
@@ -663,8 +875,30 @@ export default function ZaloPersonalPage() {
 
                                 {/* Conversation list */}
                                 <div style={styles.convList}>
-                                    {filteredConvs.length === 0 ? (
-                                        <Empty description="Không có hội thoại" style={{ marginTop: 60 }} />
+                                    {scanningConvs && filteredConvs.length === 0 ? (
+                                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', marginTop: 80, gap: 12 }}>
+                                            <Spin size="default" />
+                                            <span style={{ color: '#666', fontSize: 13 }}>Đang quét hội thoại từ Zalo...</span>
+                                        </div>
+                                    ) : filteredConvs.length === 0 ? (
+                                        <div style={{ textAlign: 'center', marginTop: 60 }}>
+                                            <Empty
+                                                description={
+                                                    <div>
+                                                        <p style={{ color: '#999', fontSize: 13, margin: '0 0 12px' }}>Không có hội thoại</p>
+                                                        <Button
+                                                            type="primary"
+                                                            icon={<ReloadOutlined />}
+                                                            onClick={handleScanConversations}
+                                                            loading={scanningConvs}
+                                                            style={{ background: '#0068ff', borderColor: '#0068ff', borderRadius: 8 }}
+                                                        >
+                                                            Quét hội thoại
+                                                        </Button>
+                                                    </div>
+                                                }
+                                            />
+                                        </div>
                                     ) : (
                                         filteredConvs.map(conv => {
                                             const isSelected = selectedConvId === conv._id;
@@ -878,7 +1112,12 @@ export default function ZaloPersonalPage() {
 
                             {/* Messages */}
                             <div style={styles.messagesArea}>
-                                {messages.length === 0 ? (
+                                {loadingMessages && messages.length === 0 ? (
+                                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', marginTop: 80, gap: 12 }}>
+                                        <Spin size="default" />
+                                        <span style={{ color: '#666', fontSize: 13 }}>Đang tải tin nhắn từ Zalo...</span>
+                                    </div>
+                                ) : messages.length === 0 ? (
                                     <Empty description="Chưa có tin nhắn" style={{ marginTop: 80 }} />
                                 ) : (
                                     <>
@@ -1208,6 +1447,9 @@ const styles: Record<string, React.CSSProperties> = {
     convSidebarHeader: {
         padding: '14px 14px',
         borderBottom: '1px solid #f0f0f0',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
     },
     convList: {
         flex: 1,
