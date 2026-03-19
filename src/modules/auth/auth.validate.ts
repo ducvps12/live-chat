@@ -18,6 +18,15 @@ export const authValidate = {
         name: Joi.string().required(),
     }),
 
+    updateProfile: Joi.object({
+        name: Joi.string().required().messages({
+            'any.required': 'Tên là bắt buộc',
+        }),
+        avatarUrl: Joi.string().allow('', null).messages({
+            'string.base': 'Định dạng ảnh không hợp lệ',
+        }),
+    }),
+
     changePassword: Joi.object({
         oldPassword: Joi.string().required(),
         newPassword: Joi.string().min(6).required(),

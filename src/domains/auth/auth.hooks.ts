@@ -72,3 +72,13 @@ export const useRevokeOtherSessions = () => {
         }
     });
 };
+
+export const useUpdateProfile = () => {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: (payload: { name: string; avatarUrl?: string }) => authApi.updateProfile(payload),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: authKeys.me() });
+        }
+    });
+};

@@ -31,8 +31,8 @@ export const workspaceController = {
     }),
 
     addMember: asyncHandler(async (req: Request, res: Response) => {
-        const { userId, role } = (req as any).validated.body;
-        const workspace = await workspaceService.addMember(req.params.workspaceId as string, userId, role);
+        const { email, role } = (req as any).validated.body;
+        const workspace = await workspaceService.addMember(req.params.workspaceId as string, email, role);
         res.status(200).json({ success: true, data: workspace });
     }),
 

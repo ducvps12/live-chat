@@ -1,18 +1,17 @@
 import Head from 'next/head';
 import { useRouter } from 'next/router';
 import { useEffect, useState } from 'react';
-import { Button, Modal, Form, Input, message, Empty, Spin, Tag } from 'antd';
+import { Button, Modal, Form, Input, message, Empty, Spin, Tag, Dropdown } from 'antd';
 import { Plus, Settings, Users, ExternalLink } from 'lucide-react';
-import { useGetMe, useLogout } from '../../domains/auth/auth.hooks';
+import { useGetMe } from '../../domains/auth/auth.hooks';
 import { useMyWorkspaces, useCreateWorkspace } from '../../domains/workspace/workspace.hooks';
+import AppLayout from '../../components/layout/AppLayout';
 
 export default function WorkspacePage() {
     const router = useRouter();
     const [ready, setReady] = useState(false);
     const [showCreate, setShowCreate] = useState(false);
     const [form] = Form.useForm();
-
-    const { mutateAsync: logout } = useLogout();
 
     useEffect(() => {
         const stored = localStorage.getItem('nemark_token');
@@ -23,11 +22,6 @@ export default function WorkspacePage() {
     const { data: meData, isLoading: meLoading, isError: meError } = useGetMe(ready);
     const { data: wsData, isLoading: wsLoading } = useMyWorkspaces();
     const { mutateAsync: createWs, isPending: creating } = useCreateWorkspace();
-
-    const handleLogout = async () => {
-        await logout();
-        router.push('/auth/login');
-    };
 
     // Auto-generate slug from name
     const handleNameChange = (e: any) => {
@@ -78,43 +72,8 @@ export default function WorkspacePage() {
     const workspaces = wsData?.data || [];
 
     return (
-        <div style={{ minHeight: '100vh', background: 'var(--color-bg-soft)' }}>
+        <AppLayout headerTitle="Workspace của bạn">
             <Head><title>Workspace | NemarChat</title></Head>
-
-            {/* ─── Header ─── */}
-            <header style={{
-                background: 'var(--color-bg)',
-                borderBottom: '1px solid var(--color-border)',
-                padding: '14px 32px',
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                position: 'sticky', top: 0, zIndex: 100
-            }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <div style={{
-                        width: 32, height: 32, borderRadius: 8,
-                        background: 'var(--gradient-hero)',
-                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        color: 'white', fontWeight: 'bold', fontSize: 16
-                    }}>N</div>
-                    <span style={{ fontWeight: 700, fontSize: 18 }}>NemarChat</span>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-                    <span style={{ fontSize: 14, color: 'var(--color-text-secondary)' }}>
-                        {user.name}
-                    </span>
-                    <div style={{
-                        width: 34, height: 34, borderRadius: '50%',
-                        background: 'var(--gradient-hero)',
-                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        color: 'white', fontWeight: 600, fontSize: 13, cursor: 'pointer'
-                    }}>
-                        {user.name?.charAt(0)?.toUpperCase() || 'U'}
-                    </div>
-                    <Button size="small" type="text" danger onClick={handleLogout}>
-                        Đăng xuất
-                    </Button>
-                </div>
-            </header>
 
             {/* ─── Content ─── */}
             <main style={{ maxWidth: 960, margin: '0 auto', padding: '40px 24px' }}>
@@ -223,6 +182,14 @@ export default function WorkspacePage() {
                                     </Button>
                                     <Button
                                         size="small"
+                                        icon={<Users size={13} />}
+                                        onClick={() => router.push(`/workspace/${ws._id}/teams`)}
+                                        style={{ borderRadius: 8, fontSize: 13, display: 'flex', alignItems: 'center', gap: 4 }}
+                                    >
+                                        Đội ngũ
+                                    </Button>
+                                    <Button
+                                        size="small"
                                         icon={<Settings size={13} />}
                                         onClick={() => router.push(`/workspace/${ws._id}/settings`)}
                                         style={{ borderRadius: 8, fontSize: 13, display: 'flex', alignItems: 'center', gap: 4 }}
@@ -282,6 +249,6 @@ export default function WorkspacePage() {
                     </Form.Item>
                 </Form>
             </Modal>
-        </div>
+        </AppLayout>
     );
 }

@@ -137,6 +137,9 @@ export default function ZaloPersonalPage() {
     // ── Message loading state ──
     const [loadingMessages, setLoadingMessages] = useState(false);
 
+    // ── Highlight conversations with new messages (auto-clears after 3s) ──
+    const [highlightedConvIds, setHighlightedConvIds] = useState<Set<string>>(new Set());
+
     // ── QR display state ──
     const [qrFrameUrl, setQrFrameUrl] = useState<string | null>(null);
     const [showQr, setShowQr] = useState(false);
@@ -282,6 +285,37 @@ export default function ZaloPersonalPage() {
                 if (exists) return prev;
                 return [...prev, newMsg];
             });
+
+            // Move conversation to top + update lastMessage/lastMessageAt
+            const threadId = msg.conversationId || msg.threadId || '';
+            if (threadId) {
+                setConversations(prev => {
+                    const idx = prev.findIndex(c => c.threadId === threadId || c._id === `zca_${threadId}`);
+                    if (idx < 0) return prev;
+                    const updated = [...prev];
+                    const [conv] = updated.splice(idx, 1);
+                    conv.lastMessage = (msg.content || '').substring(0, 80);
+                    conv.lastMessageAt = new Date().toISOString();
+                    if (!msg.isSelf) {
+                        conv.unreadCount = (conv.unreadCount || 0) + 1;
+                    }
+                    return [conv, ...updated];
+                });
+
+                // Highlight the conversation for 3 seconds
+                if (!msg.isSelf) {
+                    const convId = `zca_${threadId}`;
+                    setHighlightedConvIds(prev => new Set(prev).add(convId));
+                    setTimeout(() => {
+                        setHighlightedConvIds(prev => {
+                            const next = new Set(prev);
+                            next.delete(convId);
+                            return next;
+                        });
+                    }, 3000);
+                }
+            }
+
             // Show notification for incoming messages
             if (newMsg.sender.type === 'customer') {
                 message.info(`${newMsg.sender.name}: ${newMsg.content.substring(0, 50)}`, 3);
@@ -588,6 +622,13 @@ export default function ZaloPersonalPage() {
             <Head>
                 <title>Zalo Cá nhân | NemarChat</title>
             </Head>
+            <style>{`
+                @keyframes highlightPulse {
+                    0% { background-color: rgba(99,102,241,0.15); }
+                    50% { background-color: rgba(99,102,241,0.06); }
+                    100% { background-color: rgba(99,102,241,0.15); }
+                }
+            `}</style>
 
             <div style={styles.container}>
                 {/* ═══ COLUMN 1: Zalo Account Sidebar ═══ */}
@@ -827,13 +868,31 @@ export default function ZaloPersonalPage() {
                                     ) : (
                                         filteredConvs.map(conv => {
                                             const isSelected = selectedConvId === conv._id;
+                                            const isHighlighted = highlightedConvIds.has(conv._id);
                                             return (
                                                 <div
                                                     key={conv._id}
-                                                    onClick={() => setSelectedConvId(conv._id)}
+                                                    onClick={() => {
+                                                        setSelectedConvId(conv._id);
+                                                        // Clear unread count when selected
+                                                        setConversations(prev => prev.map(c => 
+                                                            c._id === conv._id ? { ...c, unreadCount: 0 } : c
+                                                        ));
+                                                        // Remove highlight
+                                                        setHighlightedConvIds(prev => {
+                                                            const next = new Set(prev);
+                                                            next.delete(conv._id);
+                                                            return next;
+                                                        });
+                                                    }}
                                                     style={{
                                                         ...styles.convItem,
                                                         ...(isSelected ? styles.convItemActive : {}),
+                                                        ...(isHighlighted && !isSelected ? {
+                                                            background: 'linear-gradient(90deg, rgba(99,102,241,0.12) 0%, rgba(99,102,241,0.04) 100%)',
+                                                            borderLeft: '3px solid #6366f1',
+                                                            animation: 'highlightPulse 1.5s ease-in-out 2',
+                                                        } : {}),
                                                     }}
                                                 >
                                                     <div style={styles.convAvatar}>

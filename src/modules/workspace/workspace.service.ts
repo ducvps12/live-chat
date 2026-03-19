@@ -2,6 +2,7 @@ import { workspaceRepo } from './repos/workspace.repo';
 import { widgetRepo } from './repos/widget.repo';
 import { offlineMessageRepo } from './repos/offlineMessage.repo';
 import { AppError } from '../../middlewares/errorHandler';
+import { userRepo } from '../auth/repos/user.repo';
 
 export const workspaceService = {
     async createWorkspace(name: string, slug: string, ownerId: string) {
@@ -34,12 +35,17 @@ export const workspaceService = {
         return ws;
     },
 
-    async addMember(workspaceId: string, userId: string, role: string) {
+    async addMember(workspaceId: string, email: string, role: string) {
         const ws = await workspaceRepo.findById(workspaceId);
         if (!ws) throw new AppError('Workspace không tồn tại', 404, 'NOT_FOUND');
 
+        const user = await userRepo.findByEmail(email);
+        if (!user) throw new AppError('Người dùng chưa đăng ký tài khoản trong hệ thống', 404, 'USER_NOT_FOUND');
+
+        const userId = user._id.toString();
+
         const alreadyMember = ws.members.find((m) => m.userId.toString() === userId);
-        if (alreadyMember) throw new AppError('User đã là thành viên', 409, 'ALREADY_MEMBER');
+        if (alreadyMember) throw new AppError('Người dùng đã là thành viên', 409, 'ALREADY_MEMBER');
 
         return workspaceRepo.addMember(workspaceId, { userId, role });
     },

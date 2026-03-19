@@ -157,5 +157,26 @@ export const authService = {
         });
         
         return { id: admin._id, email: admin.email, name: admin.name, role: admin.role };
+    },
+
+    async updateProfile(userId: string, data: { name: string; avatarUrl?: string }) {
+        const user = await userRepo.findById(userId);
+        if (!user) {
+            throw new AppError('Người dùng không tồn tại', 404, 'NOT_FOUND');
+        }
+
+        const updateData: any = { name: data.name };
+        if (data.avatarUrl !== undefined) {
+            updateData.avatarUrl = data.avatarUrl;
+        }
+
+        const updatedUser = await userRepo.updateUser(userId, updateData);
+        return {
+            id: updatedUser?._id,
+            email: updatedUser?.email,
+            name: updatedUser?.name,
+            avatarUrl: updatedUser?.avatarUrl,
+            role: updatedUser?.role
+        };
     }
 };

@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import asyncHandler from 'express-async-handler';
 import { authService } from './auth.service';
 import { sessionRepo } from './repos/session.repo';
+import { userRepo } from './repos/user.repo';
 
 export const authController = {
     login: asyncHandler(async (req: Request, res: Response) => {
@@ -100,6 +101,30 @@ export const authController = {
     }),
     
     me: asyncHandler(async (req: Request, res: Response) => {
-        res.status(200).json({ success: true, data: { user: (req as any).user } });
+        const userId = (req as any).user.id;
+        const user = await userRepo.findById(userId);
+        if (!user) {
+            res.status(404);
+            throw new Error('User not found');
+        }
+        res.status(200).json({ 
+            success: true, 
+            data: { 
+                user: { 
+                    id: user._id, 
+                    email: user.email, 
+                    name: user.name, 
+                    role: user.role, 
+                    avatarUrl: user.avatarUrl 
+                } 
+            } 
+        });
+    }),
+
+    updateProfile: asyncHandler(async (req: Request, res: Response) => {
+        const userId = (req as any).user.id;
+        const data = (req as any).validated.body;
+        const updatedUser = await authService.updateProfile(userId, data);
+        res.status(200).json({ success: true, data: { user: updatedUser }, message: 'Cập nhật hồ sơ thành công' });
     })
 };

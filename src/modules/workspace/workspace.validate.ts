@@ -52,7 +52,7 @@ export const workspaceValidate = {
     }),
 
     addMember: Joi.object({
-        userId: Joi.string().required(),
+        email: Joi.string().email().required(),
         role: Joi.string().valid('admin', 'agent', 'member').default('member'),
     }),
 };

@@ -13,6 +13,7 @@ import { useTotalUnreadCount } from '../../../domains/conversation';
 import {
     useWidgetsByWorkspace, useCreateWidget, useUpdateWidget, useDeleteWidget
 } from '../../../domains/workspace/widget.hooks';
+import AppLayout from '../../../components/layout/AppLayout';
 
 const { Text } = Typography;
 
@@ -320,51 +321,15 @@ export default function WorkspaceDetailPage() {
     }
 
     return (
-        <div style={{ minHeight: '100vh', background: 'var(--color-bg-soft)' }}>
+        <AppLayout headerTitle="Chat Widgets">
             <Head><title>{workspace?.name || 'Workspace'} | NemarChat</title></Head>
 
-            {/* Header */}
-            <header style={{
-                background: 'var(--color-bg)', borderBottom: '1px solid var(--color-border)',
-                padding: '14px 32px', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                position: 'sticky', top: 0, zIndex: 100
-            }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <Button type="text" icon={<ArrowLeft size={18} />} onClick={() => router.push('/workspace')} />
-                    <div style={{
-                        width: 32, height: 32, borderRadius: 8, background: 'var(--gradient-hero)',
-                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        color: 'white', fontWeight: 'bold', fontSize: 14
-                    }}>{workspace?.name?.charAt(0)?.toUpperCase() || 'W'}</div>
-                    <div>
-                        <div style={{ fontWeight: 600, fontSize: 15 }}>{workspace?.name}</div>
-                        <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>/{workspace?.slug}</div>
-                    </div>
-                </div>
-                <Tag color="blue" style={{ borderRadius: 12 }}>{workspace?.plan?.toUpperCase() || 'FREE'}</Tag>
-                <Badge count={totalUnreadCount} overflowCount={99}>
-                    <Button
-                        type="primary"
-                        icon={<MessageSquare size={16} />}
-                        onClick={() => router.push(`/workspace/${wsId}/inbox`)}
-                        style={{
-                            height: 36, borderRadius: 18,
-                            background: '#6366f1', border: 'none', fontWeight: 600,
-                            display: 'flex', alignItems: 'center', gap: 6,
-                        }}
-                    >
-                        Inbox
-                    </Button>
-                </Badge>
-            </header>
-
             {/* Content */}
-            <main style={{ maxWidth: 1000, margin: '0 auto', padding: '40px 24px' }}>
+            <main style={{ maxWidth: 1000, margin: '0px auto', padding: '40px 24px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 28 }}>
                     <div>
-                        <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 4 }}>Chat Widgets</h1>
                         <p style={{ color: 'var(--color-text-secondary)', fontSize: 14 }}>
-                            Tạo và cấu hình widget nhúng trên website của bạn.
+                            Tạo và cấu hình các widget nhúng trên website của bạn.
                         </p>
                     </div>
                     <Button type="primary" icon={<Plus size={16} />}
@@ -668,6 +633,6 @@ export default function WorkspaceDetailPage() {
                     </div>
                 )}
             </Drawer>
-        </div>
+        </AppLayout>
     );
 }

@@ -13,6 +13,7 @@ import { Conversation, Message } from '../../../types';
 import { VisitorProfileSidebar } from '../../../features/inbox/components/VisitorProfileSidebar';
 import { useQueryClient } from '@tanstack/react-query';
 import { useTotalUnreadCount, conversationKeys } from '../../../domains/conversation';
+import AppLayout from '../../../components/layout/AppLayout';
 
 const { RangePicker } = DatePicker;
 
@@ -116,7 +117,9 @@ export default function InboxPage() {
     const [msgPage, setMsgPage] = useState(1);
     const [hasMoreMsgs, setHasMoreMsgs] = useState(true);
     const [loadingOlder, setLoadingOlder] = useState(false);
-    const [workspaceMembers, setWorkspaceMembers] = useState<Array<{ _id: string; name: string; email?: string }>>([]);
+    const [workspaceMembers, setWorkspaceMembers] = useState<Array<{ _id: string; name: string; email?: string; role?: string }>>([]);
+
+    const isMemberOnly = workspaceMembers.find(m => m._id === me?.user?.id)?.role === 'member';
     const [workspaceTags, setWorkspaceTags] = useState<string[]>([]);
     const [noteText, setNoteText] = useState('');
     const [showNoteInput, setShowNoteInput] = useState(false);
@@ -894,6 +897,7 @@ export default function InboxPage() {
                     _id: m.userId?._id || m.userId,
                     name: m.userId?.name || 'Agent',
                     email: m.userId?.email,
+                    role: m.role,
                 }));
                 setWorkspaceMembers(members);
             })
@@ -991,7 +995,7 @@ export default function InboxPage() {
     }
 
     return (
-        <>
+        <AppLayout hideHeader={true}>
             <Head>
                 <title>Inbox | NemarChat</title>
             </Head>
@@ -1192,8 +1196,10 @@ export default function InboxPage() {
                                     </div>
                                 </div>
                                 <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                                    {/* Assign to me / Unassign */}
-                                    {getAssignedId(selectedConv) === me?.user?.id ? (
+                                    {!isMemberOnly && (
+                                        <>
+                                            {/* Assign to me / Unassign */}
+                                            {getAssignedId(selectedConv) === me?.user?.id ? (
                                         <Tooltip title="Trả về hàng đợi">
                                             <Button
                                                 size="small"
@@ -1316,6 +1322,8 @@ export default function InboxPage() {
                                             ]}
                                             popupMatchSelectWidth={false}
                                         />
+                                    )}
+                                        </>
                                     )}
                                 </div>
                             </div>
@@ -1453,6 +1461,11 @@ export default function InboxPage() {
                             {selectedConv.status !== 'open' ? (
                                 <div style={styles.closedBanner}>
                                     Cuộc hội thoại đã đóng
+                                </div>
+                            ) : isMemberOnly ? (
+                                <div style={{ ...styles.closedBanner, background: '#fef3c7', color: '#92400e', borderTop: '1px solid #fde68a' }}>
+                                    <Users size={14} style={{ marginRight: 6, flexShrink: 0 }} />
+                                    Tài khoản của bạn chỉ có quyền xem cuộc hội thoại (Member).
                                 </div>
                             ) : getAssignedId(selectedConv) && getAssignedId(selectedConv) !== me?.user?.id ? (
                                 <div style={{ ...styles.closedBanner, background: '#fef3c7', color: '#92400e', borderTop: '1px solid #fde68a' }}>
@@ -1598,10 +1611,10 @@ export default function InboxPage() {
                             visitorId={selectedConv?.visitorId || null}
                             conversationTags={selectedConv?.tags || []}
                             workspaceTags={workspaceTags}
-                            onAddTag={(tag) => selectedConv && handleAddTag(selectedConv._id, tag)}
-                            onRemoveTag={(tag) => selectedConv && handleRemoveTag(selectedConv._id, tag)}
+                            onAddTag={(tag) => !isMemberOnly && selectedConv && handleAddTag(selectedConv._id, tag)}
+                            onRemoveTag={(tag) => !isMemberOnly && selectedConv && handleRemoveTag(selectedConv._id, tag)}
                             onAddNote={(content) => {
-                                if (!selectedConv) return;
+                                if (isMemberOnly || !selectedConv) return;
                                 httpClient.post(`/conversations/workspace/${workspaceId}/${selectedConv._id}/notes`, { content })
                                     .then(() => message.success('Ghi chú nội bộ đã thêm'))
                                     .catch(() => message.error('Lỗi khi thêm ghi chú'));
@@ -1636,25 +1649,25 @@ export default function InboxPage() {
                     }
                 }
             `}</style>
-        </>
+        </AppLayout>
     );
 }
 
 // ── Styles ──
 const styles: Record<string, React.CSSProperties> = {
     container: {
+        position: 'absolute',
+        inset: 0,
         display: 'flex',
-        height: '100vh',
-        background: '#f5f5f5',
-        position: 'relative',
+        background: '#f1f5f9',
         overflow: 'hidden',
         fontFamily: "'Inter', -apple-system, sans-serif",
     },
     // Sidebar
     sidebar: {
-        width: 360,
-        background: '#fff',
-        borderRight: '1px solid #e8e8e8',
+        width: 300,
+        background: '#f8fafc',
+        borderRight: '1px solid #e2e8f0',
         display: 'flex',
         flexDirection: 'column',
         flexShrink: 0,
@@ -1673,6 +1686,7 @@ const styles: Record<string, React.CSSProperties> = {
     convList: {
         flex: 1,
         overflowY: 'auto' as const,
+        minHeight: 0,
     },
     convItem: {
         display: 'flex',
@@ -1718,12 +1732,16 @@ const styles: Record<string, React.CSSProperties> = {
         flex: 1,
         display: 'flex',
         flexDirection: 'column',
-        background: '#fafafa',
+        background: '#ffffff',
+        boxShadow: '-2px 0 8px rgba(0,0,0,0.02), 2px 0 8px rgba(0,0,0,0.02)',
+        zIndex: 1,
+        minWidth: 0,
+        minHeight: 0,
     },
     chatHeader: {
-        padding: '12px 16px',
-        background: '#fff',
-        borderBottom: '1px solid #e8e8e8',
+        padding: '16px 20px',
+        background: '#ffffff',
+        borderBottom: '1px solid #e2e8f0',
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'center',
@@ -1741,6 +1759,7 @@ const styles: Record<string, React.CSSProperties> = {
         flex: 1,
         overflowY: 'auto' as const,
         padding: '16px 20px',
+        minHeight: 0,
     },
     msgRow: {
         display: 'flex',
@@ -1755,15 +1774,17 @@ const styles: Record<string, React.CSSProperties> = {
         wordBreak: 'break-word' as const,
     },
     msgAgent: {
-        background: '#6366f1',
+        background: 'var(--gradient-hero)',
         color: '#fff',
         borderBottomRightRadius: 4,
+        boxShadow: '0 2px 6px rgba(99, 102, 241, 0.2)',
     },
     msgVisitor: {
         background: '#fff',
-        border: '1px solid #e5e5e5',
-        color: '#333',
+        border: '1px solid #e2e8f0',
+        color: '#1e293b',
         borderBottomLeftRadius: 4,
+        boxShadow: '0 2px 4px rgba(0,0,0,0.02)',
     },
     systemMsg: {
         textAlign: 'center' as const,
@@ -1787,21 +1808,22 @@ const styles: Record<string, React.CSSProperties> = {
         textDecoration: 'underline',
     },
     inputArea: {
-        padding: '10px 16px',
-        background: '#fff',
-        borderTop: '1px solid #e8e8e8',
+        padding: '16px 20px',
+        background: '#ffffff',
+        borderTop: '1px solid #e2e8f0',
         display: 'flex',
-        gap: 8,
+        gap: 12,
         alignItems: 'center',
     },
     textInput: {
         flex: 1,
-        padding: '10px 16px',
-        border: '1.5px solid #e0e0e0',
-        borderRadius: 22,
-        fontSize: 13,
+        padding: '12px 20px',
+        border: '1px solid #cbd5e1',
+        borderRadius: 24,
+        fontSize: 14,
         outline: 'none',
-        transition: 'border-color .2s',
+        transition: 'all .2s',
+        boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.02)',
     },
     closedBanner: {
         padding: '14px 20px',

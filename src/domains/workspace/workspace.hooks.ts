@@ -53,3 +53,35 @@ export const useDeleteWorkspace = () => {
         },
     });
 };
+
+export const useWorkspaceMembers = (workspaceId: string) => {
+    return useQuery({
+        queryKey: [...workspaceKeys.detail(workspaceId), 'members'],
+        queryFn: () => workspaceHttpService.getMembers(workspaceId),
+        enabled: !!workspaceId,
+    });
+};
+
+export const useAddWorkspaceMember = () => {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: ({ workspaceId, email, role }: { workspaceId: string; email: string; role: string }) =>
+            workspaceHttpService.addMember(workspaceId, { email, role }),
+        onSuccess: (_data, variables) => {
+            qc.invalidateQueries({ queryKey: [...workspaceKeys.detail(variables.workspaceId), 'members'] });
+            qc.invalidateQueries({ queryKey: workspaceKeys.detail(variables.workspaceId) });
+        },
+    });
+};
+
+export const useRemoveWorkspaceMember = () => {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: ({ workspaceId, userId }: { workspaceId: string; userId: string }) =>
+            workspaceHttpService.removeMember(workspaceId, userId),
+        onSuccess: (_data, variables) => {
+            qc.invalidateQueries({ queryKey: [...workspaceKeys.detail(variables.workspaceId), 'members'] });
+            qc.invalidateQueries({ queryKey: workspaceKeys.detail(variables.workspaceId) });
+        },
+    });
+};

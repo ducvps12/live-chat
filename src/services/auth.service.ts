@@ -45,5 +45,10 @@ export const authHttpService = {
     async changePassword(payload: any): Promise<IAuthResponseData> {
         const { data } = await httpClient.post('/auth/change-password', payload);
         return data;
+    },
+
+    async updateProfile(payload: { name: string; avatarUrl?: string }): Promise<IAuthResponseData<{ user: IUser }>> {
+        const { data } = await httpClient.patch('/auth/profile', payload);
+        return data;
     }
 };

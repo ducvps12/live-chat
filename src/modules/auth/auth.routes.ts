@@ -15,6 +15,7 @@ router.post('/reset-password', validateRequest(authValidate.resetPassword), auth
 
 // Protected routes (Require Authentication)
 router.get('/me', requireAuth, authController.me);
+router.patch('/profile', requireAuth, validateRequest(authValidate.updateProfile), authController.updateProfile);
 router.post('/change-password', requireAuth, validateRequest(authValidate.changePassword), authController.changePassword);
 
 // Session Management

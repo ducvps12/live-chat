@@ -74,6 +74,45 @@ const sessions = new Map<string, ZaloSession>();
 const messageCache = new Map<string, ZaloIncomingMessage[]>();
 // Track recent conversation activity for sorting (like phone app)
 const recentConvActivity = new Map<string, { threadId: string; lastMsgAt: number; lastMsg: string; senderName: string }>();
+let activitySaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+// ── Activity persistence (survives page reload + server restart) ──
+function activityPath(sessionId: string): string {
+    return path.join(CREDENTIALS_DIR, `${sessionId}_activity.json`);
+}
+
+function loadActivityFromDisk(sessionId: string): void {
+    try {
+        const filePath = activityPath(sessionId);
+        if (!fs.existsSync(filePath)) return;
+        const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+        if (data && typeof data === 'object') {
+            for (const [key, val] of Object.entries(data)) {
+                if (!recentConvActivity.has(key)) {
+                    recentConvActivity.set(key, val as any);
+                }
+            }
+            console.log(`[ZaloService] Loaded ${Object.keys(data).length} activity entries for session ${sessionId}`);
+        }
+    } catch { /* ignore corrupt file */ }
+}
+
+function saveActivityToDisk(sessionId: string): void {
+    // Debounced save — batch frequent writes
+    if (activitySaveTimer) clearTimeout(activitySaveTimer);
+    activitySaveTimer = setTimeout(() => {
+        try {
+            ensureCredentialsDir();
+            const obj: Record<string, any> = {};
+            for (const [key, val] of recentConvActivity.entries()) {
+                if (key.startsWith(`${sessionId}:`)) {
+                    obj[key] = val;
+                }
+            }
+            fs.writeFileSync(activityPath(sessionId), JSON.stringify(obj), 'utf-8');
+        } catch { /* silent */ }
+    }, 2000);
+}
 
 // ========================
 // CREDENTIAL PERSISTENCE
@@ -156,6 +195,8 @@ function cacheMessage(sessionId: string, msg: ZaloIncomingMessage): void {
         lastMsg: msg.content.substring(0, 80),
         senderName: msg.senderName,
     });
+    // Persist to disk (debounced)
+    saveActivityToDisk(sessionId);
 }
 
 function getCachedMessages(sessionId: string, threadId: string): ZaloIncomingMessage[] {
@@ -167,7 +208,15 @@ function getCachedMessages(sessionId: string, threadId: string): ZaloIncomingMes
 // ========================
 
 function normalizeMessageContent(content: unknown): string {
-    if (typeof content === 'string') return content;
+    if (typeof content === 'string') {
+        try {
+            if (content.startsWith('{') && content.endsWith('}')) {
+                const parsed = JSON.parse(content);
+                return normalizeMessageContent(parsed);
+            }
+        } catch { /* ignore */ }
+        return content;
+    }
     if (!content || typeof content !== 'object') return '';
     const record = content as Record<string, unknown>;
     const title = typeof record.title === 'string' ? record.title.trim() : '';
@@ -203,6 +252,7 @@ export async function createZaloSession(
         }
 
         console.log(`[ZaloService] Creating QR login session ${sessionId}...`);
+        loadActivityFromDisk(sessionId);
 
         const zalo = new Zalo({ logging: false, selfListen: false });
 
@@ -318,6 +368,7 @@ export async function restoreZaloSession(
     onError: (error: string) => void,
 ): Promise<boolean> {
     const creds = readCredentials(sessionId);
+    loadActivityFromDisk(sessionId);
     if (!creds) {
         console.log(`[ZaloService] No stored credentials for session ${sessionId}`);
         return false;
@@ -599,7 +650,7 @@ function registerDMHistoryAPI(session: ZaloSession): void {
             const params = {
                 peerUid,
                 count,
-                msgId: 0, // Start from most recent
+                msgId: "0", // String "0" is often required by Zalo for history
             };
             const encryptedParams = utils.encodeAES(JSON.stringify(params));
             if (!encryptedParams) throw new Error('Failed to encrypt params');
@@ -634,21 +685,22 @@ export async function getZaloMessages(
         if (threadType === 'group') {
             try {
                 const history = await session.api.getGroupChatHistory(threadId, count);
-                const groupMsgs = history?.groupMsgs || [];
+                const groupMsgs = history?.data?.msgs || history?.data?.groupMsgs || history?.groupMsgs || history?.msgs || [];
                 console.log(`[ZaloService] getGroupChatHistory: ${groupMsgs.length} messages for ${threadId}`);
 
                 return groupMsgs.map((gm: any, i: number) => {
                     const data = gm.data || gm;
-                    const content = normalizeMessageContent(data.content);
+                    const content = normalizeMessageContent(data.content || data.content_str);
                     const ts = resolveTimestamp(data.ts);
+                    const senderId = data.uidFrom || data.uid || '';
                     return {
                         id: data.msgId || `zca_gmsg_${Date.now()}_${i}`,
                         content,
                         senderType: gm.isSelf ? 'me' : 'other',
                         senderName: data.dName || (gm.isSelf ? 'Bạn' : 'Thành viên'),
                         createdAt: new Date(ts).toISOString(),
-                        type: typeof data.content === 'string' ? 'text' : 'media',
-                        senderId: data.uidFrom || '',
+                        type: (typeof data.content === 'string' && !data.content.startsWith('{')) ? 'text' : 'media',
+                        senderId: String(senderId),
                     };
                 });
             } catch (err: any) {
@@ -661,14 +713,14 @@ export async function getZaloMessages(
             try {
                 registerDMHistoryAPI(session);
                 const dmHistory = await (session.api as any).getDMHistory({ peerUid: threadId, count });
-                const msgs = dmHistory?.msgs || dmHistory?.groupMsgs || [];
+                const msgs = dmHistory?.data?.msgs || dmHistory?.msgs || dmHistory?.groupMsgs || [];
                 
                 if (msgs.length > 0) {
                     console.log(`[ZaloService] getDMHistory: ${msgs.length} messages for DM ${threadId}`);
                     const ownId = session.api.getOwnId?.() || '';
                     return msgs.map((m: any, i: number) => {
                         const data = m.data || m;
-                        const content = normalizeMessageContent(data.content);
+                        const content = normalizeMessageContent(data.content || data.content_str);
                         const ts = resolveTimestamp(data.ts);
                         const senderId = data.uidFrom || data.uid || '';
                         const isSelf = m.isSelf ?? (String(senderId) === String(ownId));
@@ -678,8 +730,8 @@ export async function getZaloMessages(
                             senderType: isSelf ? 'me' : 'other',
                             senderName: data.dName || (isSelf ? 'Bạn' : 'Người gửi'),
                             createdAt: new Date(ts).toISOString(),
-                            type: typeof data.content === 'string' ? 'text' : 'media',
-                            senderId,
+                            type: (typeof data.content === 'string' && !data.content.startsWith('{')) ? 'text' : 'media',
+                            senderId: String(senderId),
                         };
                     });
                 }

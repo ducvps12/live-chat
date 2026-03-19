@@ -56,13 +56,18 @@ export const workspaceHttpService = {
         return data;
     },
 
-    async addMember(workspaceId: string, payload: { userId: string; role: string }): Promise<IApiRes<IWorkspaceResponse>> {
+    async addMember(workspaceId: string, payload: { email: string; role: string }): Promise<IApiRes<IWorkspaceResponse>> {
         const { data } = await httpClient.post(`/workspaces/${workspaceId}/members`, payload);
         return data;
     },
 
     async removeMember(workspaceId: string, userId: string): Promise<IApiRes<IWorkspaceResponse>> {
         const { data } = await httpClient.delete(`/workspaces/${workspaceId}/members/${userId}`);
+        return data;
+    },
+
+    async getMembers(workspaceId: string): Promise<IApiRes<any[]>> {
+        const { data } = await httpClient.get(`/workspaces/${workspaceId}/members`);
         return data;
     },
 };
