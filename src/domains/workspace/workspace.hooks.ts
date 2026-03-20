@@ -5,6 +5,7 @@ export const workspaceKeys = {
     all: ['workspaces'] as const,
     list: () => [...workspaceKeys.all, 'list'] as const,
     detail: (id: string) => [...workspaceKeys.all, 'detail', id] as const,
+    dashboard: (id: string) => [...workspaceKeys.all, 'dashboard', id] as const,
 };
 
 export const useMyWorkspaces = () => {
@@ -18,6 +19,14 @@ export const useWorkspace = (id: string, enabled = true) => {
     return useQuery({
         queryKey: workspaceKeys.detail(id),
         queryFn: () => workspaceHttpService.getOne(id),
+        enabled: !!id && enabled,
+    });
+};
+
+export const useWorkspaceDashboard = (id: string, enabled = true) => {
+    return useQuery({
+        queryKey: workspaceKeys.dashboard(id),
+        queryFn: () => workspaceHttpService.getDashboardStats(id),
         enabled: !!id && enabled,
     });
 };

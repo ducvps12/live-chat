@@ -343,6 +343,27 @@
             '@keyframes nchat-pulse{0%,100%{opacity:1}50%{opacity:.4}}',
 
             // Body
+            '#nchat-list-view{flex:1;overflow-y:auto;background:#f8f9fa;display:none;flex-direction:column;position:relative}',
+            '.nchat-list-items{flex:1;overflow-y:auto;padding:12px}',
+            '.nchat-list-item{background:#fff;border-radius:12px;padding:12px;margin-bottom:10px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.04);border:1px solid #f0f0f0;transition:all 0.2s;display:flex;align-items:center;gap:12px}',
+            '.nchat-list-item:hover{border-color:' + color + ';box-shadow:0 4px 12px rgba(0,0,0,0.08)}',
+            '.nchat-list-avatar{width:40px;height:40px;border-radius:50%;background:' + color + '20;color:' + color + ';display:flex;align-items:center;justify-content:center;font-weight:bold;font-size:16px;flex-shrink:0}',
+            '.nchat-list-info{flex:1;min-width:0}',
+            '.nchat-list-name{font-size:14px;font-weight:600;color:#333;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+            '.nchat-list-msg{font-size:12px;color:#666;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+            '.nchat-list-time{font-size:11px;color:#999}',
+            '.nchat-list-footer{padding:16px;background:#fff;border-top:1px solid #f0f0f0}',
+            '#nchat-new-conv{width:100%;padding:12px;background:' + color + ';color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;font-size:14px;transition:opacity 0.2s}',
+            '#nchat-new-conv:hover{opacity:0.9}',
+            '#nchat-new-conv svg{width:16px;height:16px;fill:currentColor}',
+            '#nchat-chat-view{flex:1;display:none;flex-direction:column;overflow:hidden}',
+            '#nchat-window.show-list #nchat-list-view{display:flex}',
+            '#nchat-window.show-chat #nchat-chat-view{display:flex}',
+            '#nchat-hdr-left{display:flex;align-items:center;gap:8px}',
+            '#nchat-hdr-back{background:transparent;border:none;color:#fff;width:28px;height:28px;border-radius:50%;cursor:pointer;display:none;align-items:center;justify-content:center;margin-left:-8px;transition:background 0.2s}',
+            '#nchat-hdr-back:hover{background:rgba(255,255,255,0.2)}',
+            '#nchat-hdr-back svg{width:20px;height:20px;fill:currentColor}',
+            '#nchat-window.show-chat.has-list #nchat-hdr-back{display:flex}',
             '#nchat-body{flex:1;overflow-y:auto;padding:16px;background:#f8f9fa;min-height:180px}',
 
             // Pre-chat form
@@ -438,16 +459,33 @@
         var statusDot = online
             ? '<div class="nchat-online"><span class="nchat-online-dot"></span>' + (lang === 'vi' ? 'Trực tuyến' : 'Online') + '</div>'
             : '<div class="nchat-online"><span class="nchat-offline-dot"></span>' + (lang === 'vi' ? 'Ngoại tuyến' : 'Offline') + '</div>';
+        
+        var backIcon = '<svg viewBox="0 0 24 24"><path d="M15.41 16.59L10.83 12l4.58-4.59L14 6l-6 6 6 6 1.41-1.41z"/></svg>';
         var hdr = '<div id="nchat-hdr">'
+            + '<div style="display:flex;align-items:flex-start;justify-content:space-between">'
+            + '<div id="nchat-hdr-left">'
+            + '<button id="nchat-hdr-back" aria-label="Back">' + backIcon + '</button>'
+            + '<div>'
             + '<h4>' + (lang === 'vi' ? 'Chat hỗ trợ' : 'Support Chat') + '</h4>'
             + '<p>' + greeting + '</p>'
             + statusDot
+            + '</div>'
+            + '</div>'
             + '<button id="nchat-hdr-close" aria-label="Close">&times;</button>'
+            + '</div>'
             + '</div>';
 
+        // ── LIST VIEW ──
+        var newConvIcon = '<svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>';
+        var listViewHtml = '<div id="nchat-list-view">'
+            + '<div class="nchat-list-items"></div>'
+            + '<div class="nchat-list-footer"><button id="nchat-new-conv">' + (lang === 'vi' ? 'Tạo hội thoại mới!' : 'New conversation') + ' ' + newConvIcon + '</button></div>'
+            + '</div>';
+
+        // ── CHAT VIEW ──
         // Body — check for existing session to skip pre-chat form
         var existingSession = getVisitorSession();
-        var body = '<div id="nchat-body">';
+        var body = '<div id="nchat-chat-view"><div id="nchat-body">';
 
         if (!online) {
             // ── OFFLINE MODE: show offline message + leave-message form ──
@@ -511,14 +549,14 @@
             + '<label id="nchat-upload-btn" aria-label="Upload"><svg viewBox="0 0 24 24"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg><input type="file" id="nchat-file-input" accept="image/*,.pdf,.doc,.docx" style="display:none" /></label>'
             + '<input type="text" id="nchat-input" placeholder="' + placeholder + '" />'
             + '<button id="nchat-send" aria-label="Send">&#10148;</button>'
-            + '</div>';
+            + '</div></div>'; // end nchat-chat-view
 
         // Branding
         var brand = cfg.showBranding !== false
             ? '<div class="nchat-brand">Powered by <a href="https://nemarchat.com" target="_blank" rel="noopener">NemarChat</a></div>'
             : '';
 
-        win.innerHTML = hdr + body + ftr + brand;
+        win.innerHTML = hdr + listViewHtml + body + ftr + brand;
         document.body.appendChild(win);
 
         // ── Open / Close flow ──
@@ -559,6 +597,17 @@
                     _socket.emit('join:conversation', { conversationId: _conversationId });
                 }
 
+                // Auto-evaluate view: if has conversations, show list. Else show chat.
+                fetch(base + '/api/conversations/public/visitor/' + vid + '/widget/' + id)
+                    .then(r => r.json())
+                    .then(res => {
+                        if (res.success && res.data && res.data.length > 0) {
+                            switchView('list');
+                        } else {
+                            switchView('chat');
+                        }
+                    }).catch(() => switchView('chat'));
+
                 if (!hasOpenedOnce) {
                     hasOpenedOnce = true;
                     // First open: trigger greeting animation (scroll body to top)
@@ -584,11 +633,122 @@
             }
         }
 
+        // ── View Switching ──
+        function switchView(view) {
+            if (view === 'list') {
+                win.classList.remove('show-chat');
+                win.classList.add('show-list');
+                // load list when entering list view
+                loadConversationList();
+            } else {
+                win.classList.remove('show-list');
+                win.classList.add('show-chat');
+                // if we have items, add has-list to show back button
+                if (win.querySelector('.nchat-list-items').children.length > 0) {
+                    win.classList.add('has-list');
+                } else {
+                    win.classList.remove('has-list');
+                }
+            }
+        }
+
+        win.querySelector('#nchat-hdr-back').addEventListener('click', function() {
+            switchView('list');
+        });
+
+        win.querySelector('#nchat-new-conv').addEventListener('click', function() {
+            startNewConversation();
+        });
+
+        function startNewConversation() {
+            var bodyEl = win.querySelector('#nchat-body');
+            bodyEl.innerHTML = '<div class="nchat-msg nchat-msg-bot"><div class="nchat-msg-bubble">' + greeting + '</div></div>';
+            _conversationId = null;
+            _hasMoreMsgs = false;
+            _msgPage = 1;
+            switchView('chat');
+            // Create a new empty conversation instantly
+            if (window.__nchat_visitor || !pcf.enabled) {
+                initConversation(window.__nchat_visitor || {}, null, true);
+            }
+        }
+
+        function loadConversationList() {
+            fetch(base + '/api/conversations/public/visitor/' + vid + '/widget/' + id)
+                .then(function(r) { return r.json(); })
+                .then(function(res) {
+                    if (res.success && res.data && res.data.length > 0) {
+                        var listHtml = '';
+                        var convs = res.data;
+                        for (var i = 0; i < convs.length; i++) {
+                            var c = convs[i];
+                            var dateStr = new Date(c.updatedAt).toLocaleDateString();
+                            var snippet = c.lastMessageSnippet || (lang === 'vi' ? 'Chưa có tin nhắn' : 'No messages yet');
+                            var initial = 'N';
+                            listHtml += '<div class="nchat-list-item" data-id="' + c._id + '">'
+                                + '<div class="nchat-list-avatar">' + initial + '</div>'
+                                + '<div class="nchat-list-info">'
+                                + '<div class="nchat-list-name">' + (lang === 'vi' ? 'Hỗ trợ CSKH' : 'Support') + '</div>'
+                                + '<div class="nchat-list-msg">' + snippet + '</div>'
+                                + '</div><div class="nchat-list-time">' + dateStr + '</div></div>';
+                        }
+                        var listContainer = win.querySelector('.nchat-list-items');
+                        listContainer.innerHTML = listHtml;
+                        win.classList.add('has-list');
+                        
+                        // Bind clicks
+                        var items = listContainer.querySelectorAll('.nchat-list-item');
+                        for (var j = 0; j < items.length; j++) {
+                            items[j].addEventListener('click', function(e) {
+                                var convId = e.currentTarget.getAttribute('data-id');
+                                openConversation(convId);
+                            });
+                        }
+                    } else {
+                        win.querySelector('.nchat-list-items').innerHTML = '<div style="padding:20px;text-align:center;color:#999;font-size:13px">' + (lang === 'vi' ? 'Chưa có cuộc hội thoại nào' : 'No conversations yet') + '</div>';
+                        win.classList.remove('has-list');
+                    }
+                })
+                .catch(function(err) {});
+        }
+
+        function openConversation(convId) {
+            _conversationId = convId;
+            try { localStorage.setItem(CONV_KEY, _conversationId); } catch(e){}
+            if (_socket && _socket.connected) {
+                _socket.emit('join:conversation', { conversationId: _conversationId });
+            }
+            // Clear body and fetch history
+            var bodyEl = win.querySelector('#nchat-body');
+            bodyEl.innerHTML = '<div style="padding:20px;text-align:center;color:#999;font-size:13px">...</div>';
+            switchView('chat');
+            
+            _msgPage = 1;
+            fetch(base + '/api/conversations/public/' + _conversationId + '/messages?page=1&limit=30')
+                .then(function(r) { return r.json(); })
+                .then(function(res) {
+                    bodyEl.innerHTML = '';
+                    if (res.success && res.data) {
+                        var msgs = res.data.items || [];
+                        var totalMsgs = res.data.total || 0;
+                        _hasMoreMsgs = (_msgPage * 30) < totalMsgs;
+                        if (msgs.length > 0) renderMessages(msgs);
+                        if (_hasMoreMsgs) renderLoadOlderButton();
+                    } else {
+                        bodyEl.innerHTML = '<div class="nchat-msg nchat-msg-bot"><div class="nchat-msg-bubble">' + greeting + '</div></div>';
+                    }
+                }).catch(function(){});
+        }
+
         // Apply restored state (render correct icon & class without animation)
         if (isOpen) {
             win.classList.add('nchat-open');
             bubble.innerHTML = '<svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>';
             hasOpenedOnce = true;
+            switchView('chat'); // default to chat, or load list to decide later
+            loadConversationList();
+        } else {
+            switchView('chat'); // default hidden state
         }
 
         bubble.addEventListener('click', function () { toggleChat(); });
@@ -1088,7 +1248,7 @@
         }
 
         // ── Init conversation (findOrCreate) ──
-        function initConversation(visitorInfo, callback) {
+        function initConversation(visitorInfo, callback, forceNew) {
             var meta = collectMetadata();
             fetch(base + '/api/conversations/public/find-or-create', {
                 method: 'POST',
@@ -1097,7 +1257,8 @@
                     widgetId: id,
                     visitorId: vid,
                     visitorInfo: visitorInfo || {},
-                    metadata: meta
+                    metadata: meta,
+                    forceNew: forceNew === true
                 })
             })
                 .then(function (r) { return r.json(); })
@@ -1140,8 +1301,11 @@
                         var msgs = res.data.messages || [];
                         var totalMsgs = res.data.totalMessages || 0;
                         _hasMoreMsgs = (_msgPage * 30) < totalMsgs;
-                        if (msgs.length > 0) {
-                            renderMessages(msgs);
+                        if (msgs.length > 0 || !forceNew) {
+                            var bodyEl = win.querySelector('#nchat-body');
+                            bodyEl.innerHTML = ''; // reset just in case
+                            if (msgs.length > 0) renderMessages(msgs);
+                            else if (!forceNew) bodyEl.innerHTML = '<div class="nchat-msg nchat-msg-bot"><div class="nchat-msg-bubble">' + greeting + '</div></div>';
                         }
                         if (_hasMoreMsgs) {
                             renderLoadOlderButton();

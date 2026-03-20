@@ -12,7 +12,7 @@ export const conversationService = {
      * Find existing open conversation for visitor, or create a new one.
      * Also upserts visitor profile.
      */
-    async findOrCreate(widgetId: string, visitorId: string, visitorInfo: Record<string, any> = {}, metadata: Record<string, any> = {}) {
+    async findOrCreate(widgetId: string, visitorId: string, visitorInfo: Record<string, any> = {}, metadata: Record<string, any> = {}, forceNew: boolean = false) {
         const widget = await widgetRepo.findById(widgetId);
         if (!widget || !widget.isActive) throw new AppError('Widget không tồn tại', 404, 'NOT_FOUND');
 
@@ -24,8 +24,8 @@ export const conversationService = {
             visitorInfo
         );
 
-        // Try to find existing open conversation
-        let conversation = await conversationRepo.findActiveByVisitor(visitorId, widgetId);
+        // Try to find existing open conversation unless forceNew is true
+        let conversation = forceNew ? null : await conversationRepo.findActiveByVisitor(visitorId, widgetId);
         let isNew = false;
 
         if (!conversation) {
@@ -70,6 +70,13 @@ export const conversationService = {
 
         const msgResult = await messageRepo.findByConversation(conversation._id.toString(), { limit: 30, excludeInternal: true });
         return { conversation, messages: msgResult.items, totalMessages: msgResult.total };
+    },
+
+    /**
+     * Get all conversations for a specific visitor
+     */
+    async getByVisitor(visitorId: string, widgetId: string) {
+        return conversationRepo.findByVisitor(visitorId, widgetId);
     },
 
     /**

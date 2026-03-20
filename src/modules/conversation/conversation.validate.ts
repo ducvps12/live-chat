@@ -15,6 +15,7 @@ export const conversationValidate = {
     findOrCreate: Joi.object({
         widgetId: Joi.string().required(),
         visitorId: Joi.string().required(),
+        forceNew: Joi.boolean().optional(),
         visitorInfo: Joi.object({
             name: Joi.string().allow('').max(100),
             email: Joi.string().email().allow('').max(200),

@@ -15,6 +15,11 @@ router.post(
 );
 
 router.get(
+    '/public/visitor/:visitorId/widget/:widgetId',
+    conversationController.getByVisitor
+);
+
+router.get(
     '/public/:conversationId/messages',
     conversationController.getMessages
 );

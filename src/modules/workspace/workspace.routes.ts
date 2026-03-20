@@ -31,6 +31,13 @@ router.get(
     workspaceController.getOne
 );
 
+router.get(
+    '/:workspaceId/dashboard',
+    requireAuth,
+    scopeCheck,
+    workspaceController.getDashboardStats
+);
+
 router.patch(
     '/:workspaceId',
     requireAuth,

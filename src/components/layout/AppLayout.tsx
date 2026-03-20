@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
 import { Layout, Menu, Dropdown, Avatar, Spin, Badge } from 'antd';
 import { 
-    MessageSquare, Settings, Users, Box, User, LogOut, Code, ChevronDown, CheckCircle, ChevronLeft, ChevronRight
+    MessageSquare, Settings, Users, Box, User, LogOut, Code, ChevronDown, CheckCircle, ChevronLeft, ChevronRight, LayoutDashboard 
 } from 'lucide-react';
 import Link from 'next/link';
 import { useGetMe, useLogout } from '../../domains/auth/auth.hooks';
@@ -58,14 +58,19 @@ export default function AppLayout({ children, hideHeader = false, headerTitle, h
         // Workspace-specific menu
         menuItems.push(
             {
+                key: `/workspace/${workspaceId}`,
+                icon: <LayoutDashboard size={20} />,
+                label: <Link href={`/workspace/${workspaceId}`}>Tổng quan</Link>,
+            },
+            {
                 key: `/workspace/${workspaceId}/inbox`,
                 icon: <Badge count={unreadCount} size="small" offset={[10, 0]}><MessageSquare size={20} /></Badge>,
                 label: <Link href={`/workspace/${workspaceId}/inbox`}>Hộp thư</Link>,
             },
             {
-                key: `/workspace/${workspaceId}`,
+                key: `/workspace/${workspaceId}/widgets`,
                 icon: <Code size={20} />,
-                label: <Link href={`/workspace/${workspaceId}`}>Widget Settings</Link>,
+                label: <Link href={`/workspace/${workspaceId}/widgets`}>Widgets</Link>,
             },
             {
                 key: `/workspace/${workspaceId}/teams`,
@@ -95,6 +100,7 @@ export default function AppLayout({ children, hideHeader = false, headerTitle, h
         if (router.pathname.includes('/inbox')) selectedKey = `/workspace/${workspaceId}/inbox`;
         else if (router.pathname.includes('/teams')) selectedKey = `/workspace/${workspaceId}/teams`;
         else if (router.pathname.includes('/settings')) selectedKey = `/workspace/${workspaceId}/settings`;
+        else if (router.pathname.includes('/widgets')) selectedKey = `/workspace/${workspaceId}/widgets`;
         else selectedKey = `/workspace/${workspaceId}`;
     }
 

@@ -22,6 +22,11 @@ export const workspaceController = {
         res.status(200).json({ success: true, data: workspace });
     }),
 
+    getDashboardStats: asyncHandler(async (req: Request, res: Response) => {
+        const stats = await workspaceService.getDashboardStats(req.params.workspaceId as string);
+        res.status(200).json({ success: true, data: stats });
+    }),
+
     update: asyncHandler(async (req: Request, res: Response) => {
         const workspace = await workspaceService.updateWorkspace(
             req.params.workspaceId as string,

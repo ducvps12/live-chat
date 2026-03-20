@@ -47,6 +47,11 @@ export const workspaceHttpService = {
         return data;
     },
 
+    async getDashboardStats(workspaceId: string): Promise<IApiRes<any>> {
+        const { data } = await httpClient.get(`/workspaces/${workspaceId}/dashboard`);
+        return data;
+    },
+
     async update(workspaceId: string, payload: any): Promise<IApiRes<IWorkspaceResponse>> {
         const { data } = await httpClient.patch(`/workspaces/${workspaceId}`, payload);
         return data;

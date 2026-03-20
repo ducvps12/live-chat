@@ -3,12 +3,17 @@ import asyncHandler from 'express-async-handler';
 import { conversationService } from './conversation.service';
 
 export const conversationController = {
-    // ── Public: widget calls (no auth) ──
+    // ── Public Widget Endpoints ──
+
+    getByVisitor: asyncHandler(async (req: Request, res: Response) => {
+        const conversations = await conversationService.getByVisitor(req.params.visitorId, req.params.widgetId);
+        res.status(200).json({ success: true, data: conversations });
+    }),
 
     findOrCreate: asyncHandler(async (req: Request, res: Response) => {
-        const { widgetId, visitorId, visitorInfo, metadata } = (req as any).validated.body;
-        const result = await conversationService.findOrCreate(widgetId, visitorId, visitorInfo || {}, metadata || {});
-        res.status(result.isNew ? 201 : 200).json({ success: true, data: result });
+        const { widgetId, visitorId, visitorInfo, metadata, forceNew } = (req as any).validated.body;
+        const result = await conversationService.findOrCreate(widgetId, visitorId, visitorInfo, metadata, forceNew);
+        res.status(200).json({ success: true, data: result });
     }),
 
     getMessages: asyncHandler(async (req: Request, res: Response) => {
