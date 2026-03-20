@@ -1,4 +1,5 @@
 import { ConversationModel, IConversation } from './conversation.model';
+import { MessageModel } from './message.model';
 
 export const conversationRepo = {
     async create(data: Partial<IConversation>): Promise<IConversation> {
@@ -246,5 +247,74 @@ export const conversationRepo = {
             { $pull: { tags: tag } },
             { new: true }
         ).exec();
+    },
+
+    /**
+     * Aggregate per-agent conversation stats for a workspace.
+     * Returns: [{ _id: agentObjectId, total, open, closed, missed }]
+     */
+    async getAgentConversationStats(workspaceId: string) {
+        const mongoose = await import('mongoose');
+        return ConversationModel.aggregate([
+            { $match: { workspaceId: new mongoose.Types.ObjectId(workspaceId), assignedTo: { $exists: true, $ne: null } } },
+            {
+                $group: {
+                    _id: '$assignedTo',
+                    total: { $sum: 1 },
+                    open: { $sum: { $cond: [{ $eq: ['$status', 'open'] }, 1, 0] } },
+                    closed: { $sum: { $cond: [{ $in: ['$status', ['closed', 'resolved']] }, 1, 0] } },
+                    pending: { $sum: { $cond: [{ $eq: ['$status', 'pending'] }, 1, 0] } },
+                    lastActivity: { $max: '$lastMessageAt' },
+                },
+            },
+            {
+                $lookup: {
+                    from: 'users',
+                    localField: '_id',
+                    foreignField: '_id',
+                    as: 'user',
+                },
+            },
+            { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
+            {
+                $project: {
+                    _id: 1,
+                    total: 1,
+                    open: 1,
+                    closed: 1,
+                    pending: 1,
+                    lastActivity: 1,
+                    userName: { $ifNull: ['$user.name', 'Unknown'] },
+                    userEmail: { $ifNull: ['$user.email', ''] },
+                },
+            },
+            { $sort: { total: -1 } },
+        ]).exec();
+    },
+
+    /**
+     * Aggregate per-agent message counts for conversations in a workspace.
+     * Returns: [{ _id: agentIdString, messagesSent: number }]
+     */
+    async getAgentMessageCounts(workspaceId: string) {
+        const mongoose = await import('mongoose');
+        // First get all conversation IDs for this workspace
+        const conversationIds = await ConversationModel.find(
+            { workspaceId: new mongoose.Types.ObjectId(workspaceId) },
+            { _id: 1 }
+        ).lean().exec();
+
+        const ids = conversationIds.map((c: { _id: unknown }) => c._id);
+        if (ids.length === 0) return [];
+
+        return MessageModel.aggregate([
+            { $match: { conversationId: { $in: ids }, 'sender.type': 'agent' } },
+            {
+                $group: {
+                    _id: '$sender.id',
+                    messagesSent: { $sum: 1 },
+                },
+            },
+        ]).exec();
     },
 };

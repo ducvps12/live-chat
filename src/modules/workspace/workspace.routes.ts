@@ -190,6 +190,14 @@ router.patch(
     offlineMessageController.markAsReplied
 );
 
+// ────────── Agent Performance ──────────
+router.get(
+    '/:workspaceId/agent-performance',
+    requireAuth,
+    scopeCheck,
+    workspaceController.getAgentPerformance
+);
+
 // ────────── Presence ──────────
 router.get(
     '/:workspaceId/presence',

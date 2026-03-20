@@ -140,6 +140,76 @@ export const workspaceService = {
         if (!newTag || newTag.trim().length === 0) throw new AppError('Tag mới không được rỗng', 400, 'VALIDATION_ERROR');
         return workspaceRepo.updateTag(workspaceId, oldTag, newTag.trim().toLowerCase());
     },
+
+    async getAgentPerformance(workspaceId: string) {
+        const workspace = await workspaceRepo.findById(workspaceId);
+        if (!workspace || !workspace.isActive) throw new AppError('Workspace không tồn tại', 404, 'NOT_FOUND');
+
+        const memberIds = workspace.members.map((m) => m.userId.toString());
+
+        const [convStats, msgCounts, users] = await Promise.all([
+            conversationRepo.getAgentConversationStats(workspaceId),
+            conversationRepo.getAgentMessageCounts(workspaceId),
+            userRepo.findByIds(memberIds),
+        ]);
+
+        // Build user info map
+        const userMap = new Map<string, { name: string; email: string }>();
+        for (const u of users) {
+            userMap.set(u._id.toString(), { name: u.name || 'Unknown', email: u.email || '' });
+        }
+
+        // Build message count map (sender.id is stored as string)
+        const msgMap = new Map<string, number>();
+        for (const m of msgCounts) {
+            msgMap.set(String(m._id), m.messagesSent);
+        }
+
+        // Build conv stats map
+        const statsMap = new Map<string, {
+            total: number; open: number; closed: number; pending: number;
+            lastActivity: Date | null;
+        }>();
+        for (const s of convStats) {
+            statsMap.set(String(s._id), s);
+        }
+
+        // Merge with workspace members
+        const results = workspace.members.map((member) => {
+            const memberId = member.userId.toString();
+            const stat = statsMap.get(memberId);
+            const userInfo = userMap.get(memberId);
+
+            const total = stat?.total ?? 0;
+            const open = stat?.open ?? 0;
+            const closed = stat?.closed ?? 0;
+            const pending = stat?.pending ?? 0;
+            const messagesSent = msgMap.get(memberId) ?? 0;
+            const closeRate = total > 0 ? Math.round((closed / total) * 100) : 0;
+
+            return {
+                userId: memberId,
+                name: userInfo?.name ?? 'Unknown',
+                email: userInfo?.email ?? '',
+                role: member.role,
+                joinedAt: member.joinedAt,
+                stats: {
+                    total,
+                    open,
+                    closed,
+                    pending,
+                    closeRate,
+                    messagesSent,
+                    lastActivity: stat?.lastActivity ?? null,
+                },
+            };
+        });
+
+        // Sort by total conversations descending
+        results.sort((a, b) => b.stats.total - a.stats.total);
+
+        return results;
+    },
 };
 
 export const widgetService = {

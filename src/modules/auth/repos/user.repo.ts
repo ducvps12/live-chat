@@ -15,5 +15,9 @@ export const userRepo = {
 
     async updateUser(id: string, data: Partial<IUser>): Promise<IUser | null> {
         return UserModel.findByIdAndUpdate(id, data, { new: true }).exec();
-    }
+    },
+
+    async findByIds(ids: string[]): Promise<IUser[]> {
+        return UserModel.find({ _id: { $in: ids } }, 'name email').exec();
+    },
 };

@@ -95,6 +95,12 @@ export const workspaceController = {
         const status = presenceStore.getVisitorStatus(req.params.visitorId as string);
         res.status(200).json({ success: true, data: { status } });
     }),
+
+    // GET /:workspaceId/agent-performance — per-agent stats
+    getAgentPerformance: asyncHandler(async (req: Request, res: Response) => {
+        const data = await workspaceService.getAgentPerformance(req.params.workspaceId as string);
+        res.status(200).json({ success: true, data });
+    }),
 };
 
 export const widgetController = {

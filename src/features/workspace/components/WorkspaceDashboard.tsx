@@ -15,6 +15,8 @@ import {
 import {
     Activity,
     AlertTriangle,
+    Award,
+    BarChart3,
     Bell,
     Briefcase,
     Box,
@@ -29,6 +31,8 @@ import {
     RotateCcw,
     Settings,
     Timer,
+    TrendingUp,
+    Trophy,
     UserCheck,
     UserRoundX,
     Users,
@@ -39,6 +43,7 @@ import {
 import {
     useWorkspace,
     useWorkspaceDashboard,
+    useAgentPerformance,
 } from '../../../domains/workspace/workspace.hooks';
 
 dayjs.locale('vi');
@@ -558,6 +563,9 @@ const WorkspaceDashboard: React.FC<Props> = ({ workspaceId }) => {
                         </DashboardCard>
                     </div>
                 </section>
+
+                {/* ── Agent Performance ── */}
+                <AgentPerformanceSection workspaceId={workspaceId} />
             </div>
         </div>
     );
@@ -878,6 +886,210 @@ const PlanInfoRow = ({
                 {value}
             </div>
         </div>
+    );
+};
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Agent Performance Section
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+const ROLE_LABELS: Record<string, string> = {
+    owner: 'Chủ sở hữu',
+    admin: 'Quản trị',
+    agent: 'Nhân viên',
+    member: 'Thành viên',
+};
+
+const AVATAR_GRADIENTS = [
+    'linear-gradient(135deg, #6366f1, #818cf8)',
+    'linear-gradient(135deg, #8b5cf6, #a78bfa)',
+    'linear-gradient(135deg, #06b6d4, #22d3ee)',
+    'linear-gradient(135deg, #f43f5e, #fb7185)',
+    'linear-gradient(135deg, #10b981, #34d399)',
+    'linear-gradient(135deg, #f59e0b, #fbbf24)',
+];
+
+const AgentPerformanceSection = ({ workspaceId }: { workspaceId: string }) => {
+    const { data, isLoading } = useAgentPerformance(workspaceId);
+    const agents = data?.data ?? [];
+
+    return (
+        <section className="space-y-5">
+            <SectionHeading icon={Trophy} title="Hiệu suất nhân viên" />
+
+            <DashboardCard>
+                {isLoading ? (
+                    <div className="flex items-center justify-center" style={{ padding: '40px 0' }}>
+                        <Spin size="default" />
+                    </div>
+                ) : agents.length === 0 ? (
+                    <div className="text-center" style={{ padding: '40px 0' }}>
+                        <div className="flex justify-center">
+                            <div
+                                className="flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-100 text-slate-400"
+                            >
+                                <Users size={24} />
+                            </div>
+                        </div>
+                        <p className="mt-4 text-[14px] text-slate-500">Chưa có dữ liệu hiệu suất</p>
+                    </div>
+                ) : (
+                    <>
+                        {/* Summary stats row */}
+                        <div className="mb-6 grid grid-cols-4 gap-3">
+                            <div className="rounded-2xl bg-indigo-50/70 text-center" style={{ padding: '16px 12px' }}>
+                                <p className="m-0 text-[22px] font-bold text-indigo-700">{agents.length}</p>
+                                <p className="m-0 mt-1 text-[11px] font-semibold uppercase tracking-wider text-indigo-500">Nhân viên</p>
+                            </div>
+                            <div className="rounded-2xl bg-emerald-50/70 text-center" style={{ padding: '16px 12px' }}>
+                                <p className="m-0 text-[22px] font-bold text-emerald-700">
+                                    {agents.reduce((s: number, a: any) => s + a.stats.total, 0)}
+                                </p>
+                                <p className="m-0 mt-1 text-[11px] font-semibold uppercase tracking-wider text-emerald-500">Tổng hội thoại</p>
+                            </div>
+                            <div className="rounded-2xl bg-sky-50/70 text-center" style={{ padding: '16px 12px' }}>
+                                <p className="m-0 text-[22px] font-bold text-sky-700">
+                                    {agents.reduce((s: number, a: any) => s + a.stats.closed, 0)}
+                                </p>
+                                <p className="m-0 mt-1 text-[11px] font-semibold uppercase tracking-wider text-sky-500">Đã đóng</p>
+                            </div>
+                            <div className="rounded-2xl bg-violet-50/70 text-center" style={{ padding: '16px 12px' }}>
+                                <p className="m-0 text-[22px] font-bold text-violet-700">
+                                    {agents.reduce((s: number, a: any) => s + a.stats.messagesSent, 0)}
+                                </p>
+                                <p className="m-0 mt-1 text-[11px] font-semibold uppercase tracking-wider text-violet-500">Tin nhắn gửi</p>
+                            </div>
+                        </div>
+
+                        {/* Table */}
+                        <div className="overflow-x-auto rounded-2xl border border-slate-200/80">
+                            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                                <thead>
+                                    <tr className="bg-slate-50/80">
+                                        <th className="text-left text-[11px] font-semibold uppercase tracking-wider text-slate-500" style={{ padding: '14px 16px' }}>
+                                            Nhân viên
+                                        </th>
+                                        <th className="text-center text-[11px] font-semibold uppercase tracking-wider text-slate-500" style={{ padding: '14px 12px' }}>
+                                            Vai trò
+                                        </th>
+                                        <th className="text-center text-[11px] font-semibold uppercase tracking-wider text-slate-500" style={{ padding: '14px 12px' }}>
+                                            Hội thoại
+                                        </th>
+                                        <th className="text-center text-[11px] font-semibold uppercase tracking-wider text-slate-500" style={{ padding: '14px 12px' }}>
+                                            Đang xử lý
+                                        </th>
+                                        <th className="text-center text-[11px] font-semibold uppercase tracking-wider text-slate-500" style={{ padding: '14px 12px' }}>
+                                            Đã đóng
+                                        </th>
+                                        <th className="text-center text-[11px] font-semibold uppercase tracking-wider text-slate-500" style={{ padding: '14px 12px', minWidth: 160 }}>
+                                            Tỷ lệ đóng
+                                        </th>
+                                        <th className="text-center text-[11px] font-semibold uppercase tracking-wider text-slate-500" style={{ padding: '14px 12px' }}>
+                                            Tin nhắn gửi
+                                        </th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {agents.map((agent: any, idx: number) => {
+                                        const gradient = AVATAR_GRADIENTS[idx % AVATAR_GRADIENTS.length];
+                                        const initial = (agent.name || 'U').charAt(0).toUpperCase();
+                                        const closeRate = agent.stats.closeRate;
+                                        const closeRateColor =
+                                            closeRate >= 80 ? '#10b981' :
+                                            closeRate >= 50 ? '#f59e0b' : '#f43f5e';
+
+                                        return (
+                                            <tr
+                                                key={agent.userId}
+                                                className="border-t border-slate-100 transition-colors duration-150 hover:bg-slate-50/50"
+                                            >
+                                                {/* Agent info */}
+                                                <td style={{ padding: '14px 16px' }}>
+                                                    <div className="flex items-center gap-3">
+                                                        <div
+                                                            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-[13px] font-bold text-white"
+                                                            style={{ background: gradient }}
+                                                        >
+                                                            {initial}
+                                                        </div>
+                                                        <div className="min-w-0">
+                                                            <p className="m-0 truncate text-[13px] font-semibold text-slate-800">
+                                                                {agent.name}
+                                                            </p>
+                                                            <p className="m-0 truncate text-[11px] text-slate-400">
+                                                                {agent.email}
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                </td>
+
+                                                {/* Role */}
+                                                <td className="text-center" style={{ padding: '14px 12px' }}>
+                                                    <span className="inline-block rounded-lg bg-slate-100 text-[11px] font-medium text-slate-600" style={{ padding: '4px 10px' }}>
+                                                        {ROLE_LABELS[agent.role] ?? agent.role}
+                                                    </span>
+                                                </td>
+
+                                                {/* Total conversations */}
+                                                <td className="text-center" style={{ padding: '14px 12px' }}>
+                                                    <span className="text-[15px] font-bold text-slate-800">{agent.stats.total}</span>
+                                                </td>
+
+                                                {/* Open */}
+                                                <td className="text-center" style={{ padding: '14px 12px' }}>
+                                                    <span className="inline-flex items-center gap-1 rounded-lg bg-amber-50 text-[12px] font-semibold text-amber-700" style={{ padding: '3px 8px' }}>
+                                                        <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-500" />
+                                                        {agent.stats.open + agent.stats.pending}
+                                                    </span>
+                                                </td>
+
+                                                {/* Closed */}
+                                                <td className="text-center" style={{ padding: '14px 12px' }}>
+                                                    <span className="inline-flex items-center gap-1 rounded-lg bg-emerald-50 text-[12px] font-semibold text-emerald-700" style={{ padding: '3px 8px' }}>
+                                                        <CheckCircle2 size={12} />
+                                                        {agent.stats.closed}
+                                                    </span>
+                                                </td>
+
+                                                {/* Close rate with progress bar */}
+                                                <td style={{ padding: '14px 12px', minWidth: 160 }}>
+                                                    <div className="flex items-center gap-2">
+                                                        <div className="flex-1 overflow-hidden rounded-full bg-slate-100" style={{ height: 6 }}>
+                                                            <div
+                                                                className="rounded-full transition-all duration-500"
+                                                                style={{
+                                                                    width: `${closeRate}%`,
+                                                                    height: '100%',
+                                                                    background: closeRateColor,
+                                                                }}
+                                                            />
+                                                        </div>
+                                                        <span
+                                                            className="shrink-0 text-[12px] font-bold"
+                                                            style={{ color: closeRateColor, minWidth: 36, textAlign: 'right' }}
+                                                        >
+                                                            {closeRate}%
+                                                        </span>
+                                                    </div>
+                                                </td>
+
+                                                {/* Messages sent */}
+                                                <td className="text-center" style={{ padding: '14px 12px' }}>
+                                                    <span className="inline-flex items-center gap-1 text-[13px] font-semibold text-slate-700">
+                                                        <MessageSquare size={13} className="text-slate-400" />
+                                                        {agent.stats.messagesSent}
+                                                    </span>
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    </>
+                )}
+            </DashboardCard>
+        </section>
     );
 };
 

@@ -91,4 +91,9 @@ export const workspaceHttpService = {
         const { data } = await httpClient.delete(`/workspaces/${workspaceId}/tags`, { data: { tag } });
         return data;
     },
+
+    async getAgentPerformance(workspaceId: string): Promise<IApiRes<any[]>> {
+        const { data } = await httpClient.get(`/workspaces/${workspaceId}/agent-performance`);
+        return data;
+    },
 };
