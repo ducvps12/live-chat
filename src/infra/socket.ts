@@ -18,6 +18,7 @@ export const rooms = {
     conversation: (id: string) => `conv:${id}`,
     workspace: (id: string) => `ws:${id}`,
     visitor: (visitorId: string) => `visitor:${visitorId}`,
+    user: (userId: string) => `user:${userId}`,
 };
 
 // ── Socket data attached after handshake ──
@@ -221,6 +222,9 @@ export function initSocketGateway(server: http.Server): Server {
         if (workspaceId) {
             socket.join(rooms.workspace(workspaceId));
         }
+
+        // Join personal user room for direct notifications
+        socket.join(rooms.user(data.id));
 
         // ── Workspace room management ──
 
@@ -793,6 +797,13 @@ export function emitToConversation(conversationId: string, event: string, data: 
  */
 export function emitToWorkspace(workspaceId: string, event: string, data: any) {
     getIO().of('/agent').to(rooms.workspace(workspaceId)).emit(event, data);
+}
+
+/**
+ * Emit event to a specific agent user.
+ */
+export function emitToUser(userId: string, event: string, data: any) {
+    getIO().of('/agent').to(rooms.user(userId)).emit(event, data);
 }
 
 /**

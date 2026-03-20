@@ -34,14 +34,15 @@ export const conversationController = {
     }),
 
     sendMessage: asyncHandler(async (req: Request, res: Response) => {
-        const { content, visitorId, type, attachments, clientMessageId } = (req as any).validated.body;
+        const { content, visitorId, type, attachments, clientMessageId, replyTo } = (req as any).validated.body;
         const msg = await conversationService.addMessage(
             req.params.conversationId as string,
             { type: 'visitor', id: visitorId, name: '' },
             content || '',
             type || 'text',
             attachments,
-            clientMessageId
+            clientMessageId,
+            replyTo
         );
         res.status(201).json({ success: true, data: msg });
     }),
@@ -68,7 +69,7 @@ export const conversationController = {
     // ── Authenticated: agent dashboard ──
 
     getByWorkspace: asyncHandler(async (req: Request, res: Response) => {
-        const { status, assignee, tags, channel, dateFrom, dateTo, sortBy, page, limit } = req.query as any;
+        const { status, assignee, tags, channel, dateFrom, dateTo, sortBy, page, limit, domain } = req.query as any;
         const result = await conversationService.getByWorkspace(
             req.params.workspaceId as string,
             { 
@@ -80,11 +81,17 @@ export const conversationController = {
                 dateTo,
                 sortBy,
                 page: Number(page) || 1, 
-                limit: Number(limit) || 20 
+                limit: Number(limit) || 20,
+                domain
             },
             { userId: (req as any).user.id, type: 'agent' }
         );
         res.status(200).json({ success: true, data: result });
+    }),
+
+    getDomainsByWorkspace: asyncHandler(async (req: Request, res: Response) => {
+        const domains = await conversationService.getDomainsByWorkspace(req.params.workspaceId as string);
+        res.status(200).json({ success: true, data: domains.filter(Boolean) });
     }),
 
     getOne: asyncHandler(async (req: Request, res: Response) => {
@@ -113,7 +120,7 @@ export const conversationController = {
     }),
 
     agentSendMessage: asyncHandler(async (req: Request, res: Response) => {
-        const { content, type, attachments, clientMessageId } = (req as any).validated.body;
+        const { content, type, attachments, clientMessageId, replyTo } = (req as any).validated.body;
         const userId = (req as any).user.id;
         const userName = (req as any).user.name || 'Agent';
 
@@ -139,9 +146,31 @@ export const conversationController = {
             content || '',
             type || 'text',
             attachments,
-            clientMessageId
+            clientMessageId,
+            replyTo
         );
         res.status(201).json({ success: true, data: msg });
+    }),
+
+    editMessage: asyncHandler(async (req: Request, res: Response) => {
+        const agentId = (req as any).user.id;
+        const msg = await conversationService.editMessage(
+            req.params.conversationId as string,
+            req.params.messageId as string,
+            req.body.content,
+            agentId
+        );
+        res.status(200).json({ success: true, data: msg });
+    }),
+
+    recallMessage: asyncHandler(async (req: Request, res: Response) => {
+        const agentId = (req as any).user.id;
+        const msg = await conversationService.recallMessage(
+            req.params.conversationId as string,
+            req.params.messageId as string,
+            agentId
+        );
+        res.status(200).json({ success: true, data: msg });
     }),
 
     closeConversation: asyncHandler(async (req: Request, res: Response) => {

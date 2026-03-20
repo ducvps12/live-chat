@@ -3,6 +3,7 @@ import mongoose, { Document, Schema } from 'mongoose';
 export interface IWorkspace extends Document {
     name: string;
     slug: string;
+    logoUrl?: string;
     ownerId: mongoose.Types.ObjectId;
     plan: string;
     settings: {
@@ -38,6 +39,7 @@ const workspaceSchema = new Schema<IWorkspace>(
     {
         name: { type: String, required: true },
         slug: { type: String, required: true, unique: true, index: true },
+        logoUrl: { type: String, default: '' },
         ownerId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
         plan: { type: String, enum: ['free', 'starter', 'pro', 'enterprise'], default: 'free' },
         settings: {

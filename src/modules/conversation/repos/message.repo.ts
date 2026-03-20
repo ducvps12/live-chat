@@ -5,6 +5,10 @@ export const messageRepo = {
         return MessageModel.create(data);
     },
 
+    async findById(messageId: string): Promise<IMessage | null> {
+        return MessageModel.findById(messageId).exec();
+    },
+
     /**
      * Find existing message by clientMessageId (idempotency check).
      * Returns null if no clientMessageId provided or not found.

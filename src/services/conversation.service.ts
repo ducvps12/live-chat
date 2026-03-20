@@ -18,5 +18,9 @@ export const conversationService = {
     getUnreadCount: async (workspaceId: string): Promise<number> => {
         const res = await httpClient.get<ApiResponse<{ unreadCount: number }>>(`/conversations/workspace/${workspaceId}/unread-count`);
         return res.data.data.unreadCount;
+    },
+    addInternalNote: async (workspaceId: string, conversationId: string, payload: { content: string, mentionedUserIds?: string[] }) => {
+        const res = await httpClient.post<ApiResponse<any>>(`/conversations/workspace/${workspaceId}/${conversationId}/notes`, payload);
+        return res.data;
     }
 };

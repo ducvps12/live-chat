@@ -5,7 +5,7 @@ import { widgetRepo } from '../workspace/repos/widget.repo';
 import { AppError } from '../../middlewares/errorHandler';
 import { security } from '../../infra/security';
 import { sanitizeMessage, sanitizeFilename } from '../../infra/sanitize';
-import { emitToConversation, emitToWorkspace } from '../../infra/socket';
+import { emitToConversation, emitToWorkspace, emitToUser } from '../../infra/socket';
 
 export const conversationService = {
     /**
@@ -81,7 +81,8 @@ export const conversationService = {
         content: string,
         msgType: 'text' | 'image' | 'file' | 'system' = 'text',
         attachments?: Array<{ data: string; filename: string; mimeType: string; size: number }>,
-        clientMessageId?: string
+        clientMessageId?: string,
+        replyTo?: { messageId: string; content: string; senderName: string }
     ) {
         const conversation = await conversationRepo.findById(conversationId);
         if (!conversation) throw new AppError('Cuộc hội thoại không tồn tại', 404, 'NOT_FOUND');
@@ -135,6 +136,7 @@ export const conversationService = {
             type: msgType,
             attachments: safeAttachments,
             sanitizeFlags: sanitizeFlags.length > 0 ? sanitizeFlags : undefined,
+            replyTo,
         });
 
         // ── Build conversation summary snippet ──
@@ -151,17 +153,65 @@ export const conversationService = {
 
         // Emit to conversation room (both visitor + agents watching this conv)
         try {
+            console.log(`[MessageService] Emitting message:new to room: ${conversationId}`, message);
             emitToConversation(conversationId, 'message:new', message);
             emitToWorkspace((conversation.workspaceId as any).toString(), 'conversation:updated', {
                 conversationId, lastMessage: { content: sanitizedContent, sender, type: msgType, createdAt: message.createdAt },
             });
-        } catch { /* socket may not be initialized */ }
+        } catch (e) { console.error('Socket emit error:', e); }
 
         return message;
     },
 
     async getMessages(conversationId: string, options?: { page?: number; limit?: number }) {
         return messageRepo.findByConversation(conversationId, options);
+    },
+
+    async editMessage(conversationId: string, messageId: string, newContent: string, agentId: string) {
+        const msg = await messageRepo.findById(messageId);
+        if (!msg || (msg.conversationId as any).toString() !== conversationId) {
+            throw new AppError('Không tìm thấy tin nhắn', 404, 'NOT_FOUND');
+        }
+        if (msg.sender.id !== agentId || msg.sender.type !== 'agent') {
+            throw new AppError('Bạn chỉ có thể sửa tin nhắn của chính mình', 403, 'FORBIDDEN');
+        }
+        if (msg.isDeleted) {
+            throw new AppError('Không thể sửa tin nhắn đã thu hồi', 400, 'BAD_REQUEST');
+        }
+
+        const original = msg.originalContent || msg.content;
+        msg.content = newContent;
+        msg.originalContent = original;
+        msg.editedAt = new Date();
+        await msg.save();
+        
+        try {
+            emitToConversation(conversationId, 'message:edited', msg);
+        } catch { /* socket offline */ }
+
+        return msg;
+    },
+
+    async recallMessage(conversationId: string, messageId: string, agentId: string) {
+        const msg = await messageRepo.findById(messageId);
+        if (!msg || (msg.conversationId as any).toString() !== conversationId) {
+            throw new AppError('Không tìm thấy tin nhắn', 404, 'NOT_FOUND');
+        }
+        if (msg.sender.id !== agentId || msg.sender.type !== 'agent') {
+            throw new AppError('Bạn chỉ có thể thu hồi tin nhắn của chính mình', 403, 'FORBIDDEN');
+        }
+        if (msg.isDeleted) {
+            throw new AppError('Tin nhắn này đã bị thu hồi bới bạn', 400, 'BAD_REQUEST');
+        }
+
+        msg.isDeleted = true;
+        await msg.save();
+
+        try {
+            emitToConversation(conversationId, 'message:recalled', { messageId, conversationId });
+        } catch { /* socket offline */ }
+
+        return msg;
     },
 
     async getMessageContextPage(conversationId: string, messageId: string, limit: number = 30) {
@@ -479,6 +529,10 @@ export const conversationService = {
         return conversationRepo.updateMetadata(conversationId, merged);
     },
 
+    async getDomainsByWorkspace(workspaceId: string) {
+        return conversationRepo.getDistinctDomains(workspaceId);
+    },
+
     async getByWorkspace(
         workspaceId: string, 
         options?: { 
@@ -490,7 +544,8 @@ export const conversationService = {
             dateTo?: string;
             sortBy?: string;
             page?: number; 
-            limit?: number 
+            limit?: number;
+            domain?: string | string[];
         },
         requester?: { userId: string; type: 'visitor' | 'agent' }
     ) {
@@ -664,7 +719,8 @@ export const conversationService = {
     async addInternalNote(
         conversationId: string,
         sender: { id: string; name?: string },
-        content: string
+        content: string,
+        mentionedUserIds?: string[]
     ) {
         const conversation = await conversationRepo.findById(conversationId);
         if (!conversation) throw new AppError('Cuộc hội thoại không tồn tại', 404, 'NOT_FOUND');
@@ -683,6 +739,20 @@ export const conversationService = {
                 conversationId,
                 note,
             });
+
+            if (mentionedUserIds && mentionedUserIds.length > 0) {
+                const ids = mentionedUserIds.map(id => id.toString());
+                ids.forEach(userId => {
+                    if (userId !== sender.id) { // don't notify self
+                        emitToUser(userId, 'notification:mention', {
+                            conversationId,
+                            message: `${sender.name || 'Một đồng nghiệp'} đã nhắc đến bạn trong một ghi chú.`,
+                            noteId: note._id,
+                            createdAt: new Date().toISOString()
+                        });
+                    }
+                });
+            }
         } catch { /* ignore */ }
 
         return note;

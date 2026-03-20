@@ -85,3 +85,33 @@ export const useRemoveWorkspaceMember = () => {
         },
     });
 };
+
+export const useWorkspaceTags = (workspaceId: string) => {
+    return useQuery({
+        queryKey: [...workspaceKeys.detail(workspaceId), 'tags'],
+        queryFn: () => workspaceHttpService.getTags(workspaceId),
+        enabled: !!workspaceId,
+    });
+};
+
+export const useAddWorkspaceTag = () => {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: ({ workspaceId, tag }: { workspaceId: string; tag: string }) =>
+            workspaceHttpService.addTag(workspaceId, tag),
+        onSuccess: (_data, variables) => {
+            qc.invalidateQueries({ queryKey: [...workspaceKeys.detail(variables.workspaceId), 'tags'] });
+        },
+    });
+};
+
+export const useRemoveWorkspaceTag = () => {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: ({ workspaceId, tag }: { workspaceId: string; tag: string }) =>
+            workspaceHttpService.removeTag(workspaceId, tag),
+        onSuccess: (_data, variables) => {
+            qc.invalidateQueries({ queryKey: [...workspaceKeys.detail(variables.workspaceId), 'tags'] });
+        },
+    });
+};

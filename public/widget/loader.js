@@ -118,6 +118,10 @@
     var apiBase = '';
     try {
         apiBase = new URL(scriptSrc).origin;
+        // Next.js dev server (3010) doesn't proxy WebSockets reliably. Point directly to backend (4010) in dev.
+        if (apiBase.indexOf('localhost:3010') !== -1 || apiBase.indexOf('127.0.0.1:3010') !== -1) {
+            apiBase = apiBase.replace('3010', '4010');
+        }
     } catch (e) {
         apiBase = window.location.origin;
     }
@@ -223,14 +227,16 @@
         document.body.appendChild(tip);
 
         // Expose minimal API so tenant code doesn't crash
-        window.NemarChat = window.NemarChat || {};
-        window.NemarChat.open = function () { };
-        window.NemarChat.close = function () { };
-        window.NemarChat.toggle = function () { };
-        window.NemarChat.widgetId = widgetId;
-        window.NemarChat.visitorId = visitorId;
-        window.NemarChat.isOnline = false;
-        window.NemarChat.error = reason;
+        var globalObjName = typeof window.NemarChat === 'string' ? window.NemarChat : 'NemarChat';
+        var apiObj = window[globalObjName] || {};
+        apiObj.open = function () { };
+        apiObj.close = function () { };
+        apiObj.toggle = function () { };
+        apiObj.widgetId = widgetId;
+        apiObj.visitorId = visitorId;
+        apiObj.isOnline = false;
+        apiObj.error = reason;
+        window[globalObjName] = apiObj;
     }
 
     // ────────────────────────────────────────
@@ -706,24 +712,43 @@
             div.setAttribute('data-msg-ts', ts);
             _lastMessageTs = ts;
 
-            var bubbleHtml = '';
-            if (msg.type === 'image' && msg.attachments && msg.attachments.length) {
-                for (var a = 0; a < msg.attachments.length; a++) {
-                    var imgSrc = msg.attachments[a].data || '';
-                    bubbleHtml += '<img src="' + imgSrc + '" class="nchat-msg-img" alt="' + (msg.attachments[a].filename || 'image') + '" />';
-                }
-                if (msg.content) bubbleHtml += '<div>' + msg.content + '</div>';
+            if (msg.isRecalled) {
+                div.innerHTML = '<div class="nchat-msg-bubble" style="font-style:italic;opacity:0.7">' + (lang === 'vi' ? 'Tin nhắn đã thu hồi' : 'Message recalled') + '</div>';
             } else {
-                bubbleHtml = msg.content || '';
-            }
+                var replyHtml = '';
+                if (msg.replyTo) {
+                    var rCol = isVisitor ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.05)';
+                    var rBdr = isVisitor ? 'rgba(255,255,255,0.5)' : '#ccc';
+                    var rSnd = msg.replyTo.senderName || '';
+                    var rTxt = msg.replyTo.content || '';
+                    if (rTxt.length > 50) rTxt = rTxt.substring(0, 50) + '...';
+                    replyHtml = '<div style="background:' + rCol + '; border-left:3px solid ' + rBdr + '; padding:4px 8px; margin-bottom:6px; font-size:12px; border-radius:4px; opacity:0.9">' +
+                                '<div style="font-weight:bold;margin-bottom:2px">' + rSnd + '</div><div>' + rTxt + '</div></div>';
+                }
 
-            // Build status tick for visitor messages (own messages)
-            var statusHtml = '';
-            if (isVisitor && msg.status) {
-                statusHtml = '<span class="nchat-msg-status nchat-msg-status-' + msg.status + '"></span>';
-            }
+                var bubbleHtml = '';
+                if (msg.type === 'image' && msg.attachments && msg.attachments.length) {
+                    for (var a = 0; a < msg.attachments.length; a++) {
+                        var imgSrc = msg.attachments[a].data || '';
+                        bubbleHtml += '<img src="' + imgSrc + '" class="nchat-msg-img" alt="' + (msg.attachments[a].filename || 'image') + '" />';
+                    }
+                    if (msg.content) bubbleHtml += '<div style="margin-top:4px">' + msg.content + '</div>';
+                } else {
+                    bubbleHtml = msg.content || '';
+                }
 
-            div.innerHTML = '<div class="nchat-msg-bubble">' + bubbleHtml + '</div>' + statusHtml;
+                if (msg.isEdited) {
+                    bubbleHtml += ' <span style="font-size:10px;opacity:0.6;margin-left:4px">(' + (lang === 'vi' ? 'đã chỉnh sửa' : 'edited') + ')</span>';
+                }
+
+                // Build status tick for visitor messages (own messages)
+                var statusHtml = '';
+                if (isVisitor && msg.status) {
+                    statusHtml = '<span class="nchat-msg-status nchat-msg-status-' + msg.status + '"></span>';
+                }
+
+                div.innerHTML = '<div class="nchat-msg-bubble">' + replyHtml + bubbleHtml + '</div>' + statusHtml;
+            }
 
             // ── Ordering: insert at correct chronological position ──
             var inserted = false;
@@ -755,15 +780,68 @@
             }
 
             // Click image to preview
-            var imgs = div.querySelectorAll('.nchat-msg-img');
-            for (var im = 0; im < imgs.length; im++) {
-                imgs[im].addEventListener('click', function (ev) {
-                    var overlay = document.createElement('div');
-                    overlay.className = 'nchat-img-preview';
-                    overlay.innerHTML = '<img src="' + ev.target.src + '" />';
-                    overlay.addEventListener('click', function () { overlay.remove(); });
-                    document.body.appendChild(overlay);
-                });
+            if (!msg.isRecalled) {
+                var imgs = div.querySelectorAll('.nchat-msg-img');
+                for (var im = 0; im < imgs.length; im++) {
+                    imgs[im].addEventListener('click', function (ev) {
+                        var overlay = document.createElement('div');
+                        overlay.className = 'nchat-img-preview';
+                        overlay.innerHTML = '<img src="' + ev.target.src + '" />';
+                        overlay.addEventListener('click', function () { overlay.remove(); });
+                        document.body.appendChild(overlay);
+                    });
+                }
+            }
+        }
+        
+        function updateMessageElement(el, msg) {
+            var isVisitor = msg.sender && msg.sender.type === 'visitor';
+            if (msg.isRecalled) {
+                el.innerHTML = '<div class="nchat-msg-bubble" style="font-style:italic;opacity:0.7">' + (lang === 'vi' ? 'Tin nhắn đã thu hồi' : 'Message recalled') + '</div>';
+            } else {
+                var replyHtml = '';
+                if (msg.replyTo) {
+                    var rCol = isVisitor ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.05)';
+                    var rBdr = isVisitor ? 'rgba(255,255,255,0.5)' : '#ccc';
+                    var rSnd = msg.replyTo.senderName || '';
+                    var rTxt = msg.replyTo.content || '';
+                    if (rTxt.length > 50) rTxt = rTxt.substring(0, 50) + '...';
+                    replyHtml = '<div style="background:' + rCol + '; border-left:3px solid ' + rBdr + '; padding:4px 8px; margin-bottom:6px; font-size:12px; border-radius:4px; opacity:0.9">' +
+                                '<div style="font-weight:bold;margin-bottom:2px">' + rSnd + '</div><div>' + rTxt + '</div></div>';
+                }
+
+                var bubbleHtml = '';
+                if (msg.type === 'image' && msg.attachments && msg.attachments.length) {
+                    for (var a = 0; a < msg.attachments.length; a++) {
+                        var imgSrc = msg.attachments[a].data || '';
+                        bubbleHtml += '<img src="' + imgSrc + '" class="nchat-msg-img" alt="' + (msg.attachments[a].filename || 'image') + '" />';
+                    }
+                    if (msg.content) bubbleHtml += '<div style="margin-top:4px">' + msg.content + '</div>';
+                } else {
+                    bubbleHtml = msg.content || '';
+                }
+
+                if (msg.isEdited) {
+                    bubbleHtml += ' <span style="font-size:10px;opacity:0.6;margin-left:4px">(' + (lang === 'vi' ? 'đã chỉnh sửa' : 'edited') + ')</span>';
+                }
+
+                var statusHtml = '';
+                if (isVisitor && msg.status) {
+                    statusHtml = '<span class="nchat-msg-status nchat-msg-status-' + msg.status + '"></span>';
+                }
+                el.innerHTML = '<div class="nchat-msg-bubble">' + replyHtml + bubbleHtml + '</div>' + statusHtml;
+
+                // Re-bind image clicks
+                var imgs = el.querySelectorAll('.nchat-msg-img');
+                for (var im = 0; im < imgs.length; im++) {
+                    imgs[im].addEventListener('click', function (ev) {
+                        var overlay = document.createElement('div');
+                        overlay.className = 'nchat-img-preview';
+                        overlay.innerHTML = '<img src="' + ev.target.src + '" />';
+                        overlay.addEventListener('click', function () { overlay.remove(); });
+                        document.body.appendChild(overlay);
+                    });
+                }
             }
         }
 
@@ -996,6 +1074,7 @@
             var meta = {
                 pageUrl: window.location.href,
                 referrer: document.referrer || '',
+                domain: window.location.hostname
             };
             // Extract UTM params from URL
             try {
@@ -1338,8 +1417,25 @@
 
                 // Incoming message from agent
                 _socket.on('message:new', function (msg) {
+                    console.log('[NemarChat] Received message:new payload:', msg);
                     if (msg.sender && msg.sender.type !== 'visitor') {
                         appendMessage(msg); // dedup + ordering + timestamp tracking handled inside
+                    }
+                });
+
+                _socket.on('message:edited', function (msg) {
+                    console.log('[NemarChat] Received message:edited:', msg);
+                    if (!msg || !msg._id) return;
+                    var el = win.querySelector('[data-msg-id="' + msg._id + '"]');
+                    if (el) updateMessageElement(el, msg);
+                });
+
+                _socket.on('message:recalled', function (data) {
+                    console.log('[NemarChat] Received message:recalled:', data);
+                    if (!data || !data.messageId) return;
+                    var el = win.querySelector('[data-msg-id="' + data.messageId + '"]');
+                    if (el) {
+                        updateMessageElement(el, { isRecalled: true, sender: { type: 'agent' } });
                     }
                 });
 
@@ -1415,16 +1511,18 @@
         if (_visitorToken) connectSocket();
 
         // ── Expose API ──
-        window.NemarChat = window.NemarChat || {};
-        window.NemarChat.open = function () { toggleChat(true); };
-        window.NemarChat.close = function () { toggleChat(false); };
-        window.NemarChat.toggle = function () { toggleChat(); };
-        window.NemarChat.widgetId = id;
-        window.NemarChat.visitorId = vid;
-        window.NemarChat.isOnline = online;
-        window.NemarChat.sendMessage = sendTextMessage;
-        window.NemarChat.uploadFile = uploadFile;
-        window.NemarChat.socket = function () { return _socket; };
+        var globalObjName = typeof window.NemarChat === 'string' ? window.NemarChat : 'NemarChat';
+        var apiObj = window[globalObjName] || {};
+        apiObj.open = function () { toggleChat(true); };
+        apiObj.close = function () { toggleChat(false); };
+        apiObj.toggle = function () { toggleChat(); };
+        apiObj.widgetId = id;
+        apiObj.visitorId = vid;
+        apiObj.isOnline = online;
+        apiObj.sendMessage = sendTextMessage;
+        apiObj.uploadFile = uploadFile;
+        apiObj.socket = function () { return _socket; };
+        window[globalObjName] = apiObj;
     }
 })();
 

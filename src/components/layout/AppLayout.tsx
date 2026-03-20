@@ -71,6 +71,11 @@ export default function AppLayout({ children, hideHeader = false, headerTitle, h
                 key: `/workspace/${workspaceId}/teams`,
                 icon: <Users size={20} />,
                 label: <Link href={`/workspace/${workspaceId}/teams`}>Thành viên</Link>,
+            },
+            {
+                key: `/workspace/${workspaceId}/settings`,
+                icon: <Settings size={20} />,
+                label: <Link href={`/workspace/${workspaceId}/settings`}>Cài đặt</Link>,
             }
         );
     } else {
@@ -89,6 +94,7 @@ export default function AppLayout({ children, hideHeader = false, headerTitle, h
     if (workspaceId) {
         if (router.pathname.includes('/inbox')) selectedKey = `/workspace/${workspaceId}/inbox`;
         else if (router.pathname.includes('/teams')) selectedKey = `/workspace/${workspaceId}/teams`;
+        else if (router.pathname.includes('/settings')) selectedKey = `/workspace/${workspaceId}/settings`;
         else selectedKey = `/workspace/${workspaceId}`;
     }
 

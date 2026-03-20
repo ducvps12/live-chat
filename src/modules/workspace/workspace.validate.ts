@@ -36,6 +36,7 @@ export const workspaceValidate = {
 
     update: Joi.object({
         name: Joi.string().min(2).max(100),
+        logoUrl: Joi.string().allow('', null),
         settings: Joi.object({
             timezone: Joi.string(),
             language: Joi.string(),

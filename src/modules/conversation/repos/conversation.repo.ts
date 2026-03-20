@@ -19,6 +19,10 @@ export const conversationRepo = {
             .exec();
     },
 
+    async getDistinctDomains(workspaceId: string): Promise<string[]> {
+        return ConversationModel.distinct('metadata.domain', { workspaceId, 'metadata.domain': { $exists: true, $ne: null } }).exec() as Promise<string[]>;
+    },
+
     async findByWorkspace(
         workspaceId: string,
         options?: { 
@@ -30,7 +34,8 @@ export const conversationRepo = {
             dateTo?: string;
             sortBy?: string;
             page?: number; 
-            limit?: number 
+            limit?: number;
+            domain?: string | string[];
         }
     ): Promise<{ items: IConversation[]; total: number }> {
         const filter: any = { workspaceId };
@@ -55,6 +60,13 @@ export const conversationRepo = {
             filter.createdAt = {};
             if (options?.dateFrom) filter.createdAt.$gte = new Date(options.dateFrom);
             if (options?.dateTo) filter.createdAt.$lte = new Date(options.dateTo);
+        }
+
+        if (options?.domain) {
+            const domainArray = Array.isArray(options.domain) ? options.domain : [options.domain];
+            if (domainArray.length > 0) {
+                filter['metadata.domain'] = { $in: domainArray };
+            }
         }
 
         const page = options?.page || 1;

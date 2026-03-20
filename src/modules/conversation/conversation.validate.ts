@@ -38,6 +38,11 @@ export const conversationValidate = {
         type: Joi.string().valid('text', 'image', 'file').default('text'),
         attachments: Joi.array().items(attachmentSchema).max(MAX_ATTACHMENTS),
         clientMessageId: Joi.string().max(100).optional(),
+        replyTo: Joi.object({
+            messageId: Joi.string().required(),
+            content: Joi.string().allow('').required(),
+            senderName: Joi.string().allow('').required(),
+        }).optional(),
     }).custom((value, helpers) => {
         if (value.type === 'text' && (!value.content || !value.content.trim())) {
             return helpers.error('any.invalid', { message: 'Nội dung tin nhắn không được rỗng' });
@@ -54,6 +59,11 @@ export const conversationValidate = {
         type: Joi.string().valid('text', 'image', 'file', 'system').default('text'),
         attachments: Joi.array().items(attachmentSchema).max(MAX_ATTACHMENTS),
         clientMessageId: Joi.string().max(100).optional(),
+        replyTo: Joi.object({
+            messageId: Joi.string().required(),
+            content: Joi.string().allow('').required(),
+            senderName: Joi.string().allow('').required(),
+        }).optional(),
     }).custom((value, helpers) => {
         if (value.type === 'text' && (!value.content || !value.content.trim())) {
             return helpers.error('any.invalid', { message: 'Nội dung tin nhắn không được rỗng' });
@@ -62,5 +72,14 @@ export const conversationValidate = {
             return helpers.error('any.invalid', { message: 'Phải có ít nhất 1 file đính kèm' });
         }
         return value;
+    }),
+
+    editMessage: Joi.object({
+        content: Joi.string().allow('').max(MAX_CONTENT_LENGTH).required(),
+    }),
+
+    addNote: Joi.object({
+        content: Joi.string().allow('').max(MAX_CONTENT_LENGTH).required(),
+        mentionedUserIds: Joi.array().items(Joi.string()).optional(),
     }),
 };

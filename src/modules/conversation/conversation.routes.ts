@@ -49,6 +49,13 @@ router.get(
 );
 
 router.get(
+    '/workspace/:workspaceId/domains',
+    requireAuth,
+    scopeCheck,
+    conversationController.getDomainsByWorkspace
+);
+
+router.get(
     '/workspace/:workspaceId/unread-count',
     requireAuth,
     scopeCheck,
@@ -161,6 +168,21 @@ router.get(
     conversationController.getReceipts
 );
 
+router.patch(
+    '/workspace/:workspaceId/:conversationId/messages/:messageId',
+    requireAuth,
+    scopeCheck,
+    validateRequest(conversationValidate.editMessage),
+    conversationController.editMessage
+);
+
+router.delete(
+    '/workspace/:workspaceId/:conversationId/messages/:messageId',
+    requireAuth,
+    scopeCheck,
+    conversationController.recallMessage
+);
+
 router.get(
     '/workspace/:workspaceId/visitors',
     requireAuth,
@@ -202,6 +224,7 @@ router.post(
     '/workspace/:workspaceId/:conversationId/notes',
     requireAuth,
     scopeCheck,
+    validateRequest(conversationValidate.addNote),
     conversationController.addNote
 );
 

@@ -9,6 +9,10 @@ const nextConfig: NextConfig = {
         source: '/api/:path*',
         destination: `http://localhost:${BACKEND_PORT}/api/:path*`,
       },
+      {
+        source: '/socket.io/:path*',
+        destination: `http://localhost:${BACKEND_PORT}/socket.io/:path*`,
+      },
     ];
   },
 };

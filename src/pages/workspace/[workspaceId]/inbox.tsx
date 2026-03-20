@@ -4,7 +4,7 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { Input, Badge, Spin, Empty, Tag, Button, message, Tooltip, Popover, Select, DatePicker, Form } from 'antd';
 import {
     Search, Send, Paperclip, ArrowLeft, X as XIcon,
-    MessageSquare, Clock, User, Image as ImageIcon, RotateCw, Filter, Check, CheckCheck, UserCheck, UserX, Users, Zap
+    MessageSquare, Clock, User, Image as ImageIcon, RotateCw, Filter, Check, CheckCheck, UserCheck, UserX, Users, Zap, Reply, Edit2, Trash2, Globe
 } from 'lucide-react';
 import { useGetMe } from '../../../domains/auth/auth.hooks';
 import { httpClient } from '../../../lib/http/client';
@@ -12,7 +12,7 @@ import io, { Socket } from 'socket.io-client';
 import { Conversation, Message } from '../../../types';
 import { VisitorProfileSidebar } from '../../../features/inbox/components/VisitorProfileSidebar';
 import { useQueryClient } from '@tanstack/react-query';
-import { useTotalUnreadCount, conversationKeys } from '../../../domains/conversation';
+import { useTotalUnreadCount, conversationKeys, useAddInternalNote } from '../../../domains/conversation';
 import AppLayout from '../../../components/layout/AppLayout';
 
 const { RangePicker } = DatePicker;
@@ -112,6 +112,8 @@ export default function InboxPage() {
     const [filterDateTo, setFilterDateTo] = useState<string | null>(null);
     const [filterTags, setFilterTags] = useState<string[]>([]);
     const [filterSortBy, setFilterSortBy] = useState<'newest' | 'oldest'>('newest');
+    const [filterDomain, setFilterDomain] = useState<string[]>([]);
+    const [domainOptions, setDomainOptions] = useState<{label: string, value: string}[]>([]);
 
     const [typingVisitor, setTypingVisitor] = useState<string | null>(null);
     const [msgPage, setMsgPage] = useState(1);
@@ -123,10 +125,15 @@ export default function InboxPage() {
     const [workspaceTags, setWorkspaceTags] = useState<string[]>([]);
     const [noteText, setNoteText] = useState('');
     const [showNoteInput, setShowNoteInput] = useState(false);
+    const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+    const [editingContent, setEditingContent] = useState('');
     const [macros, setMacros] = useState<MacroItem[]>([]);
     const [showMacroPopover, setShowMacroPopover] = useState(false);
+    const [replyingTo, setReplyingTo] = useState<Message | null>(null);
     const [agentPresence, setAgentPresence] = useState<Record<string, 'online' | 'away' | 'offline'>>({});
     const [visitorOnlineMap, setVisitorOnlineMap] = useState<Record<string, 'online' | 'idle' | 'offline'>>({});
+
+    const addInternalNote = useAddInternalNote();
 
     // Refs
     const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -148,6 +155,7 @@ export default function InboxPage() {
     // ── Fetch conversations ──
     const fetchConversations = useCallback(async () => {
         if (!workspaceId) return;
+        const currentWorkspaceId = workspaceId;
         try {
             setLoadingConvs(true);
             const params = new URLSearchParams();
@@ -156,20 +164,28 @@ export default function InboxPage() {
             if (filterChannel !== 'all') params.append('channel', filterChannel);
             if (filterDateFrom) params.append('dateFrom', filterDateFrom);
             if (filterDateTo) params.append('dateTo', filterDateTo);
+            if (filterDomain && filterDomain.length > 0) {
+                filterDomain.forEach(d => params.append('domain', d));
+            }
             filterTags.forEach(tag => params.append('tags', tag));
             if (filterSortBy !== 'newest') params.append('sortBy', filterSortBy);
 
             const res = await httpClient.get(`/conversations/workspace/${workspaceId}?${params.toString()}`);
+            if (workspaceId !== currentWorkspaceId) return; // Prevent race conditions on workspace switch
             if (res.data?.success) {
                 setConversations(res.data.data.items || res.data.data || []);
             }
         } catch { /* handled by interceptor */ }
         finally { setLoadingConvs(false); }
-    }, [workspaceId, filterStatus, filterAssignee, filterChannel, filterDateFrom, filterDateTo, filterTags, filterSortBy]);
+    }, [workspaceId, filterStatus, filterAssignee, filterChannel, filterDateFrom, filterDateTo, filterTags, filterSortBy, filterDomain]);
 
     useEffect(() => {
+        setConversations([]);
+        setMessages([]);
+        setMsgPage(1);
+        setHasMoreMsgs(false);
         fetchConversations();
-    }, [fetchConversations]);
+    }, [workspaceId]); // Explicitly clear state on workspace switch so React does not persist it across route changes
 
     // ── Fetch workspace tags ──
     useEffect(() => {
@@ -180,6 +196,10 @@ export default function InboxPage() {
         // Also fetch macros
         httpClient.get(`/macros/workspace/${workspaceId}`)
             .then(res => setMacros(res.data?.data || []))
+            .catch(() => {});
+        // Also fetch domains
+        httpClient.get(`/conversations/workspace/${workspaceId}/domains`)
+            .then(res => setDomainOptions((res.data?.data || []).map((d: string) => ({ label: d, value: d }))))
             .catch(() => {});
     }, [workspaceId]);
 
@@ -361,6 +381,7 @@ export default function InboxPage() {
 
         // ── New conversation ──
         socket.on('conversation:new', (data: { conversation: Conversation }) => {
+            if ((data.conversation as any).workspaceId?.toString() !== workspaceId && data.conversation.workspaceId !== workspaceId) return;
             setConversations((prev) => {
                 const exists = prev.find((c) => c._id === data.conversation._id);
                 if (exists) return prev;
@@ -525,6 +546,16 @@ export default function InboxPage() {
             });
         });
 
+        // ── Message Edited/Recalled ──
+        socket.on('message:edited', (editedMsg: Message) => {
+            setMessages((prev) => prev.map(m => m._id === editedMsg._id ? editedMsg : m));
+        });
+        socket.on('message:recalled', (data: { messageId: string; conversationId: string }) => {
+            if (data.conversationId === selectedConvIdRef.current) {
+                setMessages((prev) => prev.map(m => m._id === data.messageId ? { ...m, isDeleted: true } : m));
+            }
+        });
+
         // ── Message Status Updates ──
         socket.on('message:updated', (data: { messageIds: string[], status: 'delivered' | 'read' }) => {
             setMessages((prev) =>
@@ -630,6 +661,12 @@ export default function InboxPage() {
         if (!inputText.trim() || !selectedConvId || !workspaceId || sending) return;
         const text = inputText.trim();
         setInputText('');
+        const replyContext = replyingTo ? {
+            messageId: replyingTo._id,
+            content: replyingTo.content,
+            senderName: replyingTo.sender.name || (replyingTo.sender.type === 'visitor' ? 'Khách' : 'Agent')
+        } : undefined;
+        setReplyingTo(null);
         setSending(true);
 
         // Optimistic
@@ -640,6 +677,7 @@ export default function InboxPage() {
             content: text,
             type: 'text',
             createdAt: new Date().toISOString(),
+            replyTo: replyContext,
         };
         setMessages((prev) => [...prev, tempMsg]);
 
@@ -647,7 +685,7 @@ export default function InboxPage() {
             const clientMessageId = crypto.randomUUID();
             const res = await httpClient.post(
                 `/conversations/workspace/${workspaceId}/${selectedConvId}/messages`,
-                { content: text, type: 'text', clientMessageId }
+                { content: text, type: 'text', clientMessageId, replyTo: replyContext }
             );
             if (res.data?.success) {
                 setMessages((prev) =>
@@ -888,6 +926,31 @@ export default function InboxPage() {
         }
     };
 
+    // ── Edit / Recall Message ──
+    const handleSaveEdit = async (msgId: string) => {
+        if (!selectedConvIdRef.current || !editingContent.trim()) return;
+        try {
+            const res = await httpClient.patch(`/conversations/workspace/${workspaceId}/${selectedConvIdRef.current}/messages/${msgId}`, {
+                content: editingContent
+            });
+            setMessages(prev => prev.map(m => m._id === msgId ? res.data?.data || m : m));
+            setEditingMessageId(null);
+            setEditingContent('');
+        } catch (err: any) {
+            message.error(err.response?.data?.message || 'Lỗi khi sửa tin nhắn');
+        }
+    };
+
+    const handleRecall = async (msgId: string) => {
+        if (!selectedConvIdRef.current) return;
+        try {
+            await httpClient.delete(`/conversations/workspace/${workspaceId}/${selectedConvIdRef.current}/messages/${msgId}`);
+            setMessages(prev => prev.map(m => m._id === msgId ? { ...m, isDeleted: true } : m));
+        } catch (err: any) {
+            message.error(err.response?.data?.message || 'Lỗi khi thu hồi tin nhắn');
+        }
+    };
+
     // ── Fetch workspace members ──
     useEffect(() => {
         if (!workspaceId) return;
@@ -1045,14 +1108,25 @@ export default function InboxPage() {
 
                     {/* Search + filter */}
                     <div style={styles.searchArea}>
-                        <Input
-                            prefix={<Search size={14} color="#999" />}
-                            placeholder="Tìm theo tên, email..."
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            style={{ borderRadius: 8 }}
-                            allowClear
-                        />
+                        <div style={{ display: 'flex', gap: 8, flexDirection: 'column' }}>
+                            <Input
+                                prefix={<Search size={14} color="#999" />}
+                                placeholder="Tìm theo tên, email..."
+                                value={searchQuery}
+                                onChange={(e) => setSearchQuery(e.target.value)}
+                                style={{ borderRadius: 8 }}
+                                allowClear
+                            />
+                            <Select
+                                mode="tags"
+                                placeholder={<span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Globe size={14} color="#999" /> Lọc theo Domain</span>}
+                                value={filterDomain}
+                                onChange={setFilterDomain}
+                                style={{ width: '100%' }}
+                                allowClear
+                                options={domainOptions}
+                            />
+                        </div>
                         <div style={{ display: 'flex', gap: 4, marginTop: 8, alignItems: 'center', justifyContent: 'space-between' }}>
                             <div style={{ display: 'flex', gap: 4 }}>
                                 {(['all', 'open', 'pending', 'closed'] as const).map((s) => (
@@ -1117,7 +1191,7 @@ export default function InboxPage() {
                                         </div>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
                                             <span style={{ ...styles.convPreview, fontWeight: conv.unreadCount ? 600 : 400, color: conv.unreadCount ? '#111' : '#666' }}>
-                                                {conv.lastMessagePreview || conv.lastMessageSnippet || conv.visitorInfo?.email || conv.metadata?.pageUrl || 'Cuộc hội thoại mới'}
+                                                {conv.lastMessagePreview || conv.lastMessageSnippet || conv.visitorInfo?.email || 'Cuộc hội thoại mới'}
                                             </span>
                                             {conv.unreadCount ? (
                                                 <Badge count={conv.unreadCount} style={{ backgroundColor: '#ef4444' }} />
@@ -1130,6 +1204,11 @@ export default function InboxPage() {
                                                 </Tag>
                                             )}
                                         </div>
+                                         {conv.metadata?.domain && (
+                                            <div style={{ fontSize: 10, color: '#6366f1', marginTop: 2, display: 'flex', alignItems: 'center' }}>
+                                              {conv.metadata.domain}
+                                            </div>
+                                         )}
                                         {getAssignedName(conv) && (
                                             <div style={{ fontSize: 10, color: '#10b981', marginTop: 2, display: 'flex', alignItems: 'center', gap: 3 }}>
                                                 <UserCheck size={10} />
@@ -1187,6 +1266,11 @@ export default function InboxPage() {
                                         <div style={{ fontSize: 11, color: '#888' }}>
                                             {selectedConv.visitorInfo?.email || selectedConv.visitorId?.slice(0, 12)}
                                         </div>
+                                        {selectedConv.metadata?.domain && (
+                                            <div style={{ fontSize: 11, color: '#6366f1', display: 'flex', alignItems: 'center', marginTop: 1 }}>
+                                                {selectedConv.metadata.domain}
+                                            </div>
+                                        )}
                                         {getAssignedName(selectedConv) && (
                                             <div style={{ fontSize: 11, color: '#10b981', display: 'flex', alignItems: 'center', gap: 3, marginTop: 1 }}>
                                                 <UserCheck size={11} />
@@ -1380,6 +1464,7 @@ export default function InboxPage() {
                                                 <div
                                                     key={msg._id}
                                                     id={`msg-${msg._id}`}
+                                                    className="msg-row"
                                                     style={{
                                                         ...styles.msgRow,
                                                         justifyContent: isAgent ? 'flex-end' : 'flex-start',
@@ -1392,6 +1477,24 @@ export default function InboxPage() {
                                                             ...(msg._id.startsWith('tmp_') ? { opacity: 0.6 } : {}),
                                                         }}
                                                     >
+                                                        {/* Reply Block */}
+                                                        {msg.replyTo && (
+                                                            <div style={{
+                                                                background: isAgent ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.05)',
+                                                                borderLeft: `3px solid ${isAgent ? '#fff' : '#8b5cf6'}`,
+                                                                padding: '6px 10px',
+                                                                borderRadius: 4,
+                                                                marginBottom: 8,
+                                                                fontSize: 12,
+                                                                cursor: 'pointer'
+                                                            }} onClick={() => {
+                                                                const el = document.getElementById(`msg-${msg.replyTo?.messageId}`);
+                                                                if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                                            }}>
+                                                                <div style={{ fontWeight: 600, color: isAgent ? '#fff' : '#8b5cf6', marginBottom: 2 }}>{msg.replyTo.senderName}</div>
+                                                                <div style={{ opacity: 0.9, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{msg.replyTo.content}</div>
+                                                            </div>
+                                                        )}
                                                         {/* Attachments */}
                                                         {msg.attachments?.map((att, i) => (
                                                             <div key={i} style={{ marginBottom: msg.content ? 6 : 0 }}>
@@ -1403,14 +1506,39 @@ export default function InboxPage() {
                                                                         onClick={() => window.open(att.data, '_blank')}
                                                                     />
                                                                 ) : (
-                                                                    <a href={att.data} download={att.filename} style={styles.fileLink}>
+                                                                    <a href={att.data} download={att.filename} style={{...styles.fileLink, display: 'block', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>
                                                                         📎 {att.filename}
                                                                     </a>
                                                                 )}
                                                             </div>
                                                         ))}
-                                                        {/* Text */}
-                                                        {msg.content && <div>{msg.content}</div>}
+                                                        {/* Text and Actions */}
+                                                        {editingMessageId === msg._id ? (
+                                                            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 200, marginTop: 4 }}>
+                                                                <Input.TextArea
+                                                                    autoSize={{ minRows: 1, maxRows: 4 }}
+                                                                    value={editingContent}
+                                                                    onChange={e => setEditingContent(e.target.value)}
+                                                                    style={{ fontSize: 13, borderRadius: 6, color: '#000' }}
+                                                                />
+                                                                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
+                                                                    <Button size="small" onClick={() => {
+                                                                        setEditingMessageId(null);
+                                                                        setEditingContent('');
+                                                                    }}>Hủy</Button>
+                                                                    <Button size="small" type="primary" onClick={() => handleSaveEdit(msg._id)}>Lưu</Button>
+                                                                </div>
+                                                            </div>
+                                                        ) : msg.isDeleted ? (
+                                                            <div style={{ fontStyle: 'italic', opacity: 0.7, color: isAgent ? '#e5e7eb' : '#6b7280' }}>
+                                                                🚫 Tin nhắn đã được thu hồi
+                                                            </div>
+                                                        ) : (
+                                                            <div>
+                                                                {msg.content && <div>{msg.content}</div>}
+                                                                {msg.editedAt && <div style={{ fontSize: 10, opacity: 0.6, marginTop: 2 }}>(Đã chỉnh sửa)</div>}
+                                                            </div>
+                                                        )}
                                                         {/* Time + Status */}
                                                         <div style={styles.msgTime}>
                                                             {new Date(msg.createdAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}
@@ -1440,6 +1568,47 @@ export default function InboxPage() {
                                                                 </span>
                                                             )}
                                                         </div>
+                                                    </div>
+                                                    {/* Message Actions (Reply) */}
+                                                    <div className="msg-actions" style={{
+                                                        display: 'flex', alignItems: 'center', opacity: 0, transition: 'opacity 0.2s', padding: '0 8px'
+                                                    }}>
+                                                        <Tooltip title="Trả lời">
+                                                            <Button
+                                                                type="text"
+                                                                size="small"
+                                                                icon={<Reply size={14} />}
+                                                                onClick={() => {
+                                                                    setReplyingTo(msg);
+                                                                    // Focus input
+                                                                    setTimeout(() => document.getElementById('chat-input')?.focus(), 100);
+                                                                }}
+                                                            />
+                                                        </Tooltip>
+                                                        {isAgent && msg.sender.id === me?.user?.id && !msg.isDeleted && !msg._id.startsWith('tmp_') && (
+                                                            <>
+                                                                <Tooltip title="Sửa">
+                                                                    <Button
+                                                                        type="text"
+                                                                        size="small"
+                                                                        icon={<Edit2 size={14} />}
+                                                                        onClick={() => {
+                                                                            setEditingMessageId(msg._id);
+                                                                            setEditingContent(msg.content);
+                                                                        }}
+                                                                    />
+                                                                </Tooltip>
+                                                                <Tooltip title="Thu hồi">
+                                                                    <Button
+                                                                        type="text"
+                                                                        size="small"
+                                                                        danger
+                                                                        icon={<Trash2 size={14} />}
+                                                                        onClick={() => handleRecall(msg._id)}
+                                                                    />
+                                                                </Tooltip>
+                                                            </>
+                                                        )}
                                                     </div>
                                                 </div>
                                             );
@@ -1473,8 +1642,27 @@ export default function InboxPage() {
                                     Cuộc hội thoại đang được {getAssignedName(selectedConv) || 'agent khác'} phụ trách. Bạn không thể nhắn tin.
                                 </div>
                             ) : (
-                                <div style={styles.inputArea}>
-                                    <input
+                                <div style={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
+                                    {/* Quote Preview */}
+                                    {replyingTo && (
+                                        <div style={{
+                                            padding: '8px 12px', background: '#f3f4f6', borderLeft: '3px solid #8b5cf6',
+                                            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                                            borderTop: '1px solid #e5e7eb',
+                                        }}>
+                                            <div style={{ overflow: 'hidden' }}>
+                                                <div style={{ fontSize: 12, fontWeight: 600, color: '#8b5cf6', marginBottom: 2 }}>
+                                                    Đang trả lời {replyingTo.sender.name || (replyingTo.sender.type === 'visitor' ? 'Khách' : 'Agent')}
+                                                </div>
+                                                <div style={{ fontSize: 12, color: '#6b7280', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                                    {replyingTo.content || 'Hình ảnh/File đính kèm'}
+                                                </div>
+                                            </div>
+                                            <Button type="text" size="small" icon={<XIcon size={16} />} onClick={() => setReplyingTo(null)} />
+                                        </div>
+                                    )}
+                                    <div style={styles.inputArea}>
+                                        <input
                                         type="file"
                                         ref={fileInputRef}
                                         onChange={handleFileUpload}
@@ -1558,6 +1746,7 @@ export default function InboxPage() {
                                         />
                                     </Popover>
                                     <input
+                                        id="chat-input"
                                         style={styles.textInput}
                                         placeholder="Nhập tin nhắn..."
                                         value={inputText}
@@ -1591,6 +1780,7 @@ export default function InboxPage() {
                                         style={{ borderRadius: 20, background: '#6366f1', border: 'none' }}
                                     />
                                 </div>
+                                </div>
                             )}
                         </>
                     ) : (
@@ -1611,11 +1801,12 @@ export default function InboxPage() {
                             visitorId={selectedConv?.visitorId || null}
                             conversationTags={selectedConv?.tags || []}
                             workspaceTags={workspaceTags}
+                            workspaceMembers={workspaceMembers}
                             onAddTag={(tag) => !isMemberOnly && selectedConv && handleAddTag(selectedConv._id, tag)}
                             onRemoveTag={(tag) => !isMemberOnly && selectedConv && handleRemoveTag(selectedConv._id, tag)}
-                            onAddNote={(content) => {
+                            onAddNote={(content, mentionedUserIds) => {
                                 if (isMemberOnly || !selectedConv) return;
-                                httpClient.post(`/conversations/workspace/${workspaceId}/${selectedConv._id}/notes`, { content })
+                                addInternalNote.mutateAsync({ workspaceId: workspaceId as string, conversationId: selectedConv._id, content, mentionedUserIds })
                                     .then(() => message.success('Ghi chú nội bộ đã thêm'))
                                     .catch(() => message.error('Lỗi khi thêm ghi chú'));
                             }}
@@ -1629,6 +1820,10 @@ export default function InboxPage() {
                 .inbox-sidebar { display: flex !important; }
                 .inbox-chat-panel { display: flex !important; }
                 .mobile-back-btn { display: none !important; }
+
+                .msg-row:hover .msg-actions {
+                    opacity: 1 !important;
+                }
 
                 @media (max-width: 768px) {
                     .inbox-sidebar {

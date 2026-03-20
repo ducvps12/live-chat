@@ -19,6 +19,14 @@ export interface IMessage extends Document {
     }>;
     sanitizeFlags?: string[]; // flags from content sanitization
     isInternal?: boolean; // internal note (visible to agents only)
+    replyTo?: {
+        messageId: string;
+        content: string;
+        senderName: string;
+    };
+    editedAt?: Date;
+    isDeleted?: boolean;
+    originalContent?: string;
     createdAt: Date;
     updatedAt: Date;
 }
@@ -34,7 +42,15 @@ const messageSchema = new Schema<IMessage>(
         },
         content: { type: String, default: '' },
         type: { type: String, enum: ['text', 'image', 'file', 'system'], default: 'text' },
-        status: { type: String, enum: ['sent', 'delivered', 'read'], default: 'sent' },
+        status: { type: String, enum: ['sent', 'delivered', 'read', 'error'], default: 'sent' },
+        replyTo: {
+            messageId: { type: String },
+            content: { type: String },
+            senderName: { type: String },
+        },
+        editedAt: { type: Date },
+        isDeleted: { type: Boolean, default: false },
+        originalContent: { type: String },
         attachments: [
             {
                 data: String,         // base64 data URI

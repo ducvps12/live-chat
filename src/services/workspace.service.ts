@@ -4,6 +4,7 @@ export interface IWorkspaceResponse {
     _id: string;
     name: string;
     slug: string;
+    logoUrl?: string;
     ownerId: string;
     plan: string;
     settings: {
@@ -68,6 +69,21 @@ export const workspaceHttpService = {
 
     async getMembers(workspaceId: string): Promise<IApiRes<any[]>> {
         const { data } = await httpClient.get(`/workspaces/${workspaceId}/members`);
+        return data;
+    },
+
+    async getTags(workspaceId: string): Promise<IApiRes<string[]>> {
+        const { data } = await httpClient.get(`/workspaces/${workspaceId}/tags`);
+        return data;
+    },
+
+    async addTag(workspaceId: string, tag: string): Promise<IApiRes<any>> {
+        const { data } = await httpClient.post(`/workspaces/${workspaceId}/tags`, { tag });
+        return data;
+    },
+
+    async removeTag(workspaceId: string, tag: string): Promise<IApiRes<any>> {
+        const { data } = await httpClient.delete(`/workspaces/${workspaceId}/tags`, { data: { tag } });
         return data;
     },
 };

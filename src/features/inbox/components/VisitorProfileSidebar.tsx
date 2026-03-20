@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Spin, Button, Form, Input, Divider, Typography, Empty, message, Tag, Select } from 'antd';
+import { Spin, Button, Form, Input, Divider, Typography, Empty, message, Tag, Select, Mentions } from 'antd';
 import { Edit2, ExternalLink, Mail, Phone, User, MonitorSmartphone, MapPin, Tag as TagIcon, StickyNote } from 'lucide-react';
 import { useGetVisitor, useUpdateVisitor } from '../hooks/useVisitor';
 
@@ -10,13 +10,14 @@ interface VisitorProfileSidebarProps {
     visitorId: string | null;
     conversationTags?: string[];
     workspaceTags?: string[];
+    workspaceMembers?: Array<{ _id: string; name: string; email?: string }>;
     onAddTag?: (tag: string) => void;
     onRemoveTag?: (tag: string) => void;
-    onAddNote?: (content: string) => void;
+    onAddNote?: (content: string, mentionedUserIds?: string[]) => void;
 }
 
 export const VisitorProfileSidebar: React.FC<VisitorProfileSidebarProps> = ({
-    workspaceId, visitorId, conversationTags = [], workspaceTags = [],
+    workspaceId, visitorId, conversationTags = [], workspaceTags = [], workspaceMembers = [],
     onAddTag, onRemoveTag, onAddNote,
 }) => {
     const { data: visitor, isLoading, refetch } = useGetVisitor(workspaceId, visitorId || undefined);
@@ -237,21 +238,30 @@ export const VisitorProfileSidebar: React.FC<VisitorProfileSidebarProps> = ({
                                 background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8,
                                 padding: 10,
                             }}>
-                                <Input.TextArea
-                                    placeholder="Viết ghi chú nội bộ (visitor không thấy)..."
+                                <Mentions
+                                    rows={3}
+                                    placeholder="Viết ghi chú nội bộ (thêm @ để tag đồng nghiệp)..."
                                     value={noteText}
-                                    onChange={e => setNoteText(e.target.value)}
-                                    autoSize={{ minRows: 2, maxRows: 4 }}
-                                    style={{ borderColor: '#fde68a', background: 'transparent', marginBottom: 6 }}
+                                    onChange={setNoteText}
+                                    style={{ borderColor: '#fde68a', background: 'transparent', marginBottom: 6, width: '100%' }}
                                     onPressEnter={e => {
                                         if (!e.shiftKey) {
                                             e.preventDefault();
                                             if (noteText.trim()) {
-                                                onAddNote?.(noteText.trim());
+                                                const mentionedIds = workspaceMembers
+                                                    .filter(m => noteText.includes(`@${m.name.replace(/\s+/g, '')}`))
+                                                    .map(m => m._id);
+                                                onAddNote?.(noteText.trim(), mentionedIds);
                                                 setNoteText('');
                                             }
                                         }
                                     }}
+                                    options={workspaceMembers.map(m => ({
+                                        value: m.name.replace(/\s+/g, ''), // Mentions defaults to no-space values
+                                        label: m.name,
+                                        key: m._id,
+                                        'data-id': m._id
+                                    }))}
                                 />
                                 <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                                     <Button
@@ -261,7 +271,10 @@ export const VisitorProfileSidebar: React.FC<VisitorProfileSidebarProps> = ({
                                         disabled={!noteText.trim()}
                                         onClick={() => {
                                             if (noteText.trim()) {
-                                                onAddNote?.(noteText.trim());
+                                                const mentionedIds = workspaceMembers
+                                                    .filter(m => noteText.includes(`@${m.name.replace(/\s+/g, '')}`))
+                                                    .map(m => m._id);
+                                                onAddNote?.(noteText.trim(), mentionedIds);
                                                 setNoteText('');
                                             }
                                         }}
