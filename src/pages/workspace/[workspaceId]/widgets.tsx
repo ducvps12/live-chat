@@ -24,6 +24,7 @@ function buildLiveConfig(values: any) {
     let color = values?.primaryColor;
     if (typeof color === 'object' && color?.toHexString) color = color.toHexString();
     return {
+        name: values?.name || '',
         primaryColor: color || '#6366f1',
         greeting: values?.greeting || 'Xin chào!',
         placeholder: values?.placeholder || 'Nhập tin nhắn...',
@@ -72,7 +73,7 @@ function WidgetPreview({ config }: { config: any }) {
                 background: config?.primaryColor || '#6366f1',
                 padding: '20px 20px 16px', color: 'white'
             }}>
-                <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Chat hỗ trợ</div>
+                <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>{config?.name || 'Chat hỗ trợ'}</div>
                 <div style={{ fontSize: 13, opacity: 0.85 }}>{config?.greeting || 'Xin chào!'}</div>
             </div>
             {/* Pre-chat form preview */}

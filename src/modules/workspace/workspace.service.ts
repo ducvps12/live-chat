@@ -213,6 +213,7 @@ export const widgetService = {
 
         return {
             id: widget._id,
+            name: widget.name,
             config: widget.config,
             domainRules: widget.domainRules,
             businessHours: {

@@ -176,7 +176,8 @@
 
                 // ── 5. Render ──
                 var bh = res.data.businessHours || {};
-                renderWidget(config, widgetId, apiBase, visitorId, bh);
+                var widgetName = res.data.name || '';
+                renderWidget(config, widgetId, apiBase, visitorId, bh, widgetName);
             })
             .catch(function (err) {
                 _configFetching = false;
@@ -242,7 +243,7 @@
     // ────────────────────────────────────────
     // RENDER
     // ────────────────────────────────────────
-    function renderWidget(cfg, id, base, vid, bh) {
+    function renderWidget(cfg, id, base, vid, bh, widgetName) {
         if (_rendered) return;
         _rendered = true;
 
@@ -466,7 +467,7 @@
             + '<div id="nchat-hdr-left">'
             + '<button id="nchat-hdr-back" aria-label="Back">' + backIcon + '</button>'
             + '<div>'
-            + '<h4>' + (lang === 'vi' ? 'Chat hỗ trợ' : 'Support Chat') + '</h4>'
+            + '<h4>' + (widgetName || (lang === 'vi' ? 'Chat hỗ trợ' : 'Support Chat')) + '</h4>'
             + '<p>' + greeting + '</p>'
             + statusDot
             + '</div>'
