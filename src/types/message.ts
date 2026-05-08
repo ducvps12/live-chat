@@ -37,6 +37,7 @@ export interface Message {
     editedAt?: string;
     originalContent?: string;
     stickerUrl?: string; // Zalo sticker image URL
+    reactions?: Record<string, string[]>; // emoji → list of user IDs
     createdAt: string;
     updatedAt?: string;
 }

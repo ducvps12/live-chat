@@ -414,6 +414,8 @@ export default function InboxPage() {
     const [visitorOnlineMap, setVisitorOnlineMap] = useState<Record<string, 'online' | 'idle' | 'offline'>>({});
     const [profileModalConv, setProfileModalConv] = useState<Conversation | null>(null);
     const [showStickerPicker, setShowStickerPicker] = useState(false);
+    const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null);
+    const [messageReactions, setMessageReactions] = useState<Record<string, Record<string, string[]>>>({});
 
     // ── Context menu ──
     const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; convId: string; showLabels: boolean } | null>(null);
@@ -777,7 +779,11 @@ export default function InboxPage() {
         if (selectedConvId) {
             isAtBottomRef.current = true;
             setNewMsgCount(0);
-            setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'auto' }), 100);
+            // Instant scroll — no delay for crisp conversation switching
+            requestAnimationFrame(() => {
+                const el = messagesContainerRef.current;
+                if (el) el.scrollTop = el.scrollHeight;
+            });
         }
     }, [selectedConvId]);
 
@@ -1456,6 +1462,29 @@ export default function InboxPage() {
         } catch (err: any) {
             message.error(err.response?.data?.message || 'Lỗi khi thu hồi tin nhắn');
         }
+    };
+
+    // ── Reactions ──
+    const REACTION_EMOJIS = ['👍', '❤️', '😆', '😮', '😢', '😡'];
+    const handleToggleReaction = (msgId: string, emoji: string) => {
+        const myId = me?.user?.id || '';
+        setMessageReactions(prev => {
+            const msgReactions = { ...(prev[msgId] || {}) };
+            const users = [...(msgReactions[emoji] || [])];
+            const idx = users.indexOf(myId);
+            if (idx >= 0) {
+                users.splice(idx, 1);
+                if (users.length === 0) delete msgReactions[emoji];
+                else msgReactions[emoji] = users;
+            } else {
+                Object.keys(msgReactions).forEach(e => {
+                    msgReactions[e] = (msgReactions[e] || []).filter(u => u !== myId);
+                    if (msgReactions[e].length === 0) delete msgReactions[e];
+                });
+                msgReactions[emoji] = [...(msgReactions[emoji] || []), myId];
+            }
+            return { ...prev, [msgId]: msgReactions };
+        });
     };
 
     // ── Reset all messages ──
@@ -2816,7 +2845,10 @@ export default function InboxPage() {
                                                         ...styles.msgRow,
                                                         justifyContent: isAgent ? 'flex-end' : 'flex-start',
                                                         position: 'relative',
+                                                        gap: !isAgent ? 8 : 0,
                                                     }}
+                                                    onMouseEnter={() => !forwardMode && setHoveredMsgId(msg._id)}
+                                                    onMouseLeave={() => setHoveredMsgId(null)}
                                                 >
                                                     {forwardMode && (
                                                         <div style={{
@@ -2836,6 +2868,23 @@ export default function InboxPage() {
                                                             />
                                                         </div>
                                                     )}
+                                                    {/* Visitor Avatar */}
+                                                    {!isAgent && (() => {
+                                                        const prevMsg = msgIdx > 0 ? messages[msgIdx - 1] : null;
+                                                        const isConsecutive = prevMsg && prevMsg.sender?.type === 'visitor' && prevMsg.sender?.name === msg.sender?.name;
+                                                        const avatar = selectedConv?.visitorInfo?.avatar;
+                                                        const senderName = msg.sender?.name || visitorName(selectedConv!);
+                                                        if (!isConsecutive) {
+                                                            return avatar ? (
+                                                                <img src={avatar} alt="" style={{ width: 30, height: 30, borderRadius: 10, objectFit: 'cover' as const, flexShrink: 0, marginTop: 2 }} onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+                                                            ) : (
+                                                                <div style={{ width: 30, height: 30, borderRadius: 10, background: `hsl(${(senderName.charCodeAt(0) * 37) % 360}, 55%, 55%)`, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontWeight: 600, fontSize: 12, flexShrink: 0, marginTop: 2 }}>
+                                                                    {senderName.charAt(0).toUpperCase()}
+                                                                </div>
+                                                            );
+                                                        }
+                                                        return <div style={{ width: 30, flexShrink: 0 }} />;
+                                                    })()}
                                                     <div style={{ display: 'flex', flexDirection: 'column', maxWidth: '70%', alignItems: isAgent ? 'flex-end' : 'flex-start' }}>
                                                     {/* Group chat: show sender name above bubble when sender changes */}
                                                     {!isAgent && msg.sender?.name && (() => {
@@ -2992,6 +3041,47 @@ export default function InboxPage() {
                                                             )}
                                                         </div>
                                                     </div>
+                                                    {/* Reaction display */}
+                                                    {messageReactions[msg._id] && Object.keys(messageReactions[msg._id]).length > 0 && (
+                                                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' as const, marginTop: 2, justifyContent: isAgent ? 'flex-end' : 'flex-start' }}>
+                                                            {Object.entries(messageReactions[msg._id]).map(([emoji, users]) => (
+                                                                <span
+                                                                    key={emoji}
+                                                                    onClick={() => handleToggleReaction(msg._id, emoji)}
+                                                                    style={{
+                                                                        display: 'inline-flex', alignItems: 'center', gap: 3,
+                                                                        padding: '2px 7px', borderRadius: 12,
+                                                                        background: (users as string[]).includes(me?.user?.id || '') ? '#eef2ff' : '#f3f4f6',
+                                                                        border: (users as string[]).includes(me?.user?.id || '') ? '1px solid #c7d2fe' : '1px solid #e5e7eb',
+                                                                        fontSize: 13, cursor: 'pointer', transition: 'all 0.15s',
+                                                                    }}
+                                                                >
+                                                                    {emoji} <span style={{ fontSize: 11, color: '#6b7280', fontWeight: 500 }}>{(users as string[]).length}</span>
+                                                                </span>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                    {/* Reaction picker on hover */}
+                                                    {hoveredMsgId === msg._id && !msg.isDeleted && !forwardMode && !msg._id.startsWith('tmp_') && (
+                                                        <div style={{
+                                                            display: 'flex', gap: 2, padding: '3px 6px', borderRadius: 20,
+                                                            background: '#fff', boxShadow: '0 2px 12px rgba(0,0,0,0.12)',
+                                                            border: '1px solid #e5e7eb', marginTop: 2,
+                                                            alignSelf: isAgent ? 'flex-end' : 'flex-start',
+                                                        }}>
+                                                            {REACTION_EMOJIS.map(emoji => (
+                                                                <span
+                                                                    key={emoji}
+                                                                    onClick={() => handleToggleReaction(msg._id, emoji)}
+                                                                    style={{ cursor: 'pointer', fontSize: 17, padding: '2px 4px', borderRadius: 6, transition: 'transform 0.15s, background 0.15s', display: 'inline-flex' }}
+                                                                    onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.35)'; e.currentTarget.style.background = '#f3f4f6'; }}
+                                                                    onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; e.currentTarget.style.background = 'transparent'; }}
+                                                                >
+                                                                    {emoji}
+                                                                </span>
+                                                            ))}
+                                                        </div>
+                                                    )}
                                                     </div>{/* end group sender wrapper */}
                                                     {/* Message Actions (Reply) */}
                                                     <div className="msg-actions" style={{
