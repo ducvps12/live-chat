@@ -8,10 +8,10 @@ import { conversationRepo } from '../modules/conversation/repos/conversation.rep
 import { presenceStore } from './presence';
 import { browserPool } from './browserPool';
 import { startScreencast, stopScreencast, dispatchMouse, dispatchKeyboard, dispatchScroll, detectLoginState } from './sessionStream';
-import { createZaloSession, restoreZaloSession, getZaloConversations, getZaloMessages, sendZaloMsg, sendZaloImage, destroyZaloSession, isZaloSessionConnected, hasStoredCredentials, logoutZaloSession, addSessionMessageCallback, clearSessionMessageCallbacks, undoZaloMessage, sendZaloReply, searchZaloStickers, sendZaloSticker, sendZaloVoice, getThreadContactData, getAllContactData, loadContactData } from './zaloService';
+import { createZaloSession, restoreZaloSession, getZaloConversations, getZaloMessages, sendZaloMsg, sendZaloImage, destroyZaloSession, isZaloSessionConnected, hasStoredCredentials, logoutZaloSession, addSessionMessageCallback, addSessionUndoCallback, clearSessionMessageCallbacks, undoZaloMessage, deleteZaloMessage, sendZaloReply, searchZaloStickers, sendZaloSticker, sendZaloVoice, getThreadContactData, getAllContactData, loadContactData } from './zaloService';
 import { externalSessionRepo } from '../modules/external-session/repos/externalSession.repo';
 import { zaloMessageRepo } from '../modules/zalo/repos/zalo-message.repo';
-import type { ZaloIncomingMessage } from './zaloService';
+import type { ZaloIncomingMessage, ZaloUndoEvent } from './zaloService';
 
 let io: Server;
 
@@ -52,6 +52,34 @@ async function saveZaloMessageToDB(sessionId: string, msg: ZaloIncomingMessage):
         console.log(`[ZaloDB] Message ${msg.msgId} saved (thread: ${msg.threadId}, self: ${msg.isSelf})`);
     } catch (err) {
         console.error(`[ZaloDB] Failed to save message ${msg.msgId}:`, err);
+    }
+}
+
+/**
+ * Handle Zalo undo (message recall) events.
+ * Marks message as recalled in DB and emits to frontend.
+ */
+async function handleZaloUndo(sessionId: string, undoEvent: ZaloUndoEvent, remoteNs: any): Promise<void> {
+    try {
+        const workspaceId = await getWorkspaceIdForSession(sessionId);
+        if (workspaceId && undoEvent.msgId) {
+            const updated = await zaloMessageRepo.markAsRecalled(workspaceId, undoEvent.msgId);
+            if (updated) {
+                console.log(`[ZaloDB] Message ${undoEvent.msgId} marked as recalled`);
+            }
+        }
+
+        // Emit to all connected frontend clients
+        remoteNs.to(`remote:${sessionId}`).emit('zalo:messageRecalled', {
+            msgId: undoEvent.msgId,
+            threadId: undoEvent.threadId,
+            threadType: undoEvent.threadType,
+            uidFrom: undoEvent.uidFrom,
+            isSelf: undoEvent.isSelf,
+        });
+        console.log(`[ZaloDB] Emitted zalo:messageRecalled for msg ${undoEvent.msgId} in thread ${undoEvent.threadId}`);
+    } catch (err) {
+        console.error(`[ZaloDB] Failed to handle undo for message ${undoEvent.msgId}:`, err);
     }
 }
 
@@ -619,25 +647,155 @@ export function initSocketGateway(server: http.Server): Server {
             try {
                 console.log(`[ZaloZCA] Starting zca-js session for ${sessionId}...`);
 
+                // Track the real accountId after DB upsert (closure for onMessage)
+                let resolvedAccountId = sessionId;
+
                 await createZaloSession(
                     sessionId,
                     // onQR: send QR code data to frontend
                     (qrDataUrl) => {
                         socket.emit('zalo:qrCode', { sessionId, qrDataUrl });
                     },
-                    // onLogin: session connected
+                    // onLogin: session connected — fetch profile + create/update DB account
                     async (session) => {
                         console.log(`[ZaloZCA] Session ${sessionId} logged in via thành công`);
+
+                        // ── Fetch Zalo profile name + avatar ──
+                        let zaloName = 'Unknown Zalo';
+                        let zaloAvatar = '';
+                        let zaloId = '';
+
+                        try {
+                            // Strategy 1: fetchAccountInfo (most reliable)
+                            if (session.api?.fetchAccountInfo) {
+                                try {
+                                    const profile = await session.api.fetchAccountInfo() as any;
+                                    if (profile) {
+                                        zaloName = profile.name || profile.displayName || profile.zaloName || zaloName;
+                                        zaloAvatar = profile.avatar || profile.thumbAvatar || zaloAvatar;
+                                    }
+                                } catch (e) {
+                                    console.warn(`[ZaloZCA] fetchAccountInfo failed:`, e);
+                                }
+                            }
+
+                            // Strategy 2: getContext for UID
+                            if (session.api?.getContext) {
+                                try {
+                                    const ctx = session.api.getContext();
+                                    if (ctx?.uid) zaloId = typeof ctx.uid === 'object' ? (ctx.uid as any).userId || (ctx.uid as any).uid || '' : String(ctx.uid);
+                                } catch { /* silent */ }
+                            }
+
+                            // Strategy 2.5: getUserInfo with own ID (most reliable for self name)
+                            if (zaloName === 'Unknown Zalo' && zaloId && session.api?.getUserInfo) {
+                                try {
+                                    const userInfoResult = await session.api.getUserInfo([zaloId]);
+                                    if (userInfoResult) {
+                                        // getUserInfo returns Map or object with userId keys
+                                        const info = userInfoResult instanceof Map 
+                                            ? userInfoResult.get(zaloId)
+                                            : (userInfoResult[zaloId] || userInfoResult);
+                                        if (info) {
+                                            zaloName = info.displayName || info.zaloName || info.name || zaloName;
+                                            zaloAvatar = info.avatar || info.thumbAvatar || zaloAvatar;
+                                            console.log(`[ZaloZCA] getUserInfo resolved name: "${zaloName}"`);
+                                        }
+                                    }
+                                } catch (e) {
+                                    console.warn(`[ZaloZCA] getUserInfo failed:`, e);
+                                }
+                            }
+
+                            // Strategy 3: getAllFriends fallback
+                            if (zaloName === 'Unknown Zalo' && session.api?.getAllFriends) {
+                                try {
+                                    const friends = await session.api.getAllFriends();
+                                    const friendList = Array.isArray(friends) ? friends : [];
+                                    if (zaloId) {
+                                        const self = friendList.find((f: any) =>
+                                            String(f.userId || f.uid || f.id) === String(zaloId)
+                                        );
+                                        if (self) {
+                                            zaloName = self.displayName || self.zaloName || self.name || zaloName;
+                                            zaloAvatar = self.avatar || self.thumbAvatar || zaloAvatar;
+                                        }
+                                    }
+                                    if (zaloName === 'Unknown Zalo' && friendList.length > 0) {
+                                        zaloName = `Zalo (${friendList.length} bạn bè)`;
+                                    }
+                                } catch (e) {
+                                    console.warn(`[ZaloZCA] getAllFriends fallback failed:`, e);
+                                }
+                            }
+
+                            console.log(`[ZaloZCA] Profile resolved: name="${zaloName}", zaloId="${zaloId}"`);
+
+                            // ── Upsert account in DB ──
+                            const wsId = data.workspaceId || '';
+                            if (wsId) {
+                                try {
+                                    const { zaloAccountRepo } = await import('../modules/zalo/repos/zalo-account.repo');
+                                    const { migrateZaloSession, copyZaloCredentials } = await import('./zaloService');
+                                    const crypto = await import('crypto');
+
+                                    const existing = await zaloAccountRepo.findByWorkspaceId(wsId);
+                                    const resolvedZaloId = zaloId || `unknown_${Date.now()}`;
+                                    const duplicate = existing.find((a: any) => a.zaloId === resolvedZaloId);
+
+                                    let accountId: string;
+                                    if (duplicate) {
+                                        // Update existing account
+                                        await zaloAccountRepo.update(duplicate.id, {
+                                            name: zaloName, avatar: zaloAvatar, status: 'active'
+                                        });
+                                        accountId = duplicate.id.toString();
+                                        console.log(`[ZaloZCA] Updated existing account ${zaloName} (${accountId})`);
+                                    } else {
+                                        // Create new account
+                                        const newAccount = await zaloAccountRepo.create({
+                                            workspaceId: wsId,
+                                            zaloId: resolvedZaloId,
+                                            name: zaloName,
+                                            avatar: zaloAvatar,
+                                            imei: crypto.randomUUID(),
+                                            cookie: [],
+                                            userAgent: 'Mozilla/5.0',
+                                            status: 'active',
+                                        });
+                                        accountId = newAccount.id.toString();
+                                        console.log(`[ZaloZCA] Created new account ${zaloName} (${accountId})`);
+                                    }
+
+                                    // Migrate session from temp sessionId to accountId
+                                    if (sessionId !== accountId) {
+                                        migrateZaloSession(sessionId, accountId);
+                                        copyZaloCredentials(sessionId, accountId);
+                                        resolvedAccountId = accountId;
+                                        // Also cache the workspaceId for this new accountId
+                                        sessionWorkspaceCache.set(accountId, wsId);
+                                    }
+                                } catch (dbErr: any) {
+                                    console.warn(`[ZaloZCA] DB account upsert failed:`, dbErr.message);
+                                }
+                            }
+                        } catch (profileErr: any) {
+                            console.warn(`[ZaloZCA] Profile fetch failed:`, profileErr.message);
+                        }
+
                         try { await externalSessionRepo.updateStatus(sessionId, 'connected', { connectedAt: new Date() }); } catch { /* virtual account */ }
+
+                        // Emit with the resolved accountId so frontend uses the correct ID
                         socket.emit('session:status', { status: 'connected' });
                         socket.emit('session:loginDetected', {});
-                        socket.emit('zalo:zcaConnected', { sessionId });
+                        socket.emit('zalo:zcaConnected', { sessionId: resolvedAccountId, zaloName, zaloAvatar });
                     },
                     // onMessage: realtime incoming message
                     (msg) => {
                         // Persist to DB (fire-and-forget, non-blocking)
-                        saveZaloMessageToDB(sessionId, msg).catch(() => {});
-                        remoteNs.to(`remote:${sessionId}`).emit('zalo:newMessage', {
+                        const effectiveId = resolvedAccountId || sessionId;
+                        saveZaloMessageToDB(effectiveId, msg).catch(() => {});
+                        remoteNs.to(`remote:${effectiveId}`).emit('zalo:newMessage', {
                             msgId: msg.msgId,
                             content: msg.content,
                             senderId: msg.senderId,
@@ -650,11 +808,39 @@ export function initSocketGateway(server: http.Server): Server {
                             threadType: msg.threadType,
                             attachmentUrl: msg.attachmentUrl,
                             thumbUrl: msg.thumbUrl,
+                            stickerUrl: msg.stickerUrl,
                         });
+                        // Also emit to original room in case frontend is still joined there
+                        if (effectiveId !== sessionId) {
+                            remoteNs.to(`remote:${sessionId}`).emit('zalo:newMessage', {
+                                msgId: msg.msgId,
+                                content: msg.content,
+                                senderId: msg.senderId,
+                                senderName: msg.senderName,
+                                conversationId: msg.threadId,
+                                isGroup: msg.threadType === 'group',
+                                isSelf: msg.isSelf,
+                                timestamp: msg.timestamp,
+                                msgType: msg.msgType,
+                                threadType: msg.threadType,
+                                attachmentUrl: msg.attachmentUrl,
+                                thumbUrl: msg.thumbUrl,
+                                stickerUrl: msg.stickerUrl,
+                            });
+                        }
                     },
                     // onError
                     (error) => {
                         socket.emit('zalo:zcaError', { sessionId, error });
+                    },
+                    // onUndo — when someone recalls a message on Zalo app
+                    (undoEvent) => {
+                        const effectiveId = resolvedAccountId || sessionId;
+                        handleZaloUndo(effectiveId, undoEvent, remoteNs);
+                        // Also emit to original room in case frontend is still joined there
+                        if (effectiveId !== sessionId) {
+                            handleZaloUndo(sessionId, undoEvent, remoteNs);
+                        }
                     },
                 );
             } catch (err: any) {
@@ -695,7 +881,12 @@ export function initSocketGateway(server: http.Server): Server {
                             threadType: msg.threadType,
                             attachmentUrl: msg.attachmentUrl,
                             thumbUrl: msg.thumbUrl,
+                            stickerUrl: msg.stickerUrl,
                         });
+                    });
+                    // Also register undo callback for already-connected sessions
+                    addSessionUndoCallback(sessionId, (undoEvent) => {
+                        handleZaloUndo(sessionId, undoEvent, remoteNs);
                     });
                     socket.emit('zalo:zcaConnected', { sessionId });
                     return;
@@ -720,11 +911,16 @@ export function initSocketGateway(server: http.Server): Server {
                             threadType: msg.threadType,
                             attachmentUrl: msg.attachmentUrl,
                             thumbUrl: msg.thumbUrl,
+                            stickerUrl: msg.stickerUrl,
                         });
                     },
                     // onError
                     (error) => {
                         socket.emit('zalo:zcaError', { sessionId, error });
+                    },
+                    // onUndo
+                    (undoEvent) => {
+                        handleZaloUndo(sessionId, undoEvent, remoteNs);
                     },
                 );
 
@@ -745,9 +941,46 @@ export function initSocketGateway(server: http.Server): Server {
         // ── Get Zalo conversations (pure zca-js) ──
         socket.on('zalo:getConversations', async ({ sessionId }: { sessionId: string }) => {
             try {
+                // If session not connected, try auto-restore from stored credentials
                 if (!isZaloSessionConnected(sessionId)) {
-                    socket.emit('zalo:conversations', { conversations: [], error: 'Zalo chưa kết nối — vui lòng quét QR hoặc đợi restore session' });
-                    return;
+                    if (hasStoredCredentials(sessionId)) {
+                        console.log(`[Zalo] Session ${sessionId} not connected but has credentials — auto-restoring...`);
+                        try {
+                            const restored = await restoreZaloSession(
+                                sessionId,
+                                (msg) => {
+                                    saveZaloMessageToDB(sessionId, msg).catch(() => {});
+                                    remoteNs.to(`remote:${sessionId}`).emit('zalo:newMessage', {
+                                        msgId: msg.msgId, content: msg.content, senderId: msg.senderId,
+                                        senderName: msg.senderName, conversationId: msg.threadId,
+                                        isGroup: msg.threadType === 'group', isSelf: msg.isSelf,
+                                        timestamp: msg.timestamp, msgType: msg.msgType, threadType: msg.threadType,
+                                        attachmentUrl: msg.attachmentUrl, thumbUrl: msg.thumbUrl,
+                                        stickerUrl: msg.stickerUrl,
+                                    });
+                                },
+                                (error) => {
+                                    socket.emit('zalo:zcaError', { sessionId, error });
+                                },
+                                // onUndo
+                                (undoEvent) => {
+                                    handleZaloUndo(sessionId, undoEvent, remoteNs);
+                                },
+                            );
+                            if (restored) {
+                                console.log(`[Zalo] Auto-restored session ${sessionId} for getConversations`);
+                                socket.emit('zalo:zcaConnected', { sessionId });
+                            }
+                        } catch (restoreErr: any) {
+                            console.warn(`[Zalo] Auto-restore failed for ${sessionId}:`, restoreErr.message);
+                        }
+                    }
+
+                    // Recheck after restore attempt
+                    if (!isZaloSessionConnected(sessionId)) {
+                        socket.emit('zalo:conversations', { conversations: [], error: 'Zalo chưa kết nối — vui lòng quét QR hoặc đợi restore session' });
+                        return;
+                    }
                 }
 
                 console.log(`[Zalo] Getting conversations via zca-js for ${sessionId}...`);
@@ -887,6 +1120,20 @@ export function initSocketGateway(server: http.Server): Server {
                 remoteNs.to(`remote:${sessionId}`).emit('zalo:messageRecalled', { msgId, threadId });
             } catch (err: any) {
                 socket.emit('zalo:undoResult', { success: false, error: err.message });
+            }
+        });
+
+        // ── Delete a message (for self only, or for everyone) ──
+        socket.on('zalo:deleteMessage', async ({ sessionId, msgId, cliMsgId, uidFrom, threadId, threadType, onlyMe }: {
+            sessionId: string; msgId: string; cliMsgId: string; uidFrom: string; threadId: string; threadType?: 'user' | 'group'; onlyMe?: boolean;
+        }) => {
+            try {
+                const result = await deleteZaloMessage(sessionId, msgId, cliMsgId, uidFrom, threadId, threadType || 'user', onlyMe !== false);
+                socket.emit('zalo:deleteResult', { success: true, msgId, result });
+                // Broadcast to room so UI removes the message
+                remoteNs.to(`remote:${sessionId}`).emit('zalo:messageDeleted', { msgId, threadId, onlyMe: onlyMe !== false });
+            } catch (err: any) {
+                socket.emit('zalo:deleteResult', { success: false, error: err.message });
             }
         });
 

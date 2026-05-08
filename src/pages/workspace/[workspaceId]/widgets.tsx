@@ -6,7 +6,7 @@ import {
     Empty, Spin, Tag, Drawer, Divider, Typography, Card, Space, Badge, Upload
 } from 'antd';
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons';
-import { Plus, Copy, Code, Settings, Trash2, ArrowLeft, Eye, Globe, MessageSquare, Upload as UploadIcon, FlaskConical } from 'lucide-react';
+import { Plus, Copy, Code, Settings, Trash2, ArrowLeft, Eye, Globe, MessageSquare, Upload as UploadIcon, FlaskConical, Monitor, Tablet, Smartphone, Link as LinkIcon } from 'lucide-react';
 import { useGetMe } from '../../../domains/auth/auth.hooks';
 import { useWorkspace } from '../../../domains/workspace/workspace.hooks';
 import { useTotalUnreadCount } from '../../../domains/conversation';
@@ -67,7 +67,271 @@ function LivePreview({ form }: { form: any }) {
     return <WidgetPreview config={config} />;
 }
 
-function WidgetPreview({ config }: { config: any }) {
+const DEVICE_PRESETS = [
+    { key: 'desktop', label: 'PC', icon: Monitor, width: 1280, height: 800 },
+    { key: 'tablet', label: 'Tablet', icon: Tablet, width: 768, height: 1024 },
+    { key: 'mobile', label: 'Mobile', icon: Smartphone, width: 375, height: 812 },
+] as const;
+type DeviceKey = typeof DEVICE_PRESETS[number]['key'];
+
+function DevicePreviewPanel({ form, widgetId }: { form: any; widgetId: string }) {
+    const [device, setDevice] = useState<DeviceKey>('desktop');
+    const [customUrl, setCustomUrl] = useState('');
+    const [previewUrl, setPreviewUrl] = useState('');
+    const [showLinkInput, setShowLinkInput] = useState(false);
+    const allValues = Form.useWatch([], form);
+    const config = buildLiveConfig(allValues);
+    const preset = DEVICE_PRESETS.find(d => d.key === device)!;
+
+    const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3010';
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
+    const backendBase = apiUrl ? apiUrl.replace(/\/api\/?$/, '') : origin;
+
+    const handlePreviewUrl = () => {
+        if (!customUrl.trim()) { setPreviewUrl(''); return; }
+        let url = customUrl.trim();
+        if (!/^https?:\/\//.test(url)) url = 'https://' + url;
+        setPreviewUrl(url);
+    };
+
+    /* Scale to fit inside the panel */
+    const containerW = device === 'desktop' ? 520 : device === 'tablet' ? 400 : 280;
+    const scale = Math.min(containerW / preset.width, 1);
+    const scaledH = Math.min(preset.height * scale, 600);
+
+    const widgetScript = `<script>(function(w,d,s,o){w.NemarkChat=o;w[o]=w[o]||function(){(w[o].q=w[o].q||[]).push(arguments)};var js=d.createElement(s);js.async=1;js.src='${origin}/widget/loader.js';js.setAttribute('data-widget-id','${widgetId}');js.setAttribute('data-api-base','${backendBase}');d.head.appendChild(js);})(window,document,'script','nchat');</script>`;
+
+    return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {/* ── Device Switcher Bar ── */}
+            <div style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                background: '#f8f9fb', borderRadius: 10, padding: '6px 8px',
+                border: '1px solid #e8eaed',
+            }}>
+                <div style={{ display: 'flex', gap: 2 }}>
+                    {DEVICE_PRESETS.map(d => {
+                        const Icon = d.icon;
+                        const active = device === d.key;
+                        return (
+                            <button
+                                key={d.key}
+                                onClick={() => setDevice(d.key)}
+                                title={`${d.label} (${d.width}×${d.height})`}
+                                style={{
+                                    display: 'flex', alignItems: 'center', gap: 5,
+                                    padding: '6px 12px', borderRadius: 8, border: 'none',
+                                    cursor: 'pointer', fontSize: 12, fontWeight: active ? 600 : 400,
+                                    background: active ? '#fff' : 'transparent',
+                                    color: active ? '#1a73e8' : '#5f6368',
+                                    boxShadow: active ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                                    transition: 'all 0.15s ease',
+                                }}
+                            >
+                                <Icon size={14} />
+                                <span>{d.label}</span>
+                            </button>
+                        );
+                    })}
+                </div>
+                <button
+                    onClick={() => setShowLinkInput(!showLinkInput)}
+                    title="Xem trên URL tuỳ chỉnh"
+                    style={{
+                        display: 'flex', alignItems: 'center', gap: 4, padding: '5px 10px',
+                        borderRadius: 8, border: '1px solid #dadce0', cursor: 'pointer',
+                        fontSize: 11, fontWeight: 500, background: showLinkInput ? '#e8f0fe' : '#fff',
+                        color: showLinkInput ? '#1a73e8' : '#5f6368',
+                        transition: 'all 0.15s',
+                    }}
+                >
+                    <LinkIcon size={12} />
+                    URL
+                </button>
+            </div>
+
+            {/* ── Custom URL Input ── */}
+            {showLinkInput && (
+                <div style={{
+                    display: 'flex', gap: 6, padding: '8px 10px',
+                    background: '#f0f7ff', borderRadius: 8, border: '1px solid #c2dbff',
+                }}>
+                    <input
+                        value={customUrl}
+                        onChange={e => setCustomUrl(e.target.value)}
+                        onKeyDown={e => e.key === 'Enter' && handlePreviewUrl()}
+                        placeholder="Nhập URL website... (vd: example.com)"
+                        style={{
+                            flex: 1, height: 32, borderRadius: 6, border: '1px solid #d0d5dd',
+                            padding: '0 10px', fontSize: 12, outline: 'none',
+                            background: '#fff',
+                        }}
+                    />
+                    <button
+                        onClick={handlePreviewUrl}
+                        style={{
+                            height: 32, padding: '0 14px', borderRadius: 6,
+                            background: '#1a73e8', color: '#fff', border: 'none',
+                            fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                            whiteSpace: 'nowrap',
+                        }}
+                    >
+                        Xem
+                    </button>
+                    {previewUrl && (
+                        <button
+                            onClick={() => { setPreviewUrl(''); setCustomUrl(''); }}
+                            style={{
+                                height: 32, padding: '0 10px', borderRadius: 6,
+                                background: '#f1f3f4', border: '1px solid #dadce0',
+                                fontSize: 12, cursor: 'pointer', color: '#5f6368',
+                            }}
+                        >
+                            ✕
+                        </button>
+                    )}
+                </div>
+            )}
+
+            {/* ── Device Frame ── */}
+            <div style={{
+                display: 'flex', flexDirection: 'column', alignItems: 'center',
+                background: '#f0f0f5', borderRadius: 12, padding: '16px 12px 12px',
+                border: '1px solid #e0e0e5',
+            }}>
+                {/* Size badge */}
+                <div style={{
+                    fontSize: 10, color: '#9aa0a6', marginBottom: 8,
+                    fontFamily: 'monospace', fontWeight: 500,
+                }}>
+                    {preset.width} × {preset.height}
+                </div>
+
+                {previewUrl ? (
+                    /* ── Custom URL iframe preview ── */
+                    <div style={{
+                        width: preset.width * scale,
+                        height: scaledH,
+                        borderRadius: device === 'mobile' ? 24 : device === 'tablet' ? 16 : 8,
+                        overflow: 'hidden',
+                        boxShadow: '0 4px 24px rgba(0,0,0,0.12)',
+                        border: device === 'mobile' ? '3px solid #222' : device === 'tablet' ? '3px solid #333' : '1px solid #ccc',
+                        background: '#fff',
+                        position: 'relative',
+                    }}>
+                        {/* Browser chrome bar */}
+                        <div style={{
+                            height: 28, background: '#f5f5f5', borderBottom: '1px solid #e0e0e0',
+                            display: 'flex', alignItems: 'center', padding: '0 10px', gap: 6,
+                        }}>
+                            <div style={{ display: 'flex', gap: 4 }}>
+                                <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#ff5f57' }} />
+                                <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#ffbd2e' }} />
+                                <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#28c840' }} />
+                            </div>
+                            <div style={{
+                                flex: 1, height: 18, background: '#fff', borderRadius: 4,
+                                fontSize: 9, color: '#999', display: 'flex', alignItems: 'center',
+                                padding: '0 8px', overflow: 'hidden', whiteSpace: 'nowrap',
+                                border: '1px solid #e8e8e8',
+                            }}>
+                                🔒 {previewUrl.replace(/^https?:\/\//, '')}
+                            </div>
+                        </div>
+                        <div style={{
+                            width: preset.width, height: preset.height - 28,
+                            transform: `scale(${scale})`, transformOrigin: 'top left',
+                        }}>
+                            <iframe
+                                src={previewUrl}
+                                style={{ width: '100%', height: '100%', border: 'none' }}
+                                title={`Preview ${device}`}
+                                sandbox="allow-scripts allow-same-origin allow-forms"
+                            />
+                        </div>
+                        {/* Widget overlay hint */}
+                        <div style={{
+                            position: 'absolute', bottom: 8, right: 8, zIndex: 10,
+                            background: 'rgba(0,0,0,0.7)', color: '#fff', fontSize: 9,
+                            padding: '4px 8px', borderRadius: 6, fontWeight: 500,
+                        }}>
+                            Widget sẽ hiển thị ở đây →
+                        </div>
+                    </div>
+                ) : (
+                    /* ── Default widget preview (no custom URL) ── */
+                    <div style={{
+                        width: preset.width * scale,
+                        minHeight: device === 'mobile' ? 480 : device === 'tablet' ? 420 : 'auto',
+                        borderRadius: device === 'mobile' ? 24 : device === 'tablet' ? 16 : 8,
+                        overflow: 'hidden',
+                        boxShadow: '0 4px 24px rgba(0,0,0,0.12)',
+                        border: device === 'mobile' ? '3px solid #222' : device === 'tablet' ? '3px solid #333' : '1px solid #ccc',
+                        background: '#fff',
+                        position: 'relative',
+                        display: 'flex', flexDirection: 'column',
+                    }}>
+                        {/* Simulated page content */}
+                        <div style={{
+                            flex: 1, padding: device === 'mobile' ? 12 : 20,
+                            background: 'linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%)',
+                            position: 'relative', minHeight: device === 'mobile' ? 380 : 320,
+                        }}>
+                            {/* Fake browser bar */}
+                            <div style={{
+                                height: 24, background: '#e8eaed', borderRadius: 6,
+                                display: 'flex', alignItems: 'center', padding: '0 8px', gap: 4,
+                                marginBottom: 12,
+                            }}>
+                                <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#ff5f57' }} />
+                                <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#ffbd2e' }} />
+                                <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#28c840' }} />
+                                <div style={{ flex: 1, height: 14, background: '#fff', borderRadius: 3, marginLeft: 6 }} />
+                            </div>
+                            {/* Fake content placeholders */}
+                            <div style={{ height: 14, width: '60%', background: '#dde1e6', borderRadius: 4, marginBottom: 8 }} />
+                            <div style={{ height: 10, width: '80%', background: '#e8eaed', borderRadius: 3, marginBottom: 6 }} />
+                            <div style={{ height: 10, width: '70%', background: '#e8eaed', borderRadius: 3, marginBottom: 16 }} />
+                            <div style={{ height: 80, background: '#e8eaed', borderRadius: 8, marginBottom: 12 }} />
+                            <div style={{ height: 10, width: '55%', background: '#e8eaed', borderRadius: 3, marginBottom: 6 }} />
+                            <div style={{ height: 10, width: '45%', background: '#e8eaed', borderRadius: 3 }} />
+
+                            {/* Widget positioned at bottom-right */}
+                            <div style={{
+                                position: 'absolute',
+                                bottom: device === 'mobile' ? 12 : 16,
+                                right: device === 'mobile' ? 12 : 16,
+                                transform: device === 'mobile' ? 'scale(0.85)' : device === 'tablet' ? 'scale(0.9)' : 'scale(1)',
+                                transformOrigin: 'bottom right',
+                            }}>
+                                <WidgetPreview config={config} compact={device === 'mobile'} />
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* Device label */}
+                <div style={{
+                    marginTop: 8, fontSize: 11, color: '#9aa0a6', fontWeight: 500,
+                    display: 'flex', alignItems: 'center', gap: 4,
+                }}>
+                    {(() => { const Icon = preset.icon; return <Icon size={12} />; })()}
+                    {preset.label} Preview
+                </div>
+            </div>
+
+            {/* ── Standalone Widget Preview (always visible) ── */}
+            <div style={{ borderTop: '1px solid #e8eaed', paddingTop: 12 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#5f6368', marginBottom: 8 }}>
+                    Widget Component
+                </div>
+                <WidgetPreview config={config} />
+            </div>
+        </div>
+    );
+}
+
+function WidgetPreview({ config, compact }: { config: any; compact?: boolean }) {
     const bgStyle = config?.gradient
         ? { background: config.gradient }
         : { background: config?.primaryColor || '#6366f1' };
@@ -170,7 +434,7 @@ function WidgetPreview({ config }: { config: any }) {
         <div>
             {/* Chat window preview */}
             <div style={{
-                width: 320, borderRadius: 16, overflow: 'hidden',
+                width: compact ? 260 : 320, borderRadius: compact ? 12 : 16, overflow: 'hidden',
                 boxShadow: '0 8px 40px rgba(0,0,0,0.12)', fontFamily: 'inherit',
                 border: '1px solid var(--color-border)'
             }}>
@@ -536,14 +800,7 @@ export default function WorkspaceDetailPage() {
                 ) : (
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 20 }}>
                         {widgets.map((w: any) => (
-                            <Card key={w._id} hoverable style={{ borderRadius: 12 }}
-                                actions={[
-                                    <Button key="cfg" type="text" icon={<Settings size={14} />} onClick={() => openConfig(w)}>Cấu hình</Button>,
-                                    <Button key="test" type="text" icon={<FlaskConical size={14} />} onClick={() => setTestModal(w._id)} style={{ color: '#10b981' }}>Test</Button>,
-                                    <Button key="code" type="text" icon={<Code size={14} />} onClick={() => setSnippetModal(w._id)}>Mã nhúng</Button>,
-                                    <Button key="del" type="text" danger icon={<Trash2 size={14} />} onClick={() => handleDelete(w._id)} />,
-                                ]}
-                            >
+                            <Card key={w._id} hoverable style={{ borderRadius: 12 }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
                                     <div style={{
                                         width: 40, height: 40, borderRadius: 10,
@@ -568,6 +825,27 @@ export default function WorkspaceDetailPage() {
                                     <Tag style={{ borderRadius: 8, fontSize: 11 }}>
                                         Domains: {w.domainRules?.domains?.length || 0}
                                     </Tag>
+                                </div>
+                                {/* Action buttons — rendered outside Card actions to avoid event interception */}
+                                <div style={{
+                                    display: 'flex', alignItems: 'center', gap: 4, marginTop: 16, paddingTop: 12,
+                                    borderTop: '1px solid var(--color-border, #f0f0f0)',
+                                }}>
+                                    <Button type="text" size="small" icon={<Settings size={14} />}
+                                        onClick={(e) => { e.stopPropagation(); openConfig(w); }}
+                                        style={{ flex: 1, fontSize: 12 }}
+                                    >Cấu hình</Button>
+                                    <Button type="text" size="small" icon={<FlaskConical size={14} />}
+                                        onClick={(e) => { e.stopPropagation(); setTestModal(w._id); }}
+                                        style={{ flex: 1, fontSize: 12, color: '#10b981' }}
+                                    >Test</Button>
+                                    <Button type="text" size="small" icon={<Code size={14} />}
+                                        onClick={(e) => { e.stopPropagation(); setSnippetModal(w._id); }}
+                                        style={{ flex: 1, fontSize: 12 }}
+                                    >Mã nhúng</Button>
+                                    <Button type="text" size="small" danger icon={<Trash2 size={14} />}
+                                        onClick={(e) => { e.stopPropagation(); handleDelete(w._id); }}
+                                    />
                                 </div>
                             </Card>
                         ))}
@@ -604,23 +882,49 @@ export default function WorkspaceDetailPage() {
                 open={!!testModal}
                 onCancel={() => setTestModal(null)}
                 footer={
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
                         <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
-                            💡 Widget đang chạy trên môi trường local — test trước khi xuất bản.
+                            Widget đang chạy trên môi trường local — test trước khi xuất bản.
                         </span>
                         <Button onClick={() => setTestModal(null)}>Đóng</Button>
                     </div>
                 }
-                width={900}
-                styles={{ body: { padding: 0, height: '70vh', overflow: 'hidden' } }}
+                width={960}
+                centered
+                styles={{
+                    body: {
+                        padding: 0,
+                        height: 'min(78vh, 860px)',
+                        overflow: 'hidden',
+                        borderTop: '1px solid var(--color-border)'
+                    },
+                    footer: {
+                        marginTop: 0,
+                        borderTop: '1px solid var(--color-border)',
+                        paddingTop: 12
+                    }
+                }}
                 destroyOnClose
             >
-                {testModal && (() => {
-                    const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3010';
-                    // Derive backend base URL from NEXT_PUBLIC_API_URL or fall back to SERVER_PORT
-                    const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
-                    const backendBase = apiUrl ? apiUrl.replace(/\/api\/?$/, '') : origin;
-                    const testHtml = `<!DOCTYPE html>
+                <div style={{ height: '100%', background: 'linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%)' }}>
+                    <div style={{
+                        height: 44,
+                        display: 'flex',
+                        alignItems: 'center',
+                        padding: '0 14px',
+                        fontSize: 12,
+                        color: 'var(--color-text-secondary)',
+                        borderBottom: '1px solid var(--color-border)',
+                        background: '#fff'
+                    }}>
+                        Mô phỏng website local có nhúng widget
+                    </div>
+                    <div style={{ height: 'calc(100% - 44px)' }}>
+                        {testModal ? (() => {
+                            const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3010';
+                            const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
+                            const backendBase = apiUrl ? apiUrl.replace(/\/api\/?$/, '') : origin;
+                            const testHtml = `<!DOCTYPE html>
 <html lang="vi">
 <head>
     <meta charset="UTF-8">
@@ -766,20 +1070,18 @@ export default function WorkspaceDetailPage() {
     </script>
 </body>
 </html>`;
-                    const blob = new Blob([testHtml], { type: 'text/html' });
-                    const blobUrl = URL.createObjectURL(blob);
-                    return (
-                        <iframe
-                            src={blobUrl}
-                            style={{ width: '100%', height: '100%', border: 'none' }}
-                            title="Widget Local Test"
-                            onLoad={() => {
-                                // Revoke blob URL after iframe loads to free memory
-                                setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
-                            }}
-                        />
-                    );
-                })()}
+
+                            return (
+                                <iframe
+                                    srcDoc={testHtml}
+                                    style={{ width: '100%', height: '100%', border: 'none', display: 'block' }}
+                                    title="Widget Local Test"
+                                    sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                                />
+                            );
+                        })() : null}
+                    </div>
+                </div>
             </Modal>
 
             {/* ─── Config Drawer ─── */}
@@ -787,7 +1089,7 @@ export default function WorkspaceDetailPage() {
                 title="Cấu hình Widget"
                 open={configDrawer}
                 onClose={() => { setConfigDrawer(false); setEditingWidget(null); }}
-                width={680}
+                width={typeof window !== 'undefined' && window.innerWidth > 1200 ? Math.min(window.innerWidth - 80, 1400) : '100%'}
                 destroyOnClose
                 extra={
                     <Button type="primary" loading={updating} onClick={() => configForm.submit()}
@@ -795,13 +1097,23 @@ export default function WorkspaceDetailPage() {
                         Lưu cấu hình
                     </Button>
                 }
+                styles={{ body: { padding: '16px 24px', overflow: 'auto' } }}
             >
                 {editingWidget && (
-                    <div style={{ display: 'flex', gap: 24 }}>
+                    <div style={{ display: 'flex', gap: 28 }}>
                         {/* Form */}
-                        <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
+                            <style>{`
+                                .widget-config-tabs .ant-tabs-nav { margin-bottom: 16px !important; }
+                                .widget-config-tabs .ant-tabs-nav-list { gap: 0 !important; }
+                                .widget-config-tabs .ant-tabs-nav-wrap { overflow-x: auto !important; }
+                                .widget-config-tabs .ant-tabs-nav-wrap::-webkit-scrollbar { height: 3px; }
+                                .widget-config-tabs .ant-tabs-nav-wrap::-webkit-scrollbar-thumb { background: #d0d5dd; border-radius: 3px; }
+                                .widget-config-tabs .ant-tabs-tab { padding: 8px 14px !important; white-space: nowrap !important; font-size: 13px !important; }
+                                .widget-config-tabs .ant-tabs-tab-active .ant-tabs-tab-btn { font-weight: 600 !important; }
+                            `}</style>
                             <Form form={configForm} layout="vertical" onFinish={handleSaveConfig} requiredMark={false}>
-                                <Tabs defaultActiveKey="general" items={[
+                                <Tabs defaultActiveKey="general" className="widget-config-tabs" tabBarGutter={4} items={[
                                     {
                                         key: 'general', label: 'Chung',
                                         children: (
@@ -1265,12 +1577,12 @@ export default function WorkspaceDetailPage() {
                             </Form>
                         </div>
                         {/* Live preview — updates in real-time */}
-                        <div style={{ width: 340, flexShrink: 0 }}>
-                            <div style={{ position: 'sticky', top: 16 }}>
-                                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <div style={{ width: 460, flexShrink: 0, maxHeight: 'calc(100vh - 120px)', overflowY: 'auto', overflowX: 'hidden' }}>
+                            <div style={{ position: 'sticky', top: 0 }}>
+                                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6, background: '#fff', padding: '4px 0', zIndex: 1 }}>
                                     <Eye size={14} /> Xem trước (realtime)
                                 </div>
-                                <LivePreview form={configForm} />
+                                <DevicePreviewPanel form={configForm} widgetId={editingWidget?._id || ''} />
                             </div>
                         </div>
                     </div>

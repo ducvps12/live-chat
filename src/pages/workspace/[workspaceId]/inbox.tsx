@@ -3,7 +3,7 @@ import { useRouter } from 'next/router';
 import { useEffect, useState, useRef, useCallback, useMemo, Fragment } from 'react';
 import { Input, Badge, Spin, Empty, Tag, Button, message, Tooltip, Popover, Select, DatePicker, Form, Modal, Checkbox, Progress, Dropdown, ColorPicker } from 'antd';
 import {
-    Search, Send, Paperclip, ArrowLeft, X as XIcon,
+    Search, Send, Paperclip, ArrowLeft, X as XIcon, Smile,
     MessageSquare, Clock, User, Image as ImageIcon, RotateCw, Filter, Check, CheckCheck, UserCheck, UserX, Users, Zap, Reply, Edit2, Trash2, Globe, Forward, Bookmark, Plus, Settings, ChevronDown, Copy, Megaphone, MoreHorizontal
 } from 'lucide-react';
 import { useGetMe } from '../../../domains/auth/auth.hooks';
@@ -16,6 +16,7 @@ import KnowledgeSuggestPanel from '../../../features/workspace/components/Knowle
 import { useQueryClient } from '@tanstack/react-query';
 import { useTotalUnreadCount, conversationKeys, useAddInternalNote } from '../../../domains/conversation';
 import AppLayout from '../../../components/layout/AppLayout';
+import StickerPicker from '../../../features/inbox/components/StickerPicker';
 
 const { RangePicker } = DatePicker;
 
@@ -28,6 +29,68 @@ interface MacroItem {
     category?: string;
 }
 
+
+// ── Normalizers (API may return `id` instead of `_id` after MySQL migration) ──
+function normalizeConv(c: any): Conversation {
+    if (c && !c._id && c.id) c._id = c.id;
+    return c;
+}
+function normalizeMsg(m: any): Message {
+    if (m && !m._id && m.id) m._id = m.id;
+    // Build sender object from Prisma flat fields if missing
+    if (m && !m.sender) {
+        if (m.senderType) {
+            m.sender = { type: m.senderType, id: m.senderId || '', name: m.senderName || '' };
+        } else {
+            m.sender = { type: 'system', id: '', name: 'System' };
+        }
+    }
+    // Build replyTo object from Prisma flat fields if missing
+    if (m && !m.replyTo && m.replyToMessageId) {
+        m.replyTo = { messageId: m.replyToMessageId, content: m.replyToContent || '', senderName: m.replyToSenderName || '' };
+    }
+    // Detect sticker: check attachments for sticker URL patterns
+    if (m && !m.stickerUrl && m.attachments && Array.isArray(m.attachments)) {
+        for (const att of m.attachments) {
+            const url = att.url || att.data || '';
+            // Match by filename OR by URL pattern (emoticon/sticker CDN)
+            if (
+                att.filename === 'Zalo Sticker' ||
+                url.includes('emoticon') ||
+                url.includes('/sticker') ||
+                (att.mimeType === 'image/webp' && url.includes('zadn.vn'))
+            ) {
+                m.stickerUrl = url;
+                break;
+            }
+        }
+    }
+    // Normalize sticker URL: sprite → sticker/webpc, small size → 240
+    if (m && m.stickerUrl) {
+        // Replace sprite endpoint with sticker/webpc for single-image display
+        if (m.stickerUrl.includes('/sprite?')) {
+            const eidMatch = m.stickerUrl.match(/eid=(\d+)/);
+            if (eidMatch) {
+                m.stickerUrl = `https://zalo-api.zadn.vn/api/emoticon/sticker/webpc?eid=${eidMatch[1]}&size=240`;
+            }
+        }
+        // Upgrade small sizes to 240
+        if (m.stickerUrl.match(/size=(1[0-9]{2}|[1-9][0-9]?)\b/)) {
+            m.stickerUrl = m.stickerUrl.replace(/size=\d+/, 'size=240');
+        }
+    }
+    // Detect sticker by content pattern [Sticker:id:cateId:type] (also handles HTML-encoded slashes)
+    if (m && !m.stickerUrl && m.content) {
+        const decoded = m.content.replace(/&amp;/g, '&').replace(/&#x2F;/g, '/').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+        const match = decoded.match(/^\[Sticker:(\d+):(\d+):(\d+)\]$/);
+        if (match) {
+            m.stickerUrl = `https://zalo-api.zadn.vn/api/emoticon/sticker/webpc?eid=${match[1]}&size=240`;
+        }
+    }
+    return m;
+}
+function normalizeConvs(arr: any[]): Conversation[] { return arr.map(normalizeConv); }
+function normalizeMsgs(arr: any[]): Message[] { return arr.map(normalizeMsg); }
 
 // ── Helpers ──
 function timeAgo(dateStr: string) {
@@ -65,7 +128,15 @@ function getAssignedName(conv: Conversation): string | undefined {
 const URL_REGEX = /https?:\/\/[^\s<>"{}|\\^`\[\]]+/gi;
 
 function isImageUrl(url: string): boolean {
-    return /\.(jpg|jpeg|png|gif|webp|bmp)(\?.*)?$/i.test(url) || /photo-stal[\w-]*\.zdn\.vn\//i.test(url);
+    // Standard image extensions
+    if (/\.(jpg|jpeg|png|gif|webp|bmp|svg)(\?.*)?$/i.test(url)) return true;
+    // Zalo CDN image patterns: photo-*.zadn.vn, photo-*.zdn.vn  
+    if (/photo[\w-]*\.(zadn|zdn)\.vn\//i.test(url)) return true;
+    // Zalo image hosting: zalo-api.zadn.vn with sticker/emoticon (not for text content)
+    if (/zalo-api\.zadn\.vn\/api\/emoticon/i.test(url)) return true;
+    // Other common image CDNs
+    if (/\/(img|image|photo|thumb|media)\//i.test(url) && /\.(zadn|zdn)\.vn/i.test(url)) return true;
+    return false;
 }
 
 /** Decode common HTML entities that Zalo sometimes injects */
@@ -77,11 +148,97 @@ function decodeHTMLEntities(text: string): string {
         .replace(/&quot;/g, '"')
         .replace(/&#39;/g, "'")
         .replace(/&#x2F;/g, '/')
-        .replace(/&#x27;/g, "'");
+        .replace(/&#x27;/g, "'")
+        .replace(/&#96;/g, '`');
 }
 
-function renderMessageContent(content: string, isAgent: boolean, hasAttachments: boolean = false) {
+function renderMessageContent(content: string, isAgent: boolean, hasAttachments: boolean = false, stickerUrl?: string) {
+    if (!content && !stickerUrl) return null;
+
+    // ── Sticker rendering (image from Zalo CDN) ──
+    if (stickerUrl) {
+        return (
+            <img
+                src={stickerUrl}
+                alt="Sticker"
+                style={{ maxWidth: 200, maxHeight: 200, display: 'block', objectFit: 'contain' }}
+                onError={(e) => {
+                    const target = e.target as HTMLImageElement;
+                    const retries = parseInt(target.dataset.retried || '0');
+                    const eid = stickerUrl.match(/eid=(\d+)/);
+                    // Try multiple CDN URL patterns
+                    if (retries === 0 && eid) {
+                        target.dataset.retried = '1';
+                        target.src = `https://zalo-api.zadn.vn/api/emoticon/sprite?eid=${eid[1]}&size=240`;
+                    } else if (retries <= 1 && eid) {
+                        target.dataset.retried = '2';
+                        target.src = `https://zalo-api.zadn.vn/api/emoticon/sticker/webpc?eid=${eid[1]}&size=240`;
+                    } else if (retries <= 2 && eid) {
+                        target.dataset.retried = '3';
+                        target.src = `https://zalo-api.zadn.vn/api/emoticon/sticker?eid=${eid[1]}&size=240`;
+                    } else {
+                        // All CDN attempts failed — show emoji fallback
+                        const parent = target.parentElement;
+                        if (parent) {
+                            const fallback = document.createElement('div');
+                            fallback.textContent = '🎭';
+                            fallback.style.fontSize = '48px';
+                            fallback.style.lineHeight = '1';
+                            parent.insertBefore(fallback, target);
+                        }
+                        target.style.display = 'none';
+                    }
+                }}
+            />
+        );
+    }
+
     if (!content) return null;
+
+    // Decode HTML entities first for pattern matching
+    const decodedForMatch = decodeHTMLEntities(content);
+
+    // ── Detect sticker pattern: [Sticker:id:cateId:type] ──
+    const stickerMatch = decodedForMatch.match(/^\[Sticker:(\d+):(\d+):(\d+)\]$/);
+    if (stickerMatch) {
+        const stickerId = stickerMatch[1];
+        const urls = [
+            `https://zalo-api.zadn.vn/api/emoticon/sticker/webpc?eid=${stickerId}&size=240`,
+            `https://zalo-api.zadn.vn/api/emoticon/sprite?eid=${stickerId}&size=240`,
+            `https://zalo-api.zadn.vn/api/emoticon/sticker?eid=${stickerId}&size=240`,
+        ];
+        return (
+            <img
+                src={urls[0]}
+                alt="Sticker"
+                style={{ maxWidth: 200, maxHeight: 200, display: 'block', objectFit: 'contain' }}
+                onError={(e) => {
+                    const target = e.target as HTMLImageElement;
+                    const retried = parseInt(target.dataset.retried || '0');
+                    if (retried < urls.length - 1) {
+                        target.dataset.retried = String(retried + 1);
+                        target.src = urls[retried + 1];
+                    } else {
+                        target.style.display = 'none';
+                        // Show emoji fallback
+                        const parent = target.parentElement;
+                        if (parent) {
+                            const fallback = document.createElement('div');
+                            fallback.textContent = '🎭';
+                            fallback.style.fontSize = '48px';
+                            fallback.style.lineHeight = '1';
+                            parent.insertBefore(fallback, target);
+                        }
+                    }
+                }}
+            />
+        );
+    }
+
+    // ── Detect sticker text placeholder ("🎭 Sticker") and render as emoji ──
+    if (decodedForMatch === '🎭 Sticker' || decodedForMatch === '[Media/Sticker]') {
+        return <div style={{ fontSize: 48, lineHeight: 1, opacity: 0.6 }}>🎭</div>;
+    }
 
     // First decode HTML entities
     const decoded = decodeHTMLEntities(content);
@@ -100,8 +257,11 @@ function renderMessageContent(content: string, isAgent: boolean, hasAttachments:
             const text = decoded.slice(lastIndex, match.index);
             if (text) parts.push({ type: 'text', value: text });
         }
-        // When message has attachments, treat image URLs as links to avoid duplicate rendering
-        if (isImageUrl(url) && !hasAttachments) {
+        // When message has attachments, SKIP image URLs entirely to avoid duplicate display
+        // (image is already rendered via the attachment block above)
+        if (isImageUrl(url) && hasAttachments) {
+            // Skip - don't add to parts at all
+        } else if (isImageUrl(url) && !hasAttachments) {
             parts.push({ type: 'image', value: url });
         } else {
             parts.push({ type: 'link', value: url });
@@ -114,8 +274,13 @@ function renderMessageContent(content: string, isAgent: boolean, hasAttachments:
         if (text) parts.push({ type: 'text', value: text });
     }
 
+    // If no content parts remain (e.g. content was just an image URL stripped because attachment exists)
+    if (parts.length === 0) return null;
+
     // If no URLs found, render as plain text
     if (parts.every(p => p.type === 'text')) {
+        const textOnly = parts.map(p => p.value).join('').trim();
+        if (!textOnly) return null; // All content was stripped image URLs
         return <div style={{ whiteSpace: 'pre-wrap' }}>{decoded}</div>;
     }
 
@@ -248,6 +413,7 @@ export default function InboxPage() {
     const [agentPresence, setAgentPresence] = useState<Record<string, 'online' | 'away' | 'offline'>>({});
     const [visitorOnlineMap, setVisitorOnlineMap] = useState<Record<string, 'online' | 'idle' | 'offline'>>({});
     const [profileModalConv, setProfileModalConv] = useState<Conversation | null>(null);
+    const [showStickerPicker, setShowStickerPicker] = useState(false);
 
     // ── Context menu ──
     const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; convId: string; showLabels: boolean } | null>(null);
@@ -258,7 +424,7 @@ export default function InboxPage() {
     const [showForwardModal, setShowForwardModal] = useState(false);
     const [forwardFriends, setForwardFriends] = useState<Array<{ threadId: string; displayName: string; avatar: string }>>([]);
     const [forwardContacts, setForwardContacts] = useState<Array<{ threadId: string; displayName: string; avatar: string }>>([]);
-    const [forwardTab, setForwardTab] = useState<'friends' | 'contacts'>('friends');
+    const [forwardTab, setForwardTab] = useState<'friends' | 'contacts' | 'conversations'>('friends');
     const [forwardFriendsLoading, setForwardFriendsLoading] = useState(false);
     const [forwardSearch, setForwardSearch] = useState('');
     const [selectedRecipients, setSelectedRecipients] = useState<Set<string>>(new Set());
@@ -318,7 +484,7 @@ export default function InboxPage() {
             if (res.data?.success) {
                 const items = res.data.data.items || res.data.data || [];
                 const total = res.data.data.total || items.length;
-                setConversations(items);
+                setConversations(normalizeConvs(items));
                 setHasMoreConvs(items.length < total);
             }
         } catch { /* handled by interceptor */ }
@@ -350,9 +516,10 @@ export default function InboxPage() {
                 const items = res.data.data.items || res.data.data || [];
                 const total = res.data.data.total || 0;
                 setConversations(prev => {
+                    const normalized = normalizeConvs(items);
                     // Deduplicate
                     const existingIds = new Set(prev.map(c => c._id));
-                    const newItems = items.filter((c: Conversation) => !existingIds.has(c._id));
+                    const newItems = normalized.filter((c: Conversation) => !existingIds.has(c._id));
                     return [...prev, ...newItems];
                 });
                 setConvPage(nextPage);
@@ -455,12 +622,13 @@ export default function InboxPage() {
                 });
                 if (res.data?.success) {
                     const data = res.data.data;
-                    setSearchResultIds((data.items || []).map((c: any) => c._id));
+                    const searchItems = normalizeConvs(data.items || []);
+                    setSearchResultIds(searchItems.map((c: any) => c._id));
                     setSearchMatchMap(data.matchMap || {});
                     // Also merge any NEW conversations from search that aren't in our list
                     setConversations(prev => {
                         const existingIds = new Set(prev.map(c => c._id));
-                        const newOnes = (data.items || []).filter((c: any) => !existingIds.has(c._id));
+                        const newOnes = searchItems.filter((c: any) => !existingIds.has(c._id));
                         return newOnes.length > 0 ? [...prev, ...newOnes] : prev;
                     });
                 }
@@ -493,7 +661,7 @@ export default function InboxPage() {
             if (res.data?.success) {
                 const items = res.data.data.items || [];
                 const total = res.data.data.total || 0;
-                setMessages(items);
+                setMessages(normalizeMsgs(items));
                 setMsgPage(targetPageNum);
                 setHasMoreMsgs(items.length < total);
 
@@ -529,7 +697,7 @@ export default function InboxPage() {
             if (res.data?.success) {
                 const olderItems = res.data.data.items || [];
                 const total = res.data.data.total || 0;
-                setMessages((prev) => [...olderItems, ...prev]);
+                setMessages((prev) => [...normalizeMsgs(olderItems), ...prev]);
                 setMsgPage(nextPage);
                 setHasMoreMsgs(nextPage * 30 < total);
             }
@@ -567,7 +735,8 @@ export default function InboxPage() {
         } else {
             setMessages([]);
         }
-    }, [selectedConvId, fetchMessages, workspaceId, router]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [selectedConvId, fetchMessages, workspaceId]);
 
     // ── Smart auto-scroll (only when user is at bottom) ──
     const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
@@ -692,23 +861,25 @@ export default function InboxPage() {
 
         // ── New conversation ──
         socket.on('conversation:new', (data: { conversation: Conversation }) => {
-            if ((data.conversation as any).workspaceId?.toString() !== workspaceId && data.conversation.workspaceId !== workspaceId) return;
+            const nc = normalizeConv(data.conversation);
+            if ((nc as any).workspaceId?.toString() !== workspaceId && nc.workspaceId !== workspaceId) return;
             setConversations((prev) => {
-                const exists = prev.find((c) => c._id === data.conversation._id);
+                const exists = prev.find((c) => c._id === nc._id);
                 if (exists) return prev;
                 playNotificationSound(); // sound on new active incoming lead
-                return [data.conversation, ...prev];
+                return [nc, ...prev];
             });
             // Auto-join room
-            socket.emit('join:conversation', { conversationId: data.conversation._id });
+            socket.emit('join:conversation', { conversationId: nc._id });
         });
 
         // ── Conversation updated (new message) ──
         socket.on('conversation:updated', (data: { conversationId: string; lastMessage: any }) => {
             const lm = data.lastMessage;
-            const preview = lm?.content
+            const rawContent = lm?.content ? decodeHTMLEntities(lm.content) : '';
+            const preview = rawContent
                 ? (lm.sender?.type === 'visitor' ? '' : `${lm.sender?.name || 'Agent'}: `) +
-                (lm.content.length > 50 ? lm.content.slice(0, 50) + '…' : lm.content)
+                (rawContent.length > 50 ? rawContent.slice(0, 50) + '…' : rawContent)
                 : lm?.type === 'image' ? '📷 Hình ảnh'
                     : lm?.type === 'file' ? '📎 Tệp đính kèm'
                         : '';
@@ -842,15 +1013,17 @@ export default function InboxPage() {
         // ── Internal note ──
         socket.on('note:new', (data: { conversationId: string; note: Message }) => {
             if (data.conversationId === selectedConvIdRef.current) {
+                const nn = normalizeMsg(data.note);
                 setMessages((prev) => {
-                    if (prev.find(m => m._id === data.note._id)) return prev;
-                    return [...prev, data.note];
+                    if (prev.find(m => m._id === nn._id)) return prev;
+                    return [...prev, nn];
                 });
             }
         });
 
         // ── New message in active conversation ──
-        socket.on('message:new', (msg: Message) => {
+        socket.on('message:new', (rawMsg: Message) => {
+            const msg = normalizeMsg(rawMsg);
             // Emit received for visitor messages
             if (msg.sender?.type === 'visitor') {
                 socket.emit('message:delivered', {
@@ -873,7 +1046,8 @@ export default function InboxPage() {
 
         // ── Message Edited/Recalled ──
         socket.on('message:edited', (editedMsg: Message) => {
-            setMessages((prev) => prev.map(m => m._id === editedMsg._id ? editedMsg : m));
+            const em = normalizeMsg(editedMsg);
+            setMessages((prev) => prev.map(m => m._id === em._id ? em : m));
         });
         socket.on('message:recalled', (data: { messageId: string; conversationId: string }) => {
             if (data.conversationId === selectedConvIdRef.current) {
@@ -1999,7 +2173,7 @@ export default function InboxPage() {
                                             <span style={{ ...styles.convPreview, fontWeight: conv.unreadCount ? 600 : 400, color: conv.unreadCount ? '#111' : '#666' }}>
                                                 {searchMatchMap[conv._id]
                                                     ? <><Search size={10} style={{ marginRight: 3, verticalAlign: 'middle', color: '#6366f1' }} />{searchMatchMap[conv._id].snippet}</>
-                                                    : (conv.lastMessagePreview || conv.lastMessageSnippet || conv.visitorInfo?.email || 'Cuộc hội thoại mới')}
+                                                    : decodeHTMLEntities(conv.lastMessagePreview || conv.lastMessageSnippet || conv.visitorInfo?.email || 'Cuộc hội thoại mới')}
                                             </span>
                                             {conv.unreadCount ? (
                                                 <Badge count={conv.unreadCount} style={{ backgroundColor: '#ef4444' }} />
@@ -2262,7 +2436,7 @@ export default function InboxPage() {
                                             {visitorName(selectedConv)}
                                         </div>
                                         <div style={{ fontSize: 11, color: '#9ca3af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                            {selectedConv.channel === 'zalo' ? 'Zalo' : selectedConv.channel === 'facebook' ? 'Facebook' : selectedConv.metadata?.domain || selectedConv.visitorInfo?.email || ''}
+                                            {(selectedConv as any).channel === 'zalo' ? 'Zalo' : (selectedConv as any).channel === 'facebook' ? 'Facebook' : selectedConv.metadata?.domain || selectedConv.visitorInfo?.email || ''}
                                             {getAssignedName(selectedConv) && <> · <span style={{ color: '#6366f1' }}>{getAssignedName(selectedConv)}</span></>}
                                         </div>
                                     </div>
@@ -2482,8 +2656,8 @@ export default function InboxPage() {
                                             </div>
                                         )}
                                         {messages.map((msg, msgIdx) => {
-                                            const isAgent = msg.sender.type === 'agent';
-                                            const isSystem = msg.sender.type === 'system';
+                                            const isAgent = msg.sender?.type === 'agent';
+                                            const isSystem = msg.sender?.type === 'system' || !msg.sender;
                                             const isNote = msg.isInternal === true;
 
                                             // Date separator header
@@ -2540,7 +2714,7 @@ export default function InboxPage() {
                                                                 padding: '8px 14px', maxWidth: '75%', fontSize: 13,
                                                             }}>
                                                                 <div style={{ fontSize: 10, color: '#b45309', fontWeight: 600, marginBottom: 3, display: 'flex', alignItems: 'center', gap: 4 }}>
-                                                                    📝 Ghi chú nội bộ · {msg.sender.name || 'Agent'}
+                                                                    📝 Ghi chú nội bộ · {msg.sender?.name || 'Agent'}
                                                                 </div>
                                                                 <div style={{ color: '#78350f' }}>{msg.content}</div>
                                                                 <div style={{ fontSize: 10, color: '#d97706', marginTop: 3 }}>
@@ -2613,7 +2787,7 @@ export default function InboxPage() {
                                                                     setTimeout(() => document.getElementById('chat-input')?.focus(), 100);
                                                                 },
                                                             },
-                                                            ...(isAgent && msg.sender.id === me?.user?.id && !msg.isDeleted && !msg._id.startsWith('tmp_') ? [
+                                                            ...(isAgent && msg.sender?.id === me?.user?.id && !msg.isDeleted && !msg._id.startsWith('tmp_') ? [
                                                                 { type: 'divider' as const },
                                                                 {
                                                                     key: 'edit',
@@ -2664,17 +2838,17 @@ export default function InboxPage() {
                                                     )}
                                                     <div style={{ display: 'flex', flexDirection: 'column', maxWidth: '70%', alignItems: isAgent ? 'flex-end' : 'flex-start' }}>
                                                     {/* Group chat: show sender name above bubble when sender changes */}
-                                                    {!isAgent && msg.sender.name && (() => {
+                                                    {!isAgent && msg.sender?.name && (() => {
                                                         // Detect group: visitorId pattern for Zalo groups or multiple visitor senders
                                                         const isZaloGroup = selectedConv?.metadata?.threadType === 'group';
-                                                        const visitorNames = new Set(messages.filter(m => m.sender.type === 'visitor' && m.sender.name).map(m => m.sender.name));
+                                                        const visitorNames = new Set(messages.filter(m => m.sender?.type === 'visitor' && m.sender?.name).map(m => m.sender!.name));
                                                         const isGroupChat = isZaloGroup || visitorNames.size > 1;
                                                         if (!isGroupChat) return null;
                                                         // Show name when sender differs from previous visitor message
-                                                        const prevVisitorMsg = messages.slice(0, msgIdx).reverse().find(m => m.sender.type === 'visitor');
-                                                        const isDiffSender = !prevVisitorMsg || prevVisitorMsg.sender.name !== msg.sender.name;
+                                                        const prevVisitorMsg = messages.slice(0, msgIdx).reverse().find(m => m.sender?.type === 'visitor');
+                                                        const isDiffSender = !prevVisitorMsg || prevVisitorMsg.sender?.name !== msg.sender?.name;
                                                         if (!isDiffSender) return null;
-                                                        const nameHash = (msg.sender.name || '').split('').reduce((a: number, c: string) => a + c.charCodeAt(0), 0);
+                                                        const nameHash = (msg.sender?.name || '').split('').reduce((a: number, c: string) => a + c.charCodeAt(0), 0);
                                                         const hue = nameHash % 360;
                                                         return (
                                                             <div style={{
@@ -2684,7 +2858,7 @@ export default function InboxPage() {
                                                                 maxWidth: 200, overflow: 'hidden',
                                                                 textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                                                             }}>
-                                                                {msg.sender.name}
+                                                                {msg.sender?.name}
                                                             </div>
                                                         );
                                                     })()}
@@ -2693,8 +2867,13 @@ export default function InboxPage() {
                                                             ...styles.msgBubble,
                                                             ...(isAgent ? styles.msgAgent : styles.msgVisitor),
                                                             ...(msg._id.startsWith('tmp_') ? { opacity: 0.6 } : {}),
-                                                            // Image/file-only messages: transparent bubble
                                                             ...(!msg.content && msg.attachments?.length ? {
+                                                                background: 'transparent',
+                                                                boxShadow: 'none',
+                                                                border: 'none',
+                                                                padding: '4px 0',
+                                                            } : {}),
+                                                            ...(msg.stickerUrl || msg.content === '🎭 Sticker' || msg.content?.match(/^\[Sticker:\d+:\d+:\d+\]$/) || msg.content === '[Media/Sticker]' || msg.content?.includes('&#x2F;Sticker]') ? {
                                                                 background: 'transparent',
                                                                 boxShadow: 'none',
                                                                 border: 'none',
@@ -2720,8 +2899,8 @@ export default function InboxPage() {
                                                                 <div style={{ opacity: 0.9, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{msg.replyTo.content}</div>
                                                             </div>
                                                         )}
-                                                        {/* Attachments */}
-                                                        {msg.attachments?.map((att, i) => {
+                                                        {/* Attachments — skip ALL when stickerUrl is set (sticker rendered separately) */}
+                                                        {msg.attachments?.filter(att => !msg.stickerUrl).map((att, i) => {
                                                             const src = att.url || att.data;
                                                             return (
                                                                 <div key={i} style={{ marginBottom: msg.content ? 6 : 0 }}>
@@ -2775,7 +2954,7 @@ export default function InboxPage() {
                                                             </div>
                                                         ) : (
                                                             <div>
-                                                                {msg.content && renderMessageContent(msg.content, isAgent, !!(msg.attachments?.length))}
+                                                                {(msg.content || msg.stickerUrl) && renderMessageContent(msg.content, isAgent, !!(msg.attachments?.length), msg.stickerUrl)}
                                                                 {msg.editedAt && <div style={{ fontSize: 10, opacity: 0.6, marginTop: 2 }}>(Đã chỉnh sửa)</div>}
                                                             </div>
                                                         )}
@@ -2786,8 +2965,8 @@ export default function InboxPage() {
                                                                     {new Date(msg.createdAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}
                                                                 </span>
                                                             </Tooltip>
-                                                            {isAgent && msg.sender.name && (
-                                                                <span> · {msg.sender.name}</span>
+                                                            {isAgent && msg.sender?.name && (
+                                                                <span> · {msg.sender?.name}</span>
                                                             )}
                                                             {isAgent && (
                                                                 <span style={{ marginLeft: 4 }}>
@@ -2830,7 +3009,7 @@ export default function InboxPage() {
                                                                 }}
                                                             />
                                                         </Tooltip>
-                                                        {isAgent && msg.sender.id === me?.user?.id && !msg.isDeleted && !msg._id.startsWith('tmp_') && (
+                                                        {isAgent && msg.sender?.id === me?.user?.id && !msg.isDeleted && !msg._id.startsWith('tmp_') && (
                                                             <>
                                                                 <Tooltip title="Sửa">
                                                                     <Button
@@ -2948,7 +3127,49 @@ export default function InboxPage() {
                                         background: '#fff',
                                         borderTop: '1px solid #f3f4f6',
                                         flexShrink: 0,
+                                        position: 'relative',
                                     }}>
+                                        {/* Knowledge Base Smart Suggest — above input */}
+                                        <KnowledgeSuggestPanel
+                                            workspaceId={workspaceId as string}
+                                            lastCustomerMessage={(() => {
+                                                const visitorMsgs = messages.filter(m => m.sender?.type === 'visitor' && !m.isDeleted);
+                                                return visitorMsgs.length > 0 ? visitorMsgs[visitorMsgs.length - 1].content : undefined;
+                                            })()}
+                                            onInsertReply={(text) => setInputText(text)}
+                                        />
+                                        {/* ═══ Sticker Picker Popup ═══ */}
+                                        {showStickerPicker && (
+                                            <StickerPicker
+                                                onSend={(emoji) => {
+                                                    setShowStickerPicker(false);
+                                                    // Send sticker as text message directly
+                                                    if (!selectedConvId || !workspaceId || sending) return;
+                                                    setSending(true);
+                                                    const tempMsg: Message = {
+                                                        _id: 'tmp_' + Date.now(),
+                                                        conversationId: selectedConvId,
+                                                        sender: { type: 'agent', id: me?.user?.id || '', name: me?.user?.name || 'Agent' },
+                                                        content: emoji,
+                                                        type: 'text',
+                                                        createdAt: new Date().toISOString(),
+                                                    };
+                                                    setMessages(prev => [...prev, tempMsg]);
+                                                    httpClient.post(
+                                                        `/conversations/workspace/${workspaceId}/${selectedConvId}/messages`,
+                                                        { content: emoji, type: 'text', clientMessageId: crypto.randomUUID() }
+                                                    ).then(res => {
+                                                        if (res.data?.success) {
+                                                            setMessages(prev => prev.map(m => m._id === tempMsg._id ? res.data.data : m));
+                                                        }
+                                                    }).catch(() => {
+                                                        message.error('Gửi sticker thất bại');
+                                                        setMessages(prev => prev.map(m => m._id === tempMsg._id ? { ...m, status: 'error' } : m));
+                                                    }).finally(() => setSending(false));
+                                                }}
+                                                onClose={() => setShowStickerPicker(false)}
+                                            />
+                                        )}
                                         <input
                                             type="file"
                                             ref={fileInputRef}
@@ -2959,9 +3180,10 @@ export default function InboxPage() {
                                         <div style={{
                                             display: 'flex', alignItems: 'flex-end',
                                             background: '#f3f4f6', borderRadius: 22,
-                                            padding: '4px 4px 4px 14px',
+                                            padding: '4px 4px 4px 10px',
                                             transition: 'all 0.2s',
                                             border: '1.5px solid transparent',
+                                            gap: 2,
                                         }}
                                             onFocusCapture={e => { e.currentTarget.style.background = '#fff'; e.currentTarget.style.borderColor = '#6366f1'; }}
                                             onBlurCapture={e => { e.currentTarget.style.background = '#f3f4f6'; e.currentTarget.style.borderColor = 'transparent'; }}
@@ -2971,8 +3193,9 @@ export default function InboxPage() {
                                                 onClick={() => fileInputRef.current?.click()}
                                                 style={{
                                                     background: 'none', border: 'none', cursor: 'pointer',
-                                                    padding: '6px 2px', display: 'flex', alignItems: 'center',
+                                                    padding: '4px 2px', display: 'flex', alignItems: 'center',
                                                     opacity: 0.5, transition: 'opacity 0.15s', flexShrink: 0,
+                                                    marginBottom: 4,
                                                 }}
                                                 onMouseEnter={e => e.currentTarget.style.opacity = '1'}
                                                 onMouseLeave={e => e.currentTarget.style.opacity = '0.5'}
@@ -3081,8 +3304,9 @@ export default function InboxPage() {
                                                 <button
                                                     style={{
                                                         background: 'none', border: 'none', cursor: 'pointer',
-                                                        padding: '6px 4px', display: 'flex', alignItems: 'center',
+                                                        padding: '4px 2px', display: 'flex', alignItems: 'center',
                                                         opacity: 0.5, transition: 'opacity 0.15s', flexShrink: 0,
+                                                        marginBottom: 4,
                                                     }}
                                                     onMouseEnter={e => e.currentTarget.style.opacity = '1'}
                                                     onMouseLeave={e => e.currentTarget.style.opacity = '0.5'}
@@ -3090,6 +3314,20 @@ export default function InboxPage() {
                                                     <Zap size={16} color="#6b7280" />
                                                 </button>
                                             </Popover>
+                                            {/* Sticker picker button */}
+                                            <button
+                                                onClick={() => setShowStickerPicker(prev => !prev)}
+                                                style={{
+                                                    background: 'none', border: 'none', cursor: 'pointer',
+                                                    padding: '4px 2px', display: 'flex', alignItems: 'center',
+                                                    opacity: showStickerPicker ? 1 : 0.5, transition: 'opacity 0.15s', flexShrink: 0,
+                                                    marginBottom: 4,
+                                                }}
+                                                onMouseEnter={e => e.currentTarget.style.opacity = '1'}
+                                                onMouseLeave={e => { if (!showStickerPicker) e.currentTarget.style.opacity = '0.5'; }}
+                                            >
+                                                <Smile size={18} color={showStickerPicker ? '#6366f1' : '#6b7280'} />
+                                            </button>
                                             {/* Textarea — main input */}
                                             <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
                                                 {/* Macro shortcut suggestions dropdown */}
@@ -3154,9 +3392,10 @@ export default function InboxPage() {
                                                         width: '100%', border: 'none', outline: 'none',
                                                         background: 'transparent', resize: 'none',
                                                         fontSize: 14, lineHeight: '20px',
-                                                        padding: '6px 4px', minHeight: 32, maxHeight: 120,
+                                                        padding: '4px 4px', minHeight: 28, maxHeight: 120,
                                                         overflow: 'hidden',
                                                         fontFamily: "var(--font-sans, 'Inter', -apple-system, sans-serif)",
+                                                        verticalAlign: 'middle',
                                                     }}
                                                     placeholder="Nhập tin nhắn..."
                                                     rows={1}
@@ -3288,15 +3527,6 @@ export default function InboxPage() {
                         display: 'flex',
                         flexDirection: 'column',
                     }}>
-                        {/* Knowledge Base Smart Suggest */}
-                        <KnowledgeSuggestPanel
-                            workspaceId={workspaceId as string}
-                            lastCustomerMessage={(() => {
-                                const visitorMsgs = messages.filter(m => m.sender?.type === 'visitor' && !m.isDeleted);
-                                return visitorMsgs.length > 0 ? visitorMsgs[visitorMsgs.length - 1].content : undefined;
-                            })()}
-                            onInsertReply={(text) => setInputText(text)}
-                        />
                         <VisitorProfileSidebar
                             workspaceId={workspaceId}
                             visitorId={selectedConv?.visitorId || null}
@@ -3311,6 +3541,28 @@ export default function InboxPage() {
                                 addInternalNote.mutateAsync({ workspaceId: workspaceId as string, conversationId: selectedConv._id, content, mentionedUserIds })
                                     .then(() => message.success('Ghi chú nội bộ đã thêm'))
                                     .catch(() => message.error('Lỗi khi thêm ghi chú'));
+                            }}
+                            conversationMetadata={selectedConv?.metadata}
+                            conversationChannel={selectedConv?.channel}
+                            onUpdateMetadata={async (data) => {
+                                if (!selectedConv) return;
+                                try {
+                                    await httpClient.patch(`/conversations/workspace/${workspaceId}/${selectedConv._id}/metadata`, data);
+                                    // Update local state optimistically
+                                    setConversations(prev => prev.map(c =>
+                                        c._id === selectedConv._id
+                                            ? { ...c, metadata: { ...c.metadata, ...data } }
+                                            : c
+                                    ));
+                                    if (data.leadStage !== undefined) {
+                                        message.success(data.leadStage ? `Đã cập nhật giai đoạn: ${data.leadStage}` : 'Đã xóa giai đoạn');
+                                    }
+                                    if (data.isStarred !== undefined) {
+                                        message.success(data.isStarred ? '⭐ Đã đánh dấu quan trọng' : 'Đã bỏ đánh dấu quan trọng');
+                                    }
+                                } catch {
+                                    message.error('Lỗi khi cập nhật metadata');
+                                }
                             }}
                             messages={messages}
                         />
@@ -3389,7 +3641,7 @@ export default function InboxPage() {
 
                     {/* Tabs: Friends vs Contacts */}
                     <div style={{ display: 'flex', gap: 0, marginBottom: 12, borderRadius: 10, overflow: 'hidden', border: '1px solid #e5e7eb' }}>
-                        {(['friends', 'contacts'] as const).map(tab => (
+                        {(['friends', 'contacts', 'conversations'] as const).map(tab => (
                             <div
                                 key={tab}
                                 onClick={() => { setForwardTab(tab); setSelectedRecipients(new Set()); setForwardSearch(''); }}
@@ -3400,7 +3652,7 @@ export default function InboxPage() {
                                     color: forwardTab === tab ? '#fff' : '#6b7280',
                                 }}
                             >
-                                {tab === 'friends' ? `👤 Bạn bè (${forwardFriends.length})` : `💬 Đã nhắn tin (${forwardContacts.length})`}
+                                {tab === 'friends' ? `👤 Bạn bè (${forwardFriends.length})` : tab === 'contacts' ? `💬 Đã nhắn tin (${forwardContacts.length})` : `📋 Hội thoại (${conversations.filter(c => c._id !== selectedConvId).length})`}
                             </div>
                         ))}
                     </div>
@@ -3408,7 +3660,7 @@ export default function InboxPage() {
                     {/* Search */}
                     <Input
                         prefix={<Search size={14} color="#9ca3af" />}
-                        placeholder={forwardTab === 'friends' ? 'Tìm bạn bè Zalo...' : 'Tìm người đã nhắn tin...'}
+                        placeholder={forwardTab === 'friends' ? 'Tìm bạn bè Zalo...' : forwardTab === 'contacts' ? 'Tìm người đã nhắn tin...' : 'Tìm hội thoại...'}
                         value={forwardSearch}
                         onChange={e => setForwardSearch(e.target.value)}
                         allowClear
@@ -3417,6 +3669,29 @@ export default function InboxPage() {
 
                     {/* Select all / count */}
                     {!forwardFriendsLoading && (() => {
+                        if (forwardTab === 'conversations') {
+                            const convList = conversations.filter(c => c._id !== selectedConvId);
+                            const visibleConvs = convList.filter(c => !forwardSearch || visitorName(c).toLowerCase().includes(forwardSearch.toLowerCase()));
+                            if (visibleConvs.length === 0) return null;
+                            return (
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                                    <Checkbox
+                                        checked={visibleConvs.length > 0 && visibleConvs.every(c => selectedRecipients.has(`conv_${c._id}`))}
+                                        indeterminate={visibleConvs.some(c => selectedRecipients.has(`conv_${c._id}`)) && !visibleConvs.every(c => selectedRecipients.has(`conv_${c._id}`))}
+                                        onChange={(e) => {
+                                            if (e.target.checked) {
+                                                setSelectedRecipients(prev => { const next = new Set(prev); visibleConvs.forEach(c => next.add(`conv_${c._id}`)); return next; });
+                                            } else {
+                                                setSelectedRecipients(prev => { const next = new Set(prev); visibleConvs.forEach(c => next.delete(`conv_${c._id}`)); return next; });
+                                            }
+                                        }}
+                                    >
+                                        <span style={{ fontSize: 12.5, color: '#6b7280' }}>Chọn tất cả ({visibleConvs.length})</span>
+                                    </Checkbox>
+                                    <span style={{ fontSize: 12, color: '#6366f1', fontWeight: 600 }}>{selectedRecipients.size} đã chọn</span>
+                                </div>
+                            );
+                        }
                         const sourceList = forwardTab === 'friends' ? forwardFriends : forwardContacts;
                         const visibleList = sourceList.filter(f => !forwardSearch || f.displayName.toLowerCase().includes(forwardSearch.toLowerCase()));
                         if (visibleList.length === 0) return null;
@@ -3454,11 +3729,71 @@ export default function InboxPage() {
                     })()}
                 </div>
 
-                {/* Recipients list */}
+                {/* Recipients / Conversations list */}
                 <div style={{ maxHeight: 300, overflow: 'auto', padding: '0 24px' }}>
                     {forwardFriendsLoading ? (
                         <div style={{ textAlign: 'center', padding: 40 }}><Spin /></div>
-                    ) : (() => {
+                    ) : forwardTab === 'conversations' ? (() => {
+                        const convList = conversations.filter(c => c._id !== selectedConvId);
+                        const filtered = convList.filter(c => !forwardSearch || visitorName(c).toLowerCase().includes(forwardSearch.toLowerCase()));
+                        if (filtered.length === 0) return <Empty description="Kh\u00f4ng t\u00ecm th\u1ea5y h\u1ed9i tho\u1ea1i n\u00e0o" style={{ padding: 30 }} />;
+                        return filtered.map(conv => {
+                            const channelIcon = (conv as any).channel === 'zalo' ? '\ud83d\udc99' : (conv as any).channel === 'facebook' ? '\ud83d\udcd8' : '\ud83c\udf10';
+                            const name = visitorName(conv);
+                            const avatar = conv.visitorInfo?.avatar;
+                            return (
+                                <div
+                                    key={conv._id}
+                                    style={{
+                                        display: 'flex', alignItems: 'center', gap: 10,
+                                        padding: '8px 0', borderBottom: '1px solid #f3f4f6',
+                                        cursor: 'pointer',
+                                    }}
+                                    onClick={() => {
+                                        setSelectedRecipients(prev => {
+                                            const next = new Set(prev);
+                                            const key = `conv_${conv._id}`;
+                                            if (next.has(key)) next.delete(key);
+                                            else next.add(key);
+                                            return next;
+                                        });
+                                    }}
+                                >
+                                    <Checkbox checked={selectedRecipients.has(`conv_${conv._id}`)} />
+                                    {avatar ? (
+                                        <img src={avatar} alt="" style={{ width: 36, height: 36, borderRadius: 10, objectFit: 'cover' }} />
+                                    ) : (
+                                        <div style={{
+                                            width: 36, height: 36, borderRadius: 10,
+                                            background: `hsl(${(name.charCodeAt(0) * 37) % 360}, 50%, 55%)`,
+                                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                            color: '#fff', fontWeight: 600, fontSize: 14,
+                                        }}>
+                                            {name[0]?.toUpperCase()}
+                                        </div>
+                                    )}
+                                    <div style={{ flex: 1 }}>
+                                        <div style={{ fontSize: 13.5, fontWeight: 500, color: '#1f2937' }}>
+                                            {channelIcon} {name}
+                                        </div>
+                                        {conv.lastMessagePreview && (
+                                            <div style={{ fontSize: 11.5, color: '#9ca3af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 280 }}>
+                                                {decodeHTMLEntities(conv.lastMessagePreview)}
+                                            </div>
+                                        )}
+                                    </div>
+                                    <span style={{
+                                        fontSize: 10, padding: '2px 6px', borderRadius: 6,
+                                        background: conv.status === 'open' ? '#ecfdf5' : conv.status === 'pending' ? '#fffbeb' : '#f3f4f6',
+                                        color: conv.status === 'open' ? '#059669' : conv.status === 'pending' ? '#d97706' : '#9ca3af',
+                                        fontWeight: 500,
+                                    }}>
+                                        {conv.status === 'open' ? 'Mở' : conv.status === 'pending' ? 'Chờ' : 'Đóng'}
+                                    </span>
+                                </div>
+                            );
+                        });
+                    })() : (() => {
                         const sourceList = forwardTab === 'friends' ? forwardFriends : forwardContacts;
                         const filtered = sourceList.filter(f => !forwardSearch || f.displayName.toLowerCase().includes(forwardSearch.toLowerCase()));
                         if (filtered.length === 0) return <Empty description={forwardTab === 'friends' ? 'Không tìm thấy bạn bè' : 'Không có liên hệ nào'} style={{ padding: 30 }} />;
@@ -3590,15 +3925,62 @@ export default function InboxPage() {
                                 broadcastPausedRef.current = false;
                                 broadcastCancelledRef.current = false;
 
-                                const recipientList = Array.from(selectedRecipients);
+                                const allRecipients = Array.from(selectedRecipients);
                                 const msgContents = messages
                                     .filter(m => selectedMsgIds.has(m._id))
                                     .map(m => m.content || '')
                                     .filter(Boolean);
 
+                                // Separate conversation recipients from Zalo recipients
+                                const convRecipients = allRecipients.filter(r => r.startsWith('conv_')).map(r => r.replace('conv_', ''));
+                                const recipientList = allRecipients.filter(r => !r.startsWith('conv_'));
+
                                 let successCount = 0;
                                 let failedCount = 0;
-                                setBroadcastProgress({ current: 0, total: recipientList.length, successCount: 0, failedCount: 0, status: 'sending' });
+                                const totalAll = convRecipients.length + recipientList.length;
+                                setBroadcastProgress({ current: 0, total: totalAll, successCount: 0, failedCount: 0, status: 'sending' });
+
+                                // 1. Forward to internal conversations first
+                                if (convRecipients.length > 0) {
+                                    try {
+                                        const messageIds = Array.from(selectedMsgIds);
+                                        const res = await httpClient.post(`/conversations/workspace/${workspaceId}/forward`, {
+                                            messageIds,
+                                            targetConversationIds: convRecipients,
+                                        });
+                                        const data = res.data?.data;
+                                        successCount += data?.totalSent || 0;
+                                        failedCount += data?.totalFailed || 0;
+                                    } catch (err: any) {
+                                        failedCount += convRecipients.length;
+                                        console.error('[Forward] Internal forward failed:', err);
+                                    }
+                                    setBroadcastProgress({
+                                        current: convRecipients.length,
+                                        total: totalAll,
+                                        successCount,
+                                        failedCount,
+                                        status: broadcastCancelledRef.current ? 'stopped' : 'sending',
+                                    });
+                                }
+
+                                // 2. Broadcast to Zalo recipients
+                                if (recipientList.length === 0 && convRecipients.length > 0) {
+                                    // Only conversations were selected, skip Zalo broadcast
+                                    const finalStatus = broadcastCancelledRef.current ? 'stopped' : 'completed';
+                                    setBroadcastProgress(p => p ? { ...p, status: finalStatus } : p);
+                                    if (finalStatus === 'completed') {
+                                        message.success(`Chuyển tiếp thành công ${successCount} cuộc hội thoại!`);
+                                    }
+                                    setBroadcasting(false);
+                                    setTimeout(() => {
+                                        setShowForwardModal(false);
+                                        setForwardMode(false);
+                                        setSelectedMsgIds(new Set());
+                                        setBroadcastProgress(null);
+                                    }, 2000);
+                                    return;
+                                }
 
                                 const DELAY_MS = 3000;
                                 const BATCH_SIZE = 50;

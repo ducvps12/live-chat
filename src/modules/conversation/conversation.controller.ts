@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import asyncHandler from 'express-async-handler';
 import { conversationService } from './conversation.service';
+import prisma from '../../infra/prisma';
 
 export const conversationController = {
     // ── Public Widget Endpoints ──
@@ -98,18 +99,18 @@ export const conversationController = {
     updateConversationMetadata: asyncHandler(async (req: Request, res: Response) => {
         const convId = req.params.conversationId as string;
         const { leadStage, isStarred } = req.body;
-        const { ConversationModel } = require('./repos/conversation.model');
-        const conv = await ConversationModel.findById(convId);
+        const conv = await prisma.conversation.findUnique({ where: { id: convId } });
         if (!conv) {
             throw new (require('../../middlewares/errorHandler').AppError)('Conversation not found', 404, 'NOT_FOUND');
         }
-        const metadata = conv.metadata || {};
+        const metadata = (conv.metadata as any) || {};
         if (leadStage !== undefined) metadata.leadStage = leadStage;
         if (isStarred !== undefined) metadata.isStarred = isStarred;
-        conv.metadata = metadata;
-        conv.markModified('metadata');
-        await conv.save();
-        res.status(200).json({ success: true, data: conv });
+        const updated = await prisma.conversation.update({
+            where: { id: convId },
+            data: { metadata },
+        });
+        res.status(200).json({ success: true, data: updated });
     }),
 
     getDomainsByWorkspace: asyncHandler(async (req: Request, res: Response) => {
@@ -153,7 +154,7 @@ export const conversationController = {
             { userId, type: 'agent' }
         );
         if (conv && conv.assignedTo) {
-            const assignedId = typeof conv.assignedTo === 'object' ? (conv.assignedTo as any)._id?.toString() : conv.assignedTo?.toString();
+            const assignedId = conv.assignedTo?.toString();
             if (assignedId && assignedId !== userId) {
                 throw new (require('../../middlewares/errorHandler').AppError)(
                     'Cuộc hội thoại đã được gán cho agent khác. Bạn không có quyền nhắn tin.',
@@ -174,14 +175,15 @@ export const conversationController = {
         );
 
         // ── Zalo Integration: Push message to Zalo if applicable ──
+        const convMetadata = (conv?.metadata as any) || {};
         if (conv?.channel === 'zalo') {
-            const zaloUserId = conv.metadata?.zaloUserId;
+            const zaloUserId = convMetadata.zaloUserId;
             if (zaloUserId) {
                 try {
                     // Lazy load to avoid circular dependency if any
                     const { zaloService } = require('../zalo/zalo.service'); 
                     await zaloService.sendMessage(
-                        (conv.workspaceId as any).toString(),
+                        conv.workspaceId,
                         zaloUserId,
                         content || '',
                         type || 'text',
@@ -195,13 +197,13 @@ export const conversationController = {
 
         // ── Facebook Integration: Push message to Facebook if applicable ──
         if (conv?.channel === 'facebook') {
-            const fbUserId = conv.metadata?.fbUserId;
-            const pageId = conv.metadata?.pageId;
+            const fbUserId = convMetadata.fbUserId;
+            const pageId = convMetadata.pageId;
             if (fbUserId) {
                 try {
                     const { facebookService } = require('../facebook/facebook.service');
                     await facebookService.sendMessage(
-                        (conv.workspaceId as any).toString(),
+                        conv.workspaceId,
                         fbUserId,
                         content || '',
                         pageId
@@ -463,26 +465,25 @@ export const conversationController = {
 
     togglePin: asyncHandler(async (req: Request, res: Response) => {
         const convId = req.params.conversationId as string;
-        const { ConversationModel } = require('./repos/conversation.model');
-        const conv = await ConversationModel.findById(convId);
+        const conv = await prisma.conversation.findUnique({ where: { id: convId } });
         if (!conv) {
             throw new (require('../../middlewares/errorHandler').AppError)('Conversation not found', 404, 'NOT_FOUND');
         }
-        conv.isPinned = !conv.isPinned;
-        await conv.save();
-        res.status(200).json({ success: true, data: { isPinned: conv.isPinned } });
+        const updated = await prisma.conversation.update({
+            where: { id: convId },
+            data: { isPinned: !conv.isPinned },
+        });
+        res.status(200).json({ success: true, data: { isPinned: updated.isPinned } });
     }),
 
     // ── Mark as unread ──
 
     markUnread: asyncHandler(async (req: Request, res: Response) => {
         const convId = req.params.conversationId as string;
-        const { ConversationModel } = require('./repos/conversation.model');
-        const result = await ConversationModel.findByIdAndUpdate(
-            convId,
-            { $set: { unreadCount: 1 } },
-            { new: true }
-        );
+        const result = await prisma.conversation.update({
+            where: { id: convId },
+            data: { unreadCount: 1 },
+        });
         res.status(200).json({ success: true, data: result });
     }),
 
@@ -524,6 +525,40 @@ export const conversationController = {
             q,
             { status, limit: Number(limit) || 50 }
         );
+        res.status(200).json({ success: true, data: result });
+    }),
+
+    // ── Forward messages to internal conversations ──
+
+    forwardMessages: asyncHandler(async (req: Request, res: Response) => {
+        const workspaceId = req.params.workspaceId as string;
+        const userId = (req as any).user.id;
+        const userName = (req as any).user.name || 'Agent';
+        const { messageIds, targetConversationIds } = req.body;
+
+        if (!messageIds?.length || !targetConversationIds?.length) {
+            throw new (require('../../middlewares/errorHandler').AppError)(
+                'Cần chọn ít nhất 1 tin nhắn và 1 cuộc hội thoại đích',
+                400,
+                'VALIDATION_ERROR'
+            );
+        }
+
+        if (messageIds.length > 20) {
+            throw new (require('../../middlewares/errorHandler').AppError)(
+                'Tối đa 20 tin nhắn mỗi lần chuyển tiếp',
+                400,
+                'VALIDATION_ERROR'
+            );
+        }
+
+        const result = await conversationService.forwardMessages(
+            workspaceId,
+            { id: userId, name: userName },
+            messageIds,
+            targetConversationIds
+        );
+
         res.status(200).json({ success: true, data: result });
     }),
 };

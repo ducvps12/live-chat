@@ -14,6 +14,7 @@ import orderRoutes from './modules/order/order.routes';
 import taxRoutes from './modules/tax/tax.routes';
 import emailRoutes from './modules/email/email.routes';
 import adminRoutes from './modules/admin/admin.routes';
+import bankRoutes from './modules/bank/bank.routes';
 
 const rootRouter = Router();
 
@@ -33,6 +34,7 @@ rootRouter.use('/orders', orderRoutes); // Order management
 rootRouter.use('/taxes', taxRoutes); // Tax management
 rootRouter.use('/email-accounts', emailRoutes); // Email channel integration
 rootRouter.use('/admin', adminRoutes); // Super Admin panel
+rootRouter.use('/bank', bankRoutes); // ATM Auto Bank — MB Bank transaction history
 
 // Health check
 rootRouter.get('/health', (req, res) => {

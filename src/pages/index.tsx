@@ -1,4 +1,4 @@
-﻿import Head from 'next/head';
+import Head from 'next/head';
 import {
     MessageCircle,
     Zap,
@@ -92,84 +92,152 @@ function Header() {
         return () => window.removeEventListener('scroll', onScroll);
     }, []);
 
+    const navLinks = [
+        { label: 'Tính năng', href: '#features' },
+        { label: 'Cách hoạt động', href: '#how-it-works' },
+        { label: 'Phases', href: '#phases' },
+        { label: 'Báo giá', href: '#pricing' },
+    ];
+
     return (
-        <header
-            style={{
-                position: 'fixed',
-                top: 0,
-                left: 0,
-                right: 0,
-                zIndex: 1000,
-                background: scrolled ? 'rgba(255,255,255,0.92)' : 'transparent',
-                backdropFilter: scrolled ? 'blur(20px)' : 'none',
-                borderBottom: scrolled ? '1px solid var(--color-border)' : 'none',
-                transition: 'all var(--transition-base)',
-            }}
-        >
-            <div className="container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 72 }}>
-                {/* Logo */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <img
-                        src="/images/nemarkchat-logo.png"
-                        alt="NemarkChat"
+        <>
+            <header
+                style={{
+                    position: 'fixed',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    zIndex: 1000,
+                    background: scrolled ? 'rgba(255,255,255,0.92)' : 'transparent',
+                    backdropFilter: scrolled ? 'blur(20px)' : 'none',
+                    WebkitBackdropFilter: scrolled ? 'blur(20px)' : 'none',
+                    borderBottom: scrolled ? '1px solid var(--color-border)' : 'none',
+                    transition: 'all var(--transition-base)',
+                }}
+            >
+                <div className="container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 72 }}>
+                    {/* Logo */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <img
+                            src="/images/nemarkchat-logo.png"
+                            alt="NemarkChat"
+                            style={{ width: 36, height: 36, borderRadius: 10, objectFit: 'contain' }}
+                        />
+                        <span style={{ fontWeight: 800, fontSize: 20, color: 'var(--color-text)' }}>
+                            Nemark<span style={{ color: 'var(--color-primary)' }}>Chat</span>
+                        </span>
+                    </div>
+
+                    {/* Desktop Nav */}
+                    <nav className="nav-desktop" style={{ gap: 32, alignItems: 'center' }}>
+                        {navLinks.map((item) => (
+                            <a
+                                key={item.href}
+                                href={item.href}
+                                style={{
+                                    textDecoration: 'none', color: 'var(--color-text-secondary)',
+                                    fontWeight: 500, fontSize: 14, transition: 'color var(--transition-fast)',
+                                }}
+                                onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--color-primary)')}
+                                onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--color-text-secondary)')}
+                            >
+                                {item.label}
+                            </a>
+                        ))}
+                    </nav>
+
+                    {/* Desktop CTA */}
+                    <div className="nav-desktop-cta" style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                        <a href="/auth/login" className="btn btn-sm btn-outline nav-cta-login">Đăng nhập</a>
+                        <a href="/auth/register" className="btn btn-sm btn-primary">Dùng thử miễn phí</a>
+                    </div>
+
+                    {/* Hamburger Button (mobile only) */}
+                    <button
+                        className="hamburger-btn"
+                        onClick={() => setMenuOpen(!menuOpen)}
+                        aria-label="Toggle menu"
                         style={{
-                            width: 36,
-                            height: 36,
-                            borderRadius: 10,
-                            objectFit: 'contain',
+                            display: 'none', background: 'none', border: 'none', cursor: 'pointer',
+                            padding: 8, borderRadius: 8, position: 'relative', width: 40, height: 40,
+                            alignItems: 'center', justifyContent: 'center',
                         }}
-                    />
-                    <span style={{ fontWeight: 800, fontSize: 20, color: 'var(--color-text)' }}>
+                    >
+                        <div style={{ width: 22, height: 16, position: 'relative' }}>
+                            <span style={{
+                                position: 'absolute', left: 0, width: '100%', height: 2, borderRadius: 2,
+                                background: 'var(--color-text)', transition: 'all 0.3s',
+                                top: menuOpen ? 7 : 0, transform: menuOpen ? 'rotate(45deg)' : 'none',
+                            }} />
+                            <span style={{
+                                position: 'absolute', left: 0, top: 7, width: '100%', height: 2, borderRadius: 2,
+                                background: 'var(--color-text)', transition: 'all 0.2s',
+                                opacity: menuOpen ? 0 : 1,
+                            }} />
+                            <span style={{
+                                position: 'absolute', left: 0, width: '100%', height: 2, borderRadius: 2,
+                                background: 'var(--color-text)', transition: 'all 0.3s',
+                                top: menuOpen ? 7 : 14, transform: menuOpen ? 'rotate(-45deg)' : 'none',
+                            }} />
+                        </div>
+                    </button>
+                </div>
+            </header>
+
+            {/* ─── Mobile Drawer ─── */}
+            {menuOpen && (
+                <div
+                    style={{ position: 'fixed', inset: 0, zIndex: 999, background: 'rgba(0,0,0,0.4)' }}
+                    onClick={() => setMenuOpen(false)}
+                />
+            )}
+            <div
+                className="mobile-drawer"
+                style={{
+                    position: 'fixed', top: 0, right: 0, bottom: 0, width: 280, zIndex: 1001,
+                    background: '#fff', boxShadow: '-4px 0 24px rgba(0,0,0,0.1)',
+                    transform: menuOpen ? 'translateX(0)' : 'translateX(100%)',
+                    transition: 'transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                    display: 'flex', flexDirection: 'column', padding: '24px',
+                }}
+            >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 32 }}>
+                    <span style={{ fontWeight: 800, fontSize: 18, color: 'var(--color-text)' }}>
                         Nemark<span style={{ color: 'var(--color-primary)' }}>Chat</span>
                     </span>
+                    <button onClick={() => setMenuOpen(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 22, color: '#64748b' }}>✕</button>
                 </div>
-
-                {/* Nav Links */}
-                <nav
-                    style={{
-                        display: menuOpen ? 'flex' : undefined,
-                        gap: 32,
-                        alignItems: 'center',
-                    }}
-                    className="nav-desktop"
-                >
-                    {[
-                        { label: 'Tính năng', href: '#features' },
-                        { label: 'Cách hoạt động', href: '#how-it-works' },
-                        { label: 'Phases', href: '#phases' },
-                        { label: 'Báo giá', href: '#pricing' },
-                    ].map((item) => (
+                <nav style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {navLinks.map(item => (
                         <a
-                            key={item.href}
-                            href={item.href}
+                            key={item.href} href={item.href}
+                            onClick={() => setMenuOpen(false)}
                             style={{
-                                textDecoration: 'none',
-                                color: 'var(--color-text-secondary)',
-                                fontWeight: 500,
-                                fontSize: 14,
-                                transition: 'color var(--transition-fast)',
+                                textDecoration: 'none', color: 'var(--color-text)',
+                                fontWeight: 500, fontSize: 15, padding: '12px 16px',
+                                borderRadius: 10, transition: 'background 0.15s',
                             }}
-                            onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--color-primary)')}
-                            onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--color-text-secondary)')}
+                            onMouseEnter={e => e.currentTarget.style.background = '#f1f5f9'}
+                            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                         >
                             {item.label}
                         </a>
                     ))}
                 </nav>
-
-                {/* CTA */}
-                <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-                    <a href="/auth/login" className="btn btn-sm btn-outline nav-cta-login">
-                        Đăng nhập
-                    </a>
-                    <a href="/auth/register" className="btn btn-sm btn-primary">
-                        Dùng thử miễn phí
-                    </a>
+                <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    <a href="/auth/login" style={{
+                        textAlign: 'center', padding: '12px', borderRadius: 12,
+                        border: '1px solid #e2e8f0', color: 'var(--color-primary)',
+                        fontWeight: 600, fontSize: 14, textDecoration: 'none',
+                    }}>Đăng nhập</a>
+                    <a href="/auth/register" style={{
+                        textAlign: 'center', padding: '12px', borderRadius: 12,
+                        background: 'var(--color-primary)', color: '#fff',
+                        fontWeight: 600, fontSize: 14, textDecoration: 'none',
+                    }}>Dùng thử miễn phí</a>
                 </div>
             </div>
-
-            {/* Responsive styles in <style> tag at bottom */}
-        </header>
+        </>
     );
 }
 
@@ -1485,20 +1553,38 @@ export default function HomePage() {
         .nav-desktop {
           display: flex;
         }
+        .nav-desktop-cta {
+          display: flex;
+        }
         .nav-cta-login {
           display: inline-flex !important;
         }
+        .hamburger-btn {
+          display: none !important;
+        }
         .step-arrow {
           display: block;
+        }
+        .hero-mockup-right {
+          display: flex;
         }
         @media (max-width: 768px) {
           .nav-desktop {
             display: none !important;
           }
+          .nav-desktop-cta {
+            display: none !important;
+          }
           .nav-cta-login {
             display: none !important;
           }
+          .hamburger-btn {
+            display: flex !important;
+          }
           .step-arrow {
+            display: none !important;
+          }
+          .hero-mockup-right {
             display: none !important;
           }
         }

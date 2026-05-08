@@ -82,6 +82,16 @@ export const errorHandler = (err: Error | AppError, req: Request, res: Response,
         code = ERROR_CODES.VALIDATION_ERROR;
         message = 'ID không hợp lệ';
         isOperational = true;
+    } else if (
+        err.name === 'DriverAdapterError' ||
+        err.message?.includes('pool timeout') ||
+        err.message?.includes('Connection timeout') ||
+        err.message?.includes('ECONNREFUSED')
+    ) {
+        statusCode = 503;
+        code = 'DATABASE_UNAVAILABLE';
+        message = 'Lỗi kết nối cơ sở dữ liệu, vui lòng thử lại sau';
+        isOperational = true;
     }
 
     // ── Logging ──

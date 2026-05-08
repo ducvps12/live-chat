@@ -16,7 +16,8 @@ const { TextArea } = Input;
 
 // ────────── TYPES ──────────
 interface BotItem {
-    _id: string;
+    id: string;
+    _id?: string; // backward compat
     name: string;
     avatarUrl?: string;
     brandName: string;
@@ -146,7 +147,7 @@ export default function ChatbotPage() {
         setSaving(true);
         try {
             if (editingBot) {
-                await chatbotService.update(wsId, editingBot._id, formData);
+                await chatbotService.update(wsId, editingBot.id, formData);
                 message.success('Đã cập nhật bot');
             } else {
                 await chatbotService.create(wsId, formData);
@@ -788,7 +789,7 @@ export default function ChatbotPage() {
                 ) : (
                     <div className="bot-grid">
                         {bots.map(bot => (
-                            <div key={bot._id} className="bot-card" onClick={() => handleEdit(bot)}>
+                            <div key={bot.id} className="bot-card" onClick={() => handleEdit(bot)}>
                                 <div className="bot-card-header">
                                     <div className="bot-card-avatar">
                                         {bot.avatarUrl ? (
@@ -812,7 +813,7 @@ export default function ChatbotPage() {
                                         checked={bot.isActive}
                                         onChange={(checked, e) => {
                                             e.stopPropagation();
-                                            handleToggle(bot._id, checked);
+                                            handleToggle(bot.id, checked);
                                         }}
                                         checkedChildren={<Power size={12} />}
                                         unCheckedChildren={<PowerOff size={12} />}
@@ -852,7 +853,7 @@ export default function ChatbotPage() {
                                 {/* Actions */}
                                 <div className="bot-card-actions" onClick={e => e.stopPropagation()}>
                                     <Button size="small" icon={<Pencil size={14} />} onClick={() => handleEdit(bot)}>Sửa</Button>
-                                    <Button size="small" danger icon={<Trash2 size={14} />} onClick={() => handleDelete(bot._id)}>Xóa</Button>
+                                    <Button size="small" danger icon={<Trash2 size={14} />} onClick={() => handleDelete(bot.id)}>Xóa</Button>
                                 </div>
                             </div>
                         ))}

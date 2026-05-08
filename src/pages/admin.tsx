@@ -366,50 +366,120 @@ const AdminPanel: React.FC = () => {
                             </div>
 
                             <DashboardCard>
-                                <CardTitle>Danh sách Bots</CardTitle>
+                                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between" style={{ marginBottom: 20 }}>
+                                    <CardTitle>Danh sách Bots</CardTitle>
+                                    <div className="flex items-center gap-2 text-[12px] text-slate-400">
+                                        <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-emerald-500" /> Active</span>
+                                        <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-slate-300" /> Inactive</span>
+                                    </div>
+                                </div>
                                 {bots.length === 0 ? (
                                     <p className="m-0 text-[14px] text-slate-500">Chưa có bot nào. Tạo bot từ menu "Nhân viên AI".</p>
                                 ) : (
-                                    <div className="space-y-3 mt-4">
+                                    <div className="space-y-3">
                                         {bots.map(bot => (
-                                            <div key={bot._id} className={[
-                                                'flex items-center justify-between rounded-2xl border transition-all',
-                                                bot.isActive ? 'border-emerald-200 bg-emerald-50/40' : 'border-slate-200/70 bg-slate-50/50',
-                                            ].join(' ')} style={{ padding: '18px 20px' }}>
-                                                <div className="flex items-center gap-3.5">
-                                                    <div className={[
-                                                        'flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-white',
-                                                        bot.isActive ? 'bg-emerald-500 shadow-[0_8px_20px_rgba(34,197,94,0.25)]' : 'bg-slate-300',
-                                                    ].join(' ')}>
-                                                        <Bot size={18} />
+                                            <div
+                                                key={bot._id}
+                                                className="group relative overflow-hidden rounded-2xl border transition-all duration-300 hover:shadow-[0_8px_24px_rgba(15,23,42,0.08)]"
+                                                style={{
+                                                    padding: '20px 24px',
+                                                    borderColor: bot.isActive ? '#a7f3d0' : '#e2e8f0',
+                                                    background: bot.isActive
+                                                        ? 'linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 100%)'
+                                                        : '#fafbfc',
+                                                }}
+                                            >
+                                                {/* Active indicator bar */}
+                                                <div
+                                                    className="absolute left-0 top-0 h-full w-1 transition-all"
+                                                    style={{ background: bot.isActive ? '#22c55e' : '#cbd5e1' }}
+                                                />
+
+                                                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                                                    {/* Bot Info */}
+                                                    <div className="flex items-center gap-4">
+                                                        <div
+                                                            className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-white transition-all duration-300"
+                                                            style={{
+                                                                background: bot.isActive
+                                                                    ? 'linear-gradient(135deg, #22c55e, #16a34a)'
+                                                                    : 'linear-gradient(135deg, #94a3b8, #64748b)',
+                                                                boxShadow: bot.isActive
+                                                                    ? '0 8px 20px rgba(34,197,94,0.25)'
+                                                                    : '0 4px 12px rgba(100,116,139,0.15)',
+                                                            }}
+                                                        >
+                                                            <Bot size={20} />
+                                                        </div>
+                                                        <div className="min-w-0">
+                                                            <p className="m-0 text-[16px] font-bold text-slate-800">{bot.name}</p>
+                                                            <div className="flex flex-wrap items-center gap-2 mt-1">
+                                                                <span className="text-[12px] text-slate-400">
+                                                                    Model: {bot.aiModel || 'default'}
+                                                                </span>
+                                                                <span className="text-[10px] text-slate-300">•</span>
+                                                                <span className="text-[12px] text-slate-400">
+                                                                    {new Date(bot.createdAt).toLocaleDateString('vi-VN')}
+                                                                </span>
+                                                            </div>
+                                                        </div>
                                                     </div>
-                                                    <div>
-                                                        <p className="m-0 text-[15px] font-semibold text-slate-800">{bot.name}</p>
-                                                        <p className="m-0 text-[12px] text-slate-400">
-                                                            Model: {bot.aiModel || 'default'} • {new Date(bot.createdAt).toLocaleDateString('vi-VN')}
-                                                        </p>
+
+                                                    {/* Actions */}
+                                                    <div className="flex items-center gap-3 pl-16 sm:pl-0">
+                                                        {/* Status Badge */}
+                                                        <span
+                                                            className="inline-flex items-center gap-2 rounded-full border px-4 py-1.5 text-[12px] font-semibold transition-all"
+                                                            style={{
+                                                                borderColor: bot.isActive ? '#a7f3d0' : '#e2e8f0',
+                                                                background: bot.isActive ? '#dcfce7' : '#f8fafc',
+                                                                color: bot.isActive ? '#166534' : '#64748b',
+                                                            }}
+                                                        >
+                                                            <span
+                                                                className="h-2.5 w-2.5 rounded-full"
+                                                                style={{
+                                                                    background: bot.isActive ? '#22c55e' : '#94a3b8',
+                                                                    boxShadow: bot.isActive ? '0 0 8px rgba(34,197,94,0.5)' : 'none',
+                                                                }}
+                                                            />
+                                                            {bot.isActive ? 'Active' : 'Inactive'}
+                                                        </span>
+
+                                                        {/* Toggle Button — Large, clear CTA */}
+                                                        <button
+                                                            onClick={() => toggleBot(bot._id, !bot.isActive)}
+                                                            className="inline-flex items-center gap-2 rounded-xl border-2 px-5 py-2.5 text-[13px] font-bold transition-all duration-200"
+                                                            style={{
+                                                                cursor: 'pointer',
+                                                                borderColor: bot.isActive ? '#fca5a5' : '#86efac',
+                                                                background: bot.isActive
+                                                                    ? 'linear-gradient(135deg, #fef2f2, #fff1f2)'
+                                                                    : 'linear-gradient(135deg, #f0fdf4, #ecfdf5)',
+                                                                color: bot.isActive ? '#dc2626' : '#16a34a',
+                                                                boxShadow: bot.isActive
+                                                                    ? '0 4px 12px rgba(239,68,68,0.12)'
+                                                                    : '0 4px 12px rgba(34,197,94,0.12)',
+                                                            }}
+                                                            onMouseEnter={e => {
+                                                                (e.target as HTMLElement).style.transform = 'translateY(-1px)';
+                                                                (e.target as HTMLElement).style.boxShadow = bot.isActive
+                                                                    ? '0 6px 20px rgba(239,68,68,0.2)'
+                                                                    : '0 6px 20px rgba(34,197,94,0.2)';
+                                                            }}
+                                                            onMouseLeave={e => {
+                                                                (e.target as HTMLElement).style.transform = 'translateY(0)';
+                                                                (e.target as HTMLElement).style.boxShadow = bot.isActive
+                                                                    ? '0 4px 12px rgba(239,68,68,0.12)'
+                                                                    : '0 4px 12px rgba(34,197,94,0.12)';
+                                                            }}
+                                                        >
+                                                            {bot.isActive
+                                                                ? <><ToggleRight size={16} /> Tắt Bot</>
+                                                                : <><ToggleLeft size={16} /> Bật Bot</>
+                                                            }
+                                                        </button>
                                                     </div>
-                                                </div>
-                                                <div className="flex items-center gap-3">
-                                                    <span className={[
-                                                        'inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] font-semibold',
-                                                        bot.isActive ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-50 text-slate-500',
-                                                    ].join(' ')}>
-                                                        <span className={`h-2 w-2 rounded-full ${bot.isActive ? 'bg-emerald-500' : 'bg-slate-300'}`} />
-                                                        {bot.isActive ? 'Active' : 'Inactive'}
-                                                    </span>
-                                                    <button
-                                                        onClick={() => toggleBot(bot._id, !bot.isActive)}
-                                                        className={[
-                                                            'inline-flex h-9 items-center gap-1.5 rounded-xl border px-4 text-[12px] font-semibold transition-all duration-200',
-                                                            bot.isActive
-                                                                ? 'border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100'
-                                                                : 'border-emerald-200 bg-emerald-50 text-emerald-600 hover:bg-emerald-100',
-                                                        ].join(' ')}
-                                                        style={{ cursor: 'pointer' }}
-                                                    >
-                                                        {bot.isActive ? <><ToggleRight size={14} /> Tắt</> : <><ToggleLeft size={14} /> Bật</>}
-                                                    </button>
                                                 </div>
                                             </div>
                                         ))}

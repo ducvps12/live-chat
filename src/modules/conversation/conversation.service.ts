@@ -2,10 +2,26 @@ import { conversationRepo } from './repos/conversation.repo';
 import { messageRepo } from './repos/message.repo';
 import { visitorRepo } from './repos/visitor.repo';
 import { widgetRepo } from '../workspace/repos/widget.repo';
+import prisma from '../../infra/prisma';
 import { AppError } from '../../middlewares/errorHandler';
 import { security } from '../../infra/security';
 import { sanitizeMessage, sanitizeFilename } from '../../infra/sanitize';
 import { emitToConversation, emitToWorkspace, emitToUser } from '../../infra/socket';
+
+/** Safely get ID string from both Prisma (id) and Mongoose (_id) records */
+function getId(obj: any): string {
+    if (!obj) return '';
+    if (typeof obj === 'string') return obj;
+    return (obj._id || obj.id || '')?.toString() || '';
+}
+
+/**
+ * Anti-spam: Rate limiter for bot replies per conversation.
+ * Maps conversationId → last bot reply timestamp.
+ */
+const _botReplyTimestamps = new Map<string, number>();
+const BOT_REPLY_COOLDOWN_MS = 10_000; // 10 seconds between bot replies per conversation
+const AGENT_REPLY_SUPPRESS_MS = 60_000; // If human agent replied within 60s, skip bot
 
 export const conversationService = {
     /**
@@ -43,7 +59,7 @@ export const conversationService = {
             await visitorRepo.incrementConversations(visitorId, widgetId);
         } else if (conversation.status === 'closed' || conversation.status === 'resolved') {
             // Reopen existing closed conversation instead of creating a duplicate
-            await conversationRepo.updateStatus((conversation._id as any).toString(), 'open');
+            await conversationRepo.updateStatus(getId(conversation), 'open');
             conversation.status = 'open';
         }
 
@@ -111,7 +127,7 @@ export const conversationService = {
         } else {
             targetWidget = widgetList[0];
         }
-        const widgetId = (targetWidget._id as any).toString();
+        const widgetId = getId(targetWidget);
         const visitorId = `zalo_${zaloUserId}`;
 
         // Upsert visitor profile
@@ -131,7 +147,7 @@ export const conversationService = {
             // No conversation exists at all — create new
             conversation = await conversationRepo.create({
                 workspaceId: workspaceId as any,
-                widgetId: targetWidget._id as any,
+                widgetId: getId(targetWidget) as any,
                 visitorId,
                 visitorInfo: { name: zaloUserName, avatar: zaloAvatar },
                 channel: 'zalo',
@@ -153,12 +169,12 @@ export const conversationService = {
             } catch { /* socket may not be initialized yet */ }
         } else if (conversation.status === 'closed' || conversation.status === 'resolved') {
             // Reopen the existing conversation instead of creating a duplicate
-            await conversationRepo.updateStatus((conversation._id as any).toString(), 'open');
+            await conversationRepo.updateStatus(getId(conversation), 'open');
             conversation.status = 'open';
             
             try {
                 emitToWorkspace(workspaceId, 'conversation:reopened', {
-                    conversationId: (conversation._id as any).toString(),
+                    conversationId: getId(conversation),
                 });
             } catch { /* socket may not be initialized */ }
         }
@@ -192,7 +208,7 @@ export const conversationService = {
         // For group messages: use individual sender name instead of group name
         const messageSenderName = groupSenderName || zaloUserName;
         return this.addMessage(
-            (conversation._id as any).toString(),
+            getId(conversation),
             { type: 'visitor', id: visitorId, name: messageSenderName },
             content,
             msgType as any,
@@ -221,7 +237,7 @@ export const conversationService = {
         const widgetList = await widgetRepo.findByWorkspace(workspaceId);
         if (!widgetList || widgetList.length === 0) return; // no widget = no conversation possible
 
-        const widgetId = (widgetList[0]._id as any).toString();
+        const widgetId = getId(widgetList[0]);
         const conversation = await conversationRepo.findLatestByVisitor(visitorId, widgetId);
         if (!conversation) {
             console.log(`[ConvService] No existing conversation for self-msg thread ${zaloThreadId}, skipping`);
@@ -230,13 +246,13 @@ export const conversationService = {
 
         // Reopen if closed so the message can be added
         if (conversation.status === 'closed') {
-            await conversationRepo.updateStatus((conversation._id as any).toString(), 'open');
+            await conversationRepo.updateStatus(getId(conversation), 'open');
             conversation.status = 'open';
         }
 
         // Add message as 'agent' type (it was sent by us from the Zalo app)
         return this.addMessage(
-            (conversation._id as any).toString(),
+            getId(conversation),
             { type: 'agent', id: 'zalo_self', name: '📱 Zalo App' },
             content,
             msgType as any,
@@ -284,7 +300,7 @@ export const conversationService = {
             } as any);
         }
 
-        const widgetId = (targetWidget._id as any).toString();
+        const widgetId = getId(targetWidget);
         const visitorId = `fb_${fbUserId}`;
 
         // Upsert visitor
@@ -310,7 +326,7 @@ export const conversationService = {
         if (!conversation) {
             conversation = await conversationRepo.create({
                 workspaceId: workspaceId as any,
-                widgetId: targetWidget._id as any,
+                widgetId: getId(targetWidget) as any,
                 visitorId,
                 visitorInfo: { name: fbUserName, avatar: fbAvatar },
                 channel: 'facebook',
@@ -327,12 +343,12 @@ export const conversationService = {
                 });
             } catch { /* socket may not be initialized yet */ }
         } else if (conversation.status === 'closed' || conversation.status === 'resolved') {
-            await conversationRepo.updateStatus((conversation._id as any).toString(), 'open');
+            await conversationRepo.updateStatus(getId(conversation), 'open');
             conversation.status = 'open';
 
             try {
                 emitToWorkspace(workspaceId, 'conversation:reopened', {
-                    conversationId: (conversation._id as any).toString(),
+                    conversationId: getId(conversation),
                 });
             } catch { /* socket may not be initialized */ }
         }
@@ -343,7 +359,7 @@ export const conversationService = {
             const hasNewName = fbUserName && conversation.visitorInfo?.name !== fbUserName && fbUserName !== `FB User ${fbUserId.slice(-4)}`;
             if (hasNewAvatar || hasNewName) {
                 try {
-                    await conversationRepo.updateVisitorInfo((conversation._id as any).toString(), {
+                    await conversationRepo.updateVisitorInfo(getId(conversation), {
                         ...(hasNewAvatar ? { avatar: fbAvatar } : {}),
                         ...(hasNewName ? { name: fbUserName } : {}),
                     });
@@ -352,7 +368,7 @@ export const conversationService = {
         }
 
         return this.addMessage(
-            (conversation._id as any).toString(),
+            getId(conversation),
             { type: 'visitor', id: visitorId, name: fbUserName },
             content,
             msgType as any,
@@ -384,7 +400,7 @@ export const conversationService = {
         if (!widgetList || widgetList.length === 0) return;
 
         const targetWidget = widgetList.find(w => (w as any).name === 'Facebook') || widgetList[0];
-        const widgetId = (targetWidget._id as any).toString();
+        const widgetId = getId(targetWidget);
 
         // Upsert visitor (without creating a message)
         await visitorRepo.findOrCreate(
@@ -397,7 +413,7 @@ export const conversationService = {
         if (!conversation) {
             conversation = await conversationRepo.create({
                 workspaceId: workspaceId as any,
-                widgetId: targetWidget._id as any,
+                widgetId: getId(targetWidget) as any,
                 visitorId,
                 visitorInfo: { name: fbUserName, avatar: fbAvatar },
                 channel: 'facebook',
@@ -409,12 +425,12 @@ export const conversationService = {
         }
 
         if (conversation.status === 'closed') {
-            await conversationRepo.updateStatus((conversation._id as any).toString(), 'open');
+            await conversationRepo.updateStatus(getId(conversation), 'open');
             conversation.status = 'open';
         }
 
         return this.addMessage(
-            (conversation._id as any).toString(),
+            getId(conversation),
             { type: 'agent', id: 'fb_page', name: pageName || 'Facebook Page' },
             content,
             msgType as any,
@@ -500,14 +516,16 @@ export const conversationService = {
         }));
 
         const message = await messageRepo.create({
-            conversationId: conversation._id as any,
+            conversationId: getId(conversation),
             clientMessageId: clientMessageId || undefined,
-            sender,
+            senderType: sender.type,
+            senderId: sender.id,
+            senderName: sender.name,
             content: sanitizedContent,
             type: msgType,
             attachments: safeAttachments,
             sanitizeFlags: sanitizeFlags.length > 0 ? sanitizeFlags : undefined,
-            replyTo,
+            ...(replyTo ? { replyToMessageId: replyTo.messageId, replyToContent: replyTo.content, replyToSenderName: replyTo.senderName } : {}),
         });
 
         // ── Build conversation summary snippet ──
@@ -526,7 +544,7 @@ export const conversationService = {
         try {
             console.log(`[MessageService] Emitting message:new to room: ${conversationId}`, message);
             emitToConversation(conversationId, 'message:new', message);
-            emitToWorkspace((conversation.workspaceId as any).toString(), 'conversation:updated', {
+            emitToWorkspace(getId(conversation.workspaceId), 'conversation:updated', {
                 conversationId, lastMessage: { content: sanitizedContent, sender, type: msgType, createdAt: message.createdAt },
             });
         } catch (e) { console.error('Socket emit error:', e); }
@@ -535,8 +553,45 @@ export const conversationService = {
         // Only trigger for visitor messages (not agent/system/bot)
         if (sender.type === 'visitor' && content && content.length > 1) {
             try {
+                // ── Anti-spam Guard 1: Rate limiting per conversation ──
+                const lastBotReply = _botReplyTimestamps.get(conversationId);
+                if (lastBotReply && Date.now() - lastBotReply < BOT_REPLY_COOLDOWN_MS) {
+                    console.log(`[Chatbot] ⏳ Rate limited — skipping bot reply for conv ${conversationId} (cooldown ${BOT_REPLY_COOLDOWN_MS}ms)`);
+                } else {
+
+                // ── Anti-spam Guard 2: Agent-awareness — skip if human agent replied recently ──
+                let shouldSkipForAgent = false;
+                try {
+                    const recentMsgs = await messageRepo.getLatest(conversationId, 5);
+                    // Check if a HUMAN agent (not bot) replied within the suppression window
+                    const humanAgentReply = recentMsgs.find(m =>
+                        m.senderType === 'agent'
+                        && !m.senderId?.startsWith('bot_')
+                        && m.senderId !== 'zalo_self'
+                        && m.senderId !== 'fb_page'
+                        && !m.isDeleted
+                        && (Date.now() - new Date(m.createdAt).getTime()) < AGENT_REPLY_SUPPRESS_MS
+                    );
+                    if (humanAgentReply) {
+                        shouldSkipForAgent = true;
+                        console.log(`[Chatbot] 👤 Human agent replied recently — skipping bot for conv ${conversationId}`);
+                    }
+
+                    // ── Anti-spam Guard 3: Duplicate prevention — skip if bot was the last sender ──
+                    if (!shouldSkipForAgent && recentMsgs.length > 0) {
+                        // recentMsgs is newest first, so [0] is the message we just created (visitor msg)
+                        // [1] would be the previous message — check if it was a bot reply
+                        const prevMsg = recentMsgs.find(m => m.senderType !== 'visitor' && !m.isDeleted);
+                        if (prevMsg && prevMsg.senderId?.startsWith('bot_')) {
+                            // Bot was the last non-visitor sender → only reply if visitor sent a NEW question
+                            // (we still allow because visitor may be asking a follow-up)
+                        }
+                    }
+                } catch { /* skip anti-spam checks if DB query fails, still try to reply */ }
+
+                if (!shouldSkipForAgent) {
                 const { chatbotService: botService } = await import('../chatbot/chatbot.service');
-                const wsId = (conversation.workspaceId as any).toString();
+                const wsId = getId(conversation.workspaceId);
                 const channel = (conversation as any).channel || 'website';
 
                 // Build conversation history for AI context
@@ -547,7 +602,7 @@ export const conversationService = {
                         .filter(m => !m.isDeleted && m.content && m.type === 'text')
                         .reverse() // chronological order
                         .map(m => ({
-                            role: m.sender.type === 'visitor' ? 'user' : 'assistant',
+                            role: m.senderType === 'visitor' ? 'user' : 'assistant',
                             content: m.content,
                         }));
                     // Remove the last one (current message) since we pass it separately
@@ -559,6 +614,9 @@ export const conversationService = {
                 const botResult = await botService.processIncomingMessage(wsId, content, channel, conversationHistory);
 
                 if (botResult) {
+                    // Update rate limit timestamp
+                    _botReplyTimestamps.set(conversationId, Date.now());
+
                     // Send bot reply as a new message (async, non-blocking)
                     setTimeout(async () => {
                         try {
@@ -600,6 +658,8 @@ export const conversationService = {
                         }
                     }, 1200); // Slightly longer delay for AI response natural feel
                 }
+                } // end if (!shouldSkipForAgent)
+                } // end else (rate limit check)
             } catch (err) {
                 console.error('[Chatbot] Hook error:', err);
             }
@@ -614,10 +674,10 @@ export const conversationService = {
 
     async editMessage(conversationId: string, messageId: string, newContent: string, agentId: string) {
         const msg = await messageRepo.findById(messageId);
-        if (!msg || (msg.conversationId as any).toString() !== conversationId) {
+        if (!msg || msg.conversationId !== conversationId) {
             throw new AppError('Không tìm thấy tin nhắn', 404, 'NOT_FOUND');
         }
-        if (msg.sender.id !== agentId || msg.sender.type !== 'agent') {
+        if (msg.senderId !== agentId || msg.senderType !== 'agent') {
             throw new AppError('Bạn chỉ có thể sửa tin nhắn của chính mình', 403, 'FORBIDDEN');
         }
         if (msg.isDeleted) {
@@ -625,38 +685,37 @@ export const conversationService = {
         }
 
         const original = msg.originalContent || msg.content;
-        msg.content = newContent;
-        msg.originalContent = original;
-        msg.editedAt = new Date();
-        await msg.save();
+        const updatedMsg = await prisma.message.update({
+            where: { id: messageId },
+            data: { content: newContent, originalContent: original, editedAt: new Date() },
+        });
         
         try {
-            emitToConversation(conversationId, 'message:edited', msg);
+            emitToConversation(conversationId, 'message:edited', updatedMsg);
         } catch { /* socket offline */ }
 
-        return msg;
+        return updatedMsg;
     },
 
     async recallMessage(conversationId: string, messageId: string, agentId: string) {
         const msg = await messageRepo.findById(messageId);
-        if (!msg || (msg.conversationId as any).toString() !== conversationId) {
+        if (!msg || msg.conversationId !== conversationId) {
             throw new AppError('Không tìm thấy tin nhắn', 404, 'NOT_FOUND');
         }
-        if (msg.sender.id !== agentId || msg.sender.type !== 'agent') {
+        if (msg.senderId !== agentId || msg.senderType !== 'agent') {
             throw new AppError('Bạn chỉ có thể thu hồi tin nhắn của chính mình', 403, 'FORBIDDEN');
         }
         if (msg.isDeleted) {
             throw new AppError('Tin nhắn này đã bị thu hồi bới bạn', 400, 'BAD_REQUEST');
         }
 
-        msg.isDeleted = true;
-        await msg.save();
+        await prisma.message.update({ where: { id: messageId }, data: { isDeleted: true } });
 
         try {
             emitToConversation(conversationId, 'message:recalled', { messageId, conversationId });
         } catch { /* socket offline */ }
 
-        return msg;
+        return { ...msg, isDeleted: true };
     },
 
     async getMessageContextPage(conversationId: string, messageId: string, limit: number = 30) {
@@ -677,7 +736,7 @@ export const conversationService = {
             return;
         }
 
-        const latestMsgId = (latestMsg._id as any).toString();
+        const latestMsgId = latestMsg.id;
 
         await conversationRepo.updateReadCursor(
             conversationId,
@@ -730,7 +789,7 @@ export const conversationService = {
         const recentMessages = await messageRepo.getLatest(conversationId, limit);
         const statuses: Record<string, string> = {};
         for (const msg of recentMessages) {
-            statuses[(msg._id as any).toString()] = msg.status || 'sent';
+            statuses[msg.id] = msg.status || 'sent';
         }
 
         return {
@@ -927,8 +986,8 @@ export const conversationService = {
         // Emit warnings to respective workspaces
         for (const conv of approaching) {
             try {
-                emitToWorkspace((conv.workspaceId as any).toString(), 'sla:warning', {
-                    conversationId: conv._id,
+                emitToWorkspace(conv.workspaceId, 'sla:warning', {
+                    conversationId: conv.id,
                     slaDeadline: conv.slaDeadline,
                     priority: conv.priority,
                     type: 'approaching',
@@ -937,8 +996,8 @@ export const conversationService = {
         }
         for (const conv of breached) {
             try {
-                emitToWorkspace((conv.workspaceId as any).toString(), 'sla:warning', {
-                    conversationId: conv._id,
+                emitToWorkspace(conv.workspaceId, 'sla:warning', {
+                    conversationId: conv.id,
                     slaDeadline: conv.slaDeadline,
                     priority: conv.priority,
                     type: 'breached',
@@ -970,7 +1029,7 @@ export const conversationService = {
         if (!conv) throw new AppError('Cuộc hội thoại không tồn tại', 404, 'NOT_FOUND');
         if (conv.visitorId !== visitorId) throw new AppError('Không có quyền', 403, 'FORBIDDEN');
 
-        const merged = { ...(conv.metadata || {}), ...tracking };
+        const merged = { ...((conv.metadata as any) || {}), ...tracking };
         return conversationRepo.updateMetadata(conversationId, merged);
     },
 
@@ -1000,16 +1059,23 @@ export const conversationService = {
         if (requester && result.items.length > 0) {
             const items = await Promise.all(
                 result.items.map(async (conv) => {
-                    const convObj = conv.toObject ? conv.toObject() : { ...conv };
-                    const readCtx = conv.readContext?.find(
+                    const convObj = { ...conv };
+                    const convId = conv.id;
+                    if (!convId) return { ...convObj, unreadCount: 0 };
+                    const readCtxArr = (conv.readContext as any[]) || [];
+                    const readCtx = readCtxArr.find(
                         (ctx: any) => ctx.participantId === requester.userId && ctx.participantType === requester.type
                     );
-                    const unreadCount = await messageRepo.countUnreadSince(
-                        (conv._id as any).toString(),
-                        requester.type,
-                        readCtx ? readCtx.lastReadMessageId : null
-                    );
-                    return { ...convObj, unreadCount };
+                    try {
+                        const unreadCount = await messageRepo.countUnreadSince(
+                            convId,
+                            requester.type,
+                            readCtx ? readCtx.lastReadMessageId : null
+                        );
+                        return { ...convObj, unreadCount };
+                    } catch {
+                        return { ...convObj, unreadCount: 0 };
+                    }
                 })
             );
 
@@ -1031,14 +1097,15 @@ export const conversationService = {
         const conv = await conversationRepo.findById(conversationId);
         if (!conv) throw new AppError('Cuộc hội thoại không tồn tại', 404, 'NOT_FOUND');
         
-        let convObj = conv.toObject ? conv.toObject() : { ...conv };
+        let convObj: any = { ...conv };
         
         if (requester) {
-            const readCtx = conv.readContext?.find(
+            const readCtxArr = (conv.readContext as any[]) || [];
+            const readCtx = readCtxArr.find(
                 (ctx: any) => ctx.participantId === requester.userId && ctx.participantType === requester.type
             );
             const unreadCount = await messageRepo.countUnreadSince(
-                (conv._id as any).toString(),
+                conv.id,
                 requester.type,
                 readCtx ? readCtx.lastReadMessageId : null
             );
@@ -1056,18 +1123,20 @@ export const conversationService = {
         
         await Promise.all(
             convs.map(async (conv: any) => {
-                const readCtx = conv.readContext?.find(
+                const readCtxArr = (conv.readContext as any[]) || [];
+                const readCtx = readCtxArr.find(
                     (ctx: any) => ctx.participantId === requester.userId && ctx.participantType === requester.type
                 );
                 const count = await messageRepo.countUnreadSince(
-                    conv._id.toString(),
+                    getId(conv),
                     requester.type,
                     readCtx ? readCtx.lastReadMessageId : null
                 );
                 
                 totalUnread += count;
                 // Determine if this is a Zalo conversation
-                const isZalo = conv.channel === 'zalo' || conv.metadata?.channel === 'zalo';
+                const metadata = (conv.metadata as any) || {};
+                const isZalo = conv.channel === 'zalo' || metadata.channel === 'zalo';
                 if (isZalo) {
                     zaloUnread += count;
                 }
@@ -1177,8 +1246,10 @@ export const conversationService = {
         if (!conversation) throw new AppError('Cuộc hội thoại không tồn tại', 404, 'NOT_FOUND');
 
         const note = await messageRepo.create({
-            conversationId: conversation._id as any,
-            sender: { type: 'agent', id: sender.id, name: sender.name },
+            conversationId: getId(conversation),
+            senderType: 'agent',
+            senderId: sender.id,
+            senderName: sender.name,
             content,
             type: 'text',
             isInternal: true,
@@ -1186,7 +1257,7 @@ export const conversationService = {
 
         // Only emit to agent namespace (not visitor)
         try {
-            emitToWorkspace((conversation.workspaceId as any).toString(), 'note:new', {
+            emitToWorkspace(getId(conversation.workspaceId), 'note:new', {
                 conversationId,
                 note,
             });
@@ -1198,7 +1269,7 @@ export const conversationService = {
                         emitToUser(userId, 'notification:mention', {
                             conversationId,
                             message: `${sender.name || 'Một đồng nghiệp'} đã nhắc đến bạn trong một ghi chú.`,
-                            noteId: note._id,
+                            noteId: note.id,
                             createdAt: new Date().toISOString()
                         });
                     }
@@ -1217,35 +1288,38 @@ export const conversationService = {
      * - GIỮ NGUYÊN: Visitor profiles, Conversation metadata (visitorId, assignedTo, tags...).
      */
     async resetWorkspaceMessages(workspaceId: string): Promise<{ deletedMessages: number; deletedZaloMessages: number; resetConversations: number }> {
-        const mongoose = require('mongoose');
-        const { MessageModel } = require('./repos/message.model');
-        const { ConversationModel } = require('./repos/conversation.model');
-        const { ZaloMessageModel } = require('../zalo/repos/zalo-message.model');
-
-        const wsObjectId = new mongoose.Types.ObjectId(workspaceId);
-
         // 1. Lấy tất cả conversationIds của workspace
-        const convIds = await ConversationModel.distinct('_id', { workspaceId: wsObjectId });
+        const convs = await prisma.conversation.findMany({
+            where: { workspaceId },
+            select: { id: true },
+        });
+        const convIds = convs.map(c => c.id);
 
         // 2. Xóa toàn bộ Messages thuộc các conversations này
-        const msgResult = await MessageModel.deleteMany({ conversationId: { $in: convIds } });
+        const msgResult = await prisma.message.deleteMany({
+            where: { conversationId: { in: convIds } },
+        });
 
         // 3. Xóa toàn bộ ZaloMessages của workspace
-        const zaloResult = await ZaloMessageModel.deleteMany({ workspaceId: wsObjectId });
+        const zaloResult = await prisma.zaloMessage.deleteMany({
+            where: { workspaceId },
+        });
 
         // 4. Reset conversations: xóa lastMessage, unreadCount = 0 (giữ metadata khác)
-        const convResult = await ConversationModel.updateMany(
-            { workspaceId: wsObjectId },
-            {
-                $unset: { lastMessage: '' },
-                $set: { unreadCount: 0 },
-            }
-        );
+        const convResult = await prisma.conversation.updateMany({
+            where: { workspaceId },
+            data: {
+                lastMessageSnippet: null,
+                lastSenderType: null,
+                lastSenderName: null,
+                unreadCount: 0,
+            },
+        });
 
         return {
-            deletedMessages: msgResult.deletedCount || 0,
-            deletedZaloMessages: zaloResult.deletedCount || 0,
-            resetConversations: convResult.modifiedCount || 0,
+            deletedMessages: msgResult.count || 0,
+            deletedZaloMessages: zaloResult.count || 0,
+            resetConversations: convResult.count || 0,
         };
     },
 

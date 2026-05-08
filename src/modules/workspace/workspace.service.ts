@@ -103,7 +103,7 @@ export const workspaceService = {
 
         const userId = user._id.toString();
 
-        const alreadyMember = ws.members.find((m) => m.userId.toString() === userId);
+        const alreadyMember = ws.members.find((m) => (m.userId || (m as any).id)?.toString() === userId);
         if (alreadyMember) throw new AppError('Người dùng đã là thành viên', 409, 'ALREADY_MEMBER');
 
         return workspaceRepo.addMember(workspaceId, { userId, role });
@@ -166,7 +166,7 @@ export const workspaceService = {
         const workspace = await workspaceRepo.findById(workspaceId);
         if (!workspace || !workspace.isActive) throw new AppError('Workspace không tồn tại', 404, 'NOT_FOUND');
 
-        const memberIds = workspace.members.map((m) => m.userId.toString());
+        const memberIds = workspace.members.map((m) => (m.userId || (m as any).id)?.toString());
 
         const [convStats, msgCounts, users] = await Promise.all([
             conversationRepo.getAgentConversationStats(workspaceId),
@@ -177,7 +177,7 @@ export const workspaceService = {
         // Build user info map
         const userMap = new Map<string, { name: string; email: string }>();
         for (const u of users) {
-            userMap.set(u._id.toString(), { name: u.name || 'Unknown', email: u.email || '' });
+            userMap.set((u._id || (u as any).id)?.toString(), { name: u.name || 'Unknown', email: u.email || '' });
         }
 
         // Build message count map (sender.id is stored as string)
@@ -197,7 +197,7 @@ export const workspaceService = {
 
         // Merge with workspace members
         const results = workspace.members.map((member) => {
-            const memberId = member.userId.toString();
+            const memberId = (member.userId || (member as any).id)?.toString();
             const stat = statsMap.get(memberId);
             const userInfo = userMap.get(memberId);
 

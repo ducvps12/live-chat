@@ -15,6 +15,22 @@ import { PERMISSIONS } from '../../config/permissions';
 
 const router = Router();
 
+// ────────── Slug → ID Resolution ──────────
+router.get(
+    '/resolve/:slug',
+    requireAuth,
+    async (req, res) => {
+        try {
+            const { workspaceRepo } = await import('./repos/workspace.repo');
+            const ws = await workspaceRepo.findBySlug(req.params.slug);
+            if (!ws) return res.status(404).json({ success: false, error: 'Workspace không tồn tại' });
+            res.json({ success: true, data: { id: ws.id, slug: ws.slug, name: ws.name } });
+        } catch (err: any) {
+            res.status(500).json({ success: false, error: err.message });
+        }
+    }
+);
+
 // ────────── Workspace CRUD ──────────
 router.post(
     '/',

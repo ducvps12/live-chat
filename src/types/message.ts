@@ -19,6 +19,7 @@ export interface MessageSender {
 // ── Message (frontend-facing, JSON from API) ──
 export interface Message {
     _id: string;
+    id?: string; // MySQL migration: API may return `id` instead of `_id`
     conversationId: string;
     clientMessageId?: string;
     sender: MessageSender;
@@ -35,6 +36,7 @@ export interface Message {
     isDeleted?: boolean;
     editedAt?: string;
     originalContent?: string;
+    stickerUrl?: string; // Zalo sticker image URL
     createdAt: string;
     updatedAt?: string;
 }

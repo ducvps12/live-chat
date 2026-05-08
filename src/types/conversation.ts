@@ -11,6 +11,7 @@ export interface VisitorInfo {
 // ── Conversation (frontend-facing, JSON from API) ──
 export interface Conversation {
     _id: string;
+    id?: string; // MySQL migration: API may return `id` instead of `_id`
     workspaceId: string;
     widgetId: string;
     visitorId: string;

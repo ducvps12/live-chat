@@ -15,7 +15,7 @@ export const authService = {
 
         // Generate Access Token (Short-lived, e.g. 15m or 1h)
         const accessToken = security.generateToken({
-            id: user._id,
+            id: user.id,
             email: user.email,
             name: user.name,
             role: user.role,
@@ -27,7 +27,7 @@ export const authService = {
         expiresAt.setDate(expiresAt.getDate() + 7); // 7 days
 
         await sessionRepo.createSession({
-            userId: user._id as any,
+            userId: user.id,
             refreshToken,
             ipAddress,
             userAgent,
@@ -38,7 +38,7 @@ export const authService = {
             accessToken,
             refreshToken,
             user: {
-                id: user._id,
+                id: user.id,
                 email: user.email,
                 name: user.name,
                 role: user.role,
@@ -53,7 +53,7 @@ export const authService = {
         if (session.revokedAt) throw new AppError('Phiên đăng nhập đã bị thu hồi', 401, 'TOKEN_REVOKED');
         if (session.expiresAt < new Date()) throw new AppError('Phiên đăng nhập đã hết hạn', 401, 'TOKEN_EXPIRED');
 
-        const user = await userRepo.findById(session.userId.toString());
+        const user = await userRepo.findById(session.userId);
         if (!user || !user.isActive) throw new AppError('Tài khoản không hợp lệ', 401, 'INVALID_USER');
 
         // Revoke old refresh token (Rotation)
@@ -61,7 +61,7 @@ export const authService = {
 
         // Generate new tokens
         const newAccessToken = security.generateToken({
-            id: user._id,
+            id: user.id,
             email: user.email,
             name: user.name,
             role: user.role,
@@ -72,7 +72,7 @@ export const authService = {
         expiresAt.setDate(expiresAt.getDate() + 7);
 
         await sessionRepo.createSession({
-            userId: user._id as any,
+            userId: user.id,
             refreshToken: newRefreshToken,
             ipAddress,
             userAgent,
@@ -113,7 +113,7 @@ export const authService = {
         const resetPasswordExpires = new Date();
         resetPasswordExpires.setMinutes(resetPasswordExpires.getMinutes() + 15); // 15 mins
 
-        await userRepo.updateUser(user._id.toString(), {
+        await userRepo.updateUser(user.id, {
             resetPasswordToken: tokenHash,
             resetPasswordExpires
         });
@@ -156,7 +156,7 @@ export const authService = {
             email, passwordHash, name, role: 'admin',
         });
         
-        return { id: admin._id, email: admin.email, name: admin.name, role: admin.role };
+        return { id: admin.id, email: admin.email, name: admin.name, role: admin.role };
     },
 
     async updateProfile(userId: string, data: { name: string; avatarUrl?: string }) {
@@ -172,7 +172,7 @@ export const authService = {
 
         const updatedUser = await userRepo.updateUser(userId, updateData);
         return {
-            id: updatedUser?._id,
+            id: updatedUser?.id,
             email: updatedUser?.email,
             name: updatedUser?.name,
             avatarUrl: updatedUser?.avatarUrl,

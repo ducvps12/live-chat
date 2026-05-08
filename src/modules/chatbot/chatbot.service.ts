@@ -206,10 +206,10 @@ export const chatbotService = {
             const sorted = [...bot.scenarios].sort((a, b) => (b.priority || 0) - (a.priority || 0));
             for (const scenario of sorted) {
                 if (matchScenario(message, scenario.trigger, scenario.triggerType)) {
-                    await chatbotRepo.incrementStats(String(bot._id), 'totalReplies');
+                    await chatbotRepo.incrementStats(bot.id, 'totalReplies');
                     return {
                         response: scenario.response,
-                        botId: String(bot._id),
+                        botId: bot.id,
                         botName: bot.name,
                         quickReplies: bot.quickReplies,
                     };
@@ -241,10 +241,10 @@ export const chatbotService = {
             const aiResponse = await callAI(systemPrompt, message, conversationHistory, botModel);
 
             if (aiResponse) {
-                await chatbotRepo.incrementStats(String(bot._id), 'totalReplies');
+                await chatbotRepo.incrementStats(bot.id, 'totalReplies');
                 return {
                     response: aiResponse,
-                    botId: String(bot._id),
+                    botId: bot.id,
                     botName: bot.name,
                     quickReplies: bot.quickReplies,
                 };
@@ -259,10 +259,10 @@ export const chatbotService = {
             if (knowledgeResults && knowledgeResults.length > 0) {
                 const best = knowledgeResults[0];
                 const response = best.answer || best.question;
-                await chatbotRepo.incrementStats(String(bot._id), 'totalReplies');
+                await chatbotRepo.incrementStats(bot.id, 'totalReplies');
                 return {
                     response,
-                    botId: String(bot._id),
+                    botId: bot.id,
                     botName: bot.name,
                     quickReplies: bot.quickReplies,
                 };
@@ -275,7 +275,7 @@ export const chatbotService = {
         if (bot.customGreeting) {
             return {
                 response: bot.customGreeting,
-                botId: String(bot._id),
+                botId: bot.id,
                 botName: bot.name,
                 quickReplies: bot.quickReplies,
             };

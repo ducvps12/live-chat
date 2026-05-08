@@ -2,7 +2,6 @@ import { zaloAccountRepo } from './repos/zalo-account.repo';
 import { zaloMessageRepo, ZaloMessageQuery } from './repos/zalo-message.repo';
 import { zaloContactRepo, ZaloContactQuery } from './repos/zalo-contact.repo';
 import { AppError } from '../../middlewares/errorHandler';
-import mongoose from 'mongoose';
 import crypto from 'crypto';
 import { conversationService } from '../conversation/conversation.service';
 import { leadService } from '../lead/lead.service';
@@ -43,7 +42,7 @@ class ZaloService {
             const activeAccounts = await zaloAccountRepo.findActive();
             for (const account of activeAccounts) {
                 const workspaceId = account.workspaceId.toString();
-                const accountId = account._id.toString();
+                const accountId = account.id.toString();
                 this.accountWorkspaceMap.set(accountId, workspaceId);
                 this.accountNameMap.set(accountId, account.name || 'Zalo App');
                 try {
@@ -54,6 +53,41 @@ class ZaloService {
                         (err) => console.error(`[ZaloService] Account ${accountId} listener error:`, err)
                     );
                     console.log(`[ZaloService] Successfully booted account ${accountId} for workspace ${workspaceId}`);
+
+                    // ── Auto-fix placeholder names after restore ──
+                    const currentName = account.name || '';
+                    if (!currentName || currentName.includes('Unknown') || currentName.includes('bạn bè')) {
+                        setTimeout(async () => {
+                            try {
+                                const { isZaloSessionConnected } = await import('../../infra/zaloService');
+                                if (!isZaloSessionConnected(accountId)) return;
+                                
+                                const session = (await import('../../infra/zaloService')).getZaloSessionStatus(accountId);
+                                if (session !== 'connected') return;
+
+                                // Try getUserInfo to get real name
+                                const convs = await getZaloConversations(accountId);
+                                // We can't directly access session.api from here, so use a workaround:
+                                // fetch the account's own Zalo ID from DB and lookup in conversations
+                                const zaloId = account.zaloId;
+                                
+                                // Try to get own profile name from Zalo API via getZaloConversations context
+                                // The real fix: call getUserInfo via the infra layer
+                                const { getZaloUserInfo } = await import('../../infra/zaloService');
+                                if (getZaloUserInfo) {
+                                    const info = await getZaloUserInfo(accountId, zaloId);
+                                    if (info && info.displayName && info.displayName !== currentName) {
+                                        await zaloAccountRepo.update(accountId, { name: info.displayName, avatar: info.avatar || account.avatar });
+                                        this.accountNameMap.set(accountId, info.displayName);
+                                        console.log(`[ZaloService] Auto-fixed name: "${currentName}" → "${info.displayName}" for account ${accountId}`);
+                                    }
+                                }
+                            } catch (e) {
+                                console.warn(`[ZaloService] Auto-fix name failed for ${accountId}:`, e);
+                            }
+                        }, 8000); // wait 8s for session to fully stabilize
+                    }
+
                     // Auto-trigger avatar backfill + history sync after session restore
                     setTimeout(() => this.backfillAvatars(workspaceId, accountId), 5000);
                     setTimeout(() => this.syncAllHistory(workspaceId), 15000);
@@ -115,6 +149,26 @@ class ZaloService {
                             } catch { /* silent */ }
                         }
 
+                        // Strategy 2.5: getUserInfo with own ID (most reliable for self name)
+                        const resolvedOwnId = typeof zaloId === 'object' ? (zaloId as any).userId || (zaloId as any).uid : String(zaloId);
+                        if (name === 'Unknown Zalo' && resolvedOwnId && resolvedOwnId !== 'unknown' && session.api?.getUserInfo) {
+                            try {
+                                const userInfoResult = await session.api.getUserInfo([resolvedOwnId]);
+                                if (userInfoResult) {
+                                    const info = userInfoResult instanceof Map 
+                                        ? userInfoResult.get(resolvedOwnId)
+                                        : (userInfoResult[resolvedOwnId] || userInfoResult);
+                                    if (info) {
+                                        name = info.displayName || info.zaloName || info.name || name;
+                                        avatar = info.avatar || info.thumbAvatar || avatar;
+                                        console.log(`[ZaloService] getUserInfo resolved name: "${name}"`);
+                                    }
+                                }
+                            } catch (e) {
+                                console.warn(`[ZaloService] getUserInfo failed:`, e);
+                            }
+                        }
+
                         // Strategy 3: Friends list
                         if (name === 'Unknown Zalo' && session.api?.getAllFriends) {
                             try {
@@ -142,16 +196,16 @@ class ZaloService {
                         let accountId: string;
                         if (duplicate) {
                             // Update existing account instead of creating duplicate
-                            await zaloAccountRepo.update(duplicate._id as unknown as string, {
+                            await zaloAccountRepo.update(duplicate.id, {
                                 name, avatar, status: 'active'
                             });
-                            accountId = (duplicate._id as unknown as string).toString();
+                            accountId = duplicate.id.toString();
                             this.accountWorkspaceMap.set(accountId, workspaceId);
                             console.log(`[ZaloService] Updated existing Zalo acc ${name} (${accountId})`);
                         } else {
                             // Create new account (multi-Zalo: no deletion of existing)
                             const newAccount = await zaloAccountRepo.create({
-                                workspaceId: new mongoose.Types.ObjectId(workspaceId),
+                                workspaceId,
                                 zaloId: resolvedZaloId,
                                 name,
                                 avatar,
@@ -160,7 +214,7 @@ class ZaloService {
                                 userAgent: 'Mozilla/5.0',
                                 status: 'active'
                             });
-                            accountId = (newAccount._id as unknown as string).toString();
+                            accountId = newAccount.id.toString();
                             this.accountWorkspaceMap.set(accountId, workspaceId);
                             console.log(`[ZaloService] Workspace ${workspaceId} linked NEW Zalo acc ${name} (${accountId})`);
                         }
@@ -209,7 +263,7 @@ class ZaloService {
         }
 
         const accountList = accounts.map(account => {
-            const accountId = (account._id as unknown as string).toString();
+            const accountId = account.id.toString();
             const isConnected = isZaloSessionConnected(accountId);
             return {
                 accountId,
@@ -251,7 +305,7 @@ class ZaloService {
             // Legacy: disconnect all accounts in workspace
             const accounts = await zaloAccountRepo.findByWorkspaceId(workspaceId);
             for (const acc of accounts) {
-                const id = (acc._id as unknown as string).toString();
+                const id = acc.id.toString();
                 await zaloAccountRepo.delete(id);
                 await destroyZaloSession(id);
                 this.accountWorkspaceMap.delete(id);
@@ -322,8 +376,8 @@ class ZaloService {
                 if (!sessionForConvs) {
                     // Fallback: find any connected account for this workspace
                     const accounts = await zaloAccountRepo.findByWorkspaceId(workspaceId);
-                    const connected = accounts.find(a => isZaloSessionConnected((a._id as unknown as string).toString()));
-                    if (connected) sessionForConvs = (connected._id as unknown as string).toString();
+                    const connected = accounts.find(a => isZaloSessionConnected(a.id.toString()));
+                    if (connected) sessionForConvs = connected.id.toString();
                 }
                 const convs = sessionForConvs ? await getZaloConversations(sessionForConvs) : [];
                 const conv = convs.find(c => c.threadId === message.threadId);
@@ -374,7 +428,31 @@ class ZaloService {
             } else if (message.msgType === 'sticker') {
                  // Sticker: use stickerUrl as image attachment for rendering in Inbox
                  msgType = 'image';
-                 const stickerImageUrl = message.stickerUrl || message.attachmentUrl || message.thumbUrl || '';
+                 let stickerImageUrl = message.stickerUrl || message.attachmentUrl || message.thumbUrl || '';
+                 
+                 // If no URL from infra, try to extract sticker ID from content pattern [Sticker:id:cateId:type]
+                 if (!stickerImageUrl && message.content) {
+                     const stickerMatch = message.content.match(/\[Sticker:(\d+):(\d+):(\d+)\]/);
+                     if (stickerMatch) {
+                         stickerImageUrl = `https://zalo-api.zadn.vn/api/emoticon/sticker/webpc?eid=${stickerMatch[1]}&size=240`;
+                         console.log(`[ZaloService] Sticker URL recovered from content pattern: eid=${stickerMatch[1]}`);
+                     }
+                 }
+                 
+                 // Normalize: replace sprite URLs with sticker/webpc for better single-image display
+                 if (stickerImageUrl && stickerImageUrl.includes('/sprite?')) {
+                     const eidMatch = stickerImageUrl.match(/eid=(\d+)/);
+                     if (eidMatch) {
+                         stickerImageUrl = `https://zalo-api.zadn.vn/api/emoticon/sticker/webpc?eid=${eidMatch[1]}&size=240`;
+                         console.log(`[ZaloService] Normalized sprite URL to sticker/webpc for eid=${eidMatch[1]}`);
+                     }
+                 }
+                 
+                 // Ensure size=240 for quality
+                 if (stickerImageUrl && stickerImageUrl.includes('size=1')) {
+                     stickerImageUrl = stickerImageUrl.replace(/size=\d+/, 'size=240');
+                 }
+                 
                  console.log(`[ZaloService] Sticker detected: stickerUrl=${message.stickerUrl}, attachmentUrl=${message.attachmentUrl}, thumbUrl=${message.thumbUrl}, resolved=${stickerImageUrl}`);
                  if (stickerImageUrl) {
                      attachments.push({
@@ -385,16 +463,39 @@ class ZaloService {
                          mimeType: 'image/webp'
                      });
                  } else {
-                     console.warn(`[ZaloService] Sticker has no URL! Full message:`, JSON.stringify({ msgType: message.msgType, stickerUrl: message.stickerUrl, content: message.content?.substring(0, 100) }));
+                     console.warn(`[ZaloService] Sticker has no URL! Full message:`, JSON.stringify({ msgType: message.msgType, stickerUrl: message.stickerUrl, content: message.content?.substring(0, 200) }));
                  }
             }
 
             // Clean content text for different message types
-            let contentText = (message.msgType === 'sticker')
-                ? '🎭 Sticker'
-                : (message.content && !message.content.includes('[Media/Sticker]') && !message.content.includes('[Sticker:'))
+            let contentText = '';
+            if (message.msgType === 'sticker') {
+                contentText = '🎭 Sticker';
+            } else if (message.msgType === 'image' || message.msgType === 'media') {
+                // For image messages: if content is just a URL that duplicates the attachment, clear it
+                let rawContent = message.content || '';
+                // Decode HTML entities first
+                const decoded = rawContent
+                    .replace(/&amp;/g, '&').replace(/&#x2F;/g, '/')
+                    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"');
+                const isJustUrl = /^https?:\/\/\S+$/.test(decoded.trim());
+                if (isJustUrl && attachments.length > 0) {
+                    contentText = ''; // URL duplicates attachment — hide it
+                } else if (decoded.includes('[Media/Sticker]') || decoded.includes('[Sticker:')) {
+                    contentText = attachments.length ? '' : decoded;
+                } else {
+                    // Check if content is a system message (not an actual image)
+                    const isSystemMsg = /yêu cầu tham gia|đã rời nhóm|đã thêm|đã xóa|đã đổi tên|đã ghim/i.test(decoded);
+                    if (isSystemMsg && attachments.length === 0) {
+                        msgType = 'text'; // Fix type: it's really a system text, not an image
+                    }
+                    contentText = decoded;
+                }
+            } else {
+                contentText = (message.content && !message.content.includes('[Media/Sticker]') && !message.content.includes('[Sticker:'))
                     ? message.content
                     : (attachments.length ? '[Đính kèm]' : message.content || '');
+            }
 
             // For group messages: prefix the individual sender name so we know who said what
             const senderDisplayName = isGroupMsg
@@ -449,9 +550,9 @@ class ZaloService {
         let sessionId = accountId;
         if (!sessionId || !isZaloSessionConnected(sessionId)) {
             const accounts = await zaloAccountRepo.findByWorkspaceId(workspaceId);
-            const connected = accounts.find(a => isZaloSessionConnected((a._id as unknown as string).toString()));
+            const connected = accounts.find(a => isZaloSessionConnected(a.id.toString()));
             if (connected) {
-                sessionId = (connected._id as unknown as string).toString();
+                sessionId = connected.id.toString();
             }
         }
 
@@ -523,9 +624,9 @@ class ZaloService {
         let sessionId = options?.accountId;
         if (!sessionId || !isZaloSessionConnected(sessionId)) {
             const accounts = await zaloAccountRepo.findByWorkspaceId(workspaceId);
-            const connected = accounts.find(a => isZaloSessionConnected((a._id as unknown as string).toString()));
+            const connected = accounts.find(a => isZaloSessionConnected(a.id.toString()));
             if (connected) {
-                sessionId = (connected._id as unknown as string).toString();
+                sessionId = connected.id.toString();
             }
         }
         if (!sessionId || !isZaloSessionConnected(sessionId)) {
@@ -606,14 +707,13 @@ class ZaloService {
     async getFriends(workspaceId: string, options?: { search?: string; page?: number; limit?: number }) {
         // Find active Zalo account for this workspace
         const accounts = await zaloAccountRepo.findByWorkspaceId(workspaceId);
-        const connected = accounts.find(a => isZaloSessionConnected((a._id as unknown as string).toString()));
+        const connected = accounts.find(a => isZaloSessionConnected(a.id.toString()));
         if (!connected) {
             return { items: [], total: 0, connected: false };
         }
 
-        const sessionId = (connected._id as unknown as string).toString();
+        const sessionId = connected.id.toString();
         const convs = await getZaloConversations(sessionId);
-        
         // Filter to friends only (user type, not groups)
         let friends = convs.filter(c => c.threadType === 'user');
 
@@ -792,7 +892,7 @@ class ZaloService {
 
         // ── Find ALL connected accounts for this workspace ──
         const accounts = await zaloAccountRepo.findByWorkspaceId(workspaceId);
-        const connectedAccounts = accounts.filter(a => isZaloSessionConnected((a._id as unknown as string).toString()));
+        const connectedAccounts = accounts.filter(a => isZaloSessionConnected(a.id.toString()));
         if (connectedAccounts.length === 0) {
             job.status = 'error';
             job.errors.push('No connected Zalo account found for this workspace');
@@ -806,7 +906,7 @@ class ZaloService {
 
         // Iterate over ALL connected accounts
         for (const connectedAccount of connectedAccounts) {
-            const accountId = (connectedAccount._id as unknown as string).toString();
+            const accountId = connectedAccount.id.toString();
             const accountName = (connectedAccount as any).name || 'Zalo App';
             console.log(`[ZaloService] Syncing account ${accountId} (${accountName})...`);
 
@@ -1016,11 +1116,11 @@ class ZaloService {
      */
     async getGroups(workspaceId: string) {
         const accounts = await zaloAccountRepo.findByWorkspaceId(workspaceId);
-        const connected = accounts.find(a => isZaloSessionConnected((a._id as unknown as string).toString()));
+        const connected = accounts.find(a => isZaloSessionConnected(a.id.toString()));
         if (!connected) {
             return { items: [], total: 0, connected: false };
         }
-        const sessionId = (connected._id as unknown as string).toString();
+        const sessionId = connected.id.toString();
         const groups = await getZaloGroups(sessionId);
         return { items: groups, total: groups.length, connected: true };
     }
@@ -1030,11 +1130,11 @@ class ZaloService {
      */
     async getGroupMembers(workspaceId: string, groupId: string) {
         const accounts = await zaloAccountRepo.findByWorkspaceId(workspaceId);
-        const connected = accounts.find(a => isZaloSessionConnected((a._id as unknown as string).toString()));
+        const connected = accounts.find(a => isZaloSessionConnected(a.id.toString()));
         if (!connected) {
             throw new AppError('Tài khoản Zalo chưa kết nối', 400, 'ZALO_NOT_CONNECTED');
         }
-        const sessionId = (connected._id as unknown as string).toString();
+        const sessionId = connected.id.toString();
         const members = await getZaloGroupMembers(sessionId, groupId);
         return { items: members, total: members.length, groupId };
     }
@@ -1044,11 +1144,11 @@ class ZaloService {
      */
     async kickGroupMember(workspaceId: string, groupId: string, userId: string) {
         const accounts = await zaloAccountRepo.findByWorkspaceId(workspaceId);
-        const connected = accounts.find(a => isZaloSessionConnected((a._id as unknown as string).toString()));
+        const connected = accounts.find(a => isZaloSessionConnected(a.id.toString()));
         if (!connected) {
             throw new AppError('Tài khoản Zalo chưa kết nối', 400, 'ZALO_NOT_CONNECTED');
         }
-        const sessionId = (connected._id as unknown as string).toString();
+        const sessionId = connected.id.toString();
         const result = await removeZaloGroupMember(sessionId, groupId, userId);
         if (!result.success) {
             throw new AppError(result.error || 'Không thể xóa thành viên', 400, 'KICK_FAILED');
@@ -1062,11 +1162,11 @@ class ZaloService {
      */
     async bulkSyncAllGroupsToLeads(workspaceId: string) {
         const accounts = await zaloAccountRepo.findByWorkspaceId(workspaceId);
-        const connected = accounts.find(a => isZaloSessionConnected((a._id as unknown as string).toString()));
+        const connected = accounts.find(a => isZaloSessionConnected(a.id.toString()));
         if (!connected) {
             throw new AppError('Tài khoản Zalo chưa kết nối', 400, 'ZALO_NOT_CONNECTED');
         }
-        const sessionId = (connected._id as unknown as string).toString();
+        const sessionId = connected.id.toString();
 
         // 1. Get all groups
         const groups = await getZaloGroups(sessionId);
@@ -1223,13 +1323,13 @@ class ZaloService {
     ) {
         const delayMs = options.delayMs || 8000; // 8s between each to avoid spam
         const accounts = await zaloAccountRepo.findByWorkspaceId(workspaceId);
-        const connected = accounts.find(a => isZaloSessionConnected((a._id as unknown as string).toString()));
+        const connected = accounts.find(a => isZaloSessionConnected(a.id.toString()));
         if (!connected) {
             job.status = 'error';
             job.errors.push('No connected Zalo account');
             return;
         }
-        const sessionId = (connected._id as unknown as string).toString();
+        const sessionId = connected.id.toString();
 
         // Get group members
         const members = await getZaloGroupMembers(sessionId, groupId);

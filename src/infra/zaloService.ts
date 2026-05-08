@@ -15,6 +15,7 @@
 import { Zalo, ThreadType } from 'zca-js';
 import { LoginQRCallbackEventType } from 'zca-js';
 import type { LoginQRCallbackEvent } from 'zca-js';
+import type { Undo } from 'zca-js';
 import fs from 'fs';
 import path from 'path';
 
@@ -42,14 +43,25 @@ export interface StoredCredentials {
     lastUsedAt: string;
 }
 
+export interface ZaloUndoEvent {
+    msgId: string;
+    cliMsgId: string;
+    threadId: string;
+    threadType: 'user' | 'group';
+    uidFrom: string;
+    isSelf: boolean;
+}
+
 export interface ZaloSession {
     sessionId: string;
     api: any;
     status: 'qr_pending' | 'connected' | 'disconnected' | 'error';
     listenerStarted: boolean;
     onMessage?: (msg: ZaloIncomingMessage) => void;
+    onUndo?: (undoEvent: ZaloUndoEvent) => void;
     onError?: (error: string) => void;
     additionalCallbacks?: Array<(msg: ZaloIncomingMessage) => void>;
+    additionalUndoCallbacks?: Array<(undoEvent: ZaloUndoEvent) => void>;
     watchdogTimer?: ReturnType<typeof setInterval>;
     lastWatchdogTickAt?: number;
     createdAt: Date;
@@ -368,9 +380,29 @@ function normalizeMessageContent(content: unknown): string {
     }
     if (!content || typeof content !== 'object') return '';
     const record = content as Record<string, unknown>;
-    // Detect sticker content (has id + cateId + type)
-    if (record.id && record.cateId) {
-        return `[Sticker:${record.id}:${record.cateId}:${record.type || 0}]`;
+    // Detect sticker content — check all known field name variants
+    const stickerId = record.id || record.stickerId;
+    const stickerCateId = record.cateId || record.cateid || record.cate_id || record.catId;
+    if (stickerId && stickerCateId) {
+        return `[Sticker:${stickerId}:${stickerCateId}:${record.type || 0}]`;
+    }
+    // Check nested params for sticker info
+    if (record.params) {
+        const p = typeof record.params === 'string' ? (() => { try { return JSON.parse(record.params as string); } catch { return null; } })() : record.params;
+        if (p && typeof p === 'object') {
+            const pId = (p as any).id || (p as any).stickerId;
+            const pCateId = (p as any).cateId || (p as any).cateid || (p as any).cate_id || (p as any).catId;
+            if (pId && pCateId) {
+                return `[Sticker:${pId}:${pCateId}:${(p as any).type || 0}]`;
+            }
+        }
+    }
+    // Check action-based sticker patterns
+    if (record.action === 'sticker' || record.actionType === 'sticker') {
+        const actionId = record.stickerId || record.id || (record.params as any)?.id;
+        if (actionId) {
+            return `[Sticker:${actionId}:0:0]`;
+        }
     }
     const title = typeof record.title === 'string' ? record.title.trim() : '';
     const description = typeof record.description === 'string' ? record.description.trim() : '';
@@ -398,6 +430,7 @@ export async function createZaloSession(
     onLogin: (session: ZaloSession) => void,
     onMessage: (msg: ZaloIncomingMessage) => void,
     onError: (error: string) => void,
+    onUndo?: (undoEvent: ZaloUndoEvent) => void,
 ): Promise<void> {
     try {
         if (sessions.has(sessionId)) {
@@ -440,6 +473,7 @@ export async function createZaloSession(
             status: 'qr_pending',
             listenerStarted: false,
             onMessage,
+            onUndo,
             onError,
             createdAt: new Date(),
         };
@@ -544,6 +578,7 @@ export async function restoreZaloSession(
     sessionId: string,
     onMessage: (msg: ZaloIncomingMessage) => void,
     onError: (error: string) => void,
+    onUndo?: (undoEvent: ZaloUndoEvent) => void,
 ): Promise<boolean> {
     const creds = readCredentials(sessionId);
     loadActivityFromDisk(sessionId);
@@ -609,6 +644,7 @@ export async function restoreZaloSession(
             status: 'connected',
             listenerStarted: false,
             onMessage,
+            onUndo,
             onError,
             createdAt: new Date(creds.createdAt),
             connectedAt: new Date(),
@@ -680,11 +716,19 @@ function startMessageListener(sessionId: string): void {
                         if (p && p.id && (p.cateId || p.cateid || p.cate_id || p.catId)) {
                             return { id: Number(p.id), cateId: Number(p.cateId || p.cateid || p.cate_id || p.catId), type: Number(p.type || 0) };
                         }
+                        // params has only id (some sticker variants)
+                        if (p && p.id && !isNaN(Number(p.id))) {
+                            return { id: Number(p.id), cateId: Number(p.cateId || p.cateid || 0), type: Number(p.type || 0) };
+                        }
                     }
                     // action = sticker pattern
                     if (obj.action === 'sticker' || obj.actionType === 'sticker') {
                         const stickerId = obj.stickerId || obj.id || obj.params?.id;
                         if (stickerId) return { id: Number(stickerId), cateId: Number(obj.cateId || obj.cateid || 0), type: Number(obj.type || 0) };
+                    }
+                    // Fallback: if object has only numeric id and we're in sticker context
+                    if (obj.id && !isNaN(Number(obj.id))) {
+                        return { id: Number(obj.id), cateId: 0, type: Number(obj.type || 0) };
                     }
                     return null;
                 };
@@ -704,6 +748,16 @@ function startMessageListener(sessionId: string): void {
                     if (!stickerInfo && (isStickerByMsgType || isStickerByPropExt)) {
                         // Sticker content might be in a different shape — try harder
                         stickerInfo = extractStickerInfo(rc.params) || extractStickerInfo(rc.data);
+                        // Try deep search: look for any numeric 'id' field in the raw content
+                        if (!stickerInfo) {
+                            const deepId = rc.id || rc.stickerId || (rc as any).params?.id || (rc as any).data?.id;
+                            if (deepId && !isNaN(Number(deepId))) {
+                                stickerInfo = { id: Number(deepId), cateId: 0, type: 0 };
+                                console.log(`[ZaloService] Extracted sticker ID via deep search: ${deepId}`);
+                            } else {
+                                console.warn(`[ZaloService] Sticker detected by metadata but no ID found! rawContent keys: [${Object.keys(rc).join(',')}], content: ${JSON.stringify(rc).substring(0, 300)}`);
+                            }
+                        }
                     }
 
                     if (stickerInfo) {
@@ -713,13 +767,18 @@ function startMessageListener(sessionId: string): void {
                             try {
                                 const details = await session.api.getStickersDetail(stickerInfo.id);
                                 if (details && details.length > 0) {
-                                    stickerUrl = details[0].stickerWebpUrl || details[0].stickerSpriteUrl || details[0].stickerUrl || '';
+                                    // Priority: stickerUrl (static) > stickerWebpUrl (animated) > stickerSpriteUrl (sprite sheet — worst for display)
+                                    stickerUrl = details[0].stickerUrl || details[0].stickerWebpUrl || '';
+                                    // Only use sprite URL as last resort, and never if we have a CDN fallback
+                                    if (!stickerUrl && details[0].stickerSpriteUrl) {
+                                        console.log(`[ZaloService] Only sprite URL available for sticker ${stickerInfo.id}, using CDN fallback instead`);
+                                    }
                                 }
                             } catch (e) { console.log(`[ZaloService] getStickersDetail failed for ${stickerInfo.id}:`, e); }
                         }
                         if (!stickerUrl && stickerInfo.id) {
-                            // Fallback CDN URLs
-                            stickerUrl = `https://zalo-api.zadn.vn/api/emoticon/sticker/webpc?eid=${stickerInfo.id}&size=120`;
+                            // CDN fallback — use sticker/webpc endpoint (NOT sprite!) with size=240
+                            stickerUrl = `https://zalo-api.zadn.vn/api/emoticon/sticker/webpc?eid=${stickerInfo.id}&size=240`;
                         }
                     }
                     // Zalo image messages typically have hdUrl/normalUrl/thumb
@@ -737,7 +796,7 @@ function startMessageListener(sessionId: string): void {
                             if (!stickerInfo) stickerInfo = extractStickerInfo(parsed.params) || extractStickerInfo(parsed.data);
                             msgType = 'sticker';
                             if (stickerInfo?.id) {
-                                stickerUrl = `https://zalo-api.zadn.vn/api/emoticon/sticker/webpc?eid=${stickerInfo.id}&size=120`;
+                                stickerUrl = `https://zalo-api.zadn.vn/api/emoticon/sticker/webpc?eid=${stickerInfo.id}&size=240`;
                             }
                         } else {
                             if (parsed.hdUrl) attachmentUrl = parsed.hdUrl;
@@ -750,9 +809,19 @@ function startMessageListener(sessionId: string): void {
                     } catch { /* not JSON */ }
                 }
 
-                // Final fallback: if content is "[Media/Sticker]" from normalizeMessageContent, mark as sticker
-                if (content === '[Media/Sticker]' && msgType === 'media') {
+                // Final fallback: if content is "[Media/Sticker]" or sticker detected by metadata but no URL
+                if (msgType === 'media' && (content === '[Media/Sticker]' || isStickerByMsgType || isStickerByPropExt)) {
                     msgType = 'sticker';
+                    // Try to extract sticker ID from content text pattern [Sticker:id:cateId:type]
+                    if (!stickerUrl) {
+                        const contentMatch = content.match(/\[Sticker:(\d+):(\d+):(\d+)\]/);
+                        if (contentMatch) {
+                            stickerUrl = `https://zalo-api.zadn.vn/api/emoticon/sticker/webpc?eid=${contentMatch[1]}&size=240`;
+                        }
+                    }
+                    if (!stickerUrl) {
+                        console.warn(`[ZaloService] Sticker detected but no URL extracted! msgType=${dataMsgType}, propExt=${JSON.stringify(propertyExt)}, content="${content.substring(0, 100)}"`);
+                    }
                 }
 
                 // Extract quote/reply info
@@ -818,7 +887,50 @@ function startMessageListener(sessionId: string): void {
             scheduleReconnect(sessionId, `Listener disconnected (${code})`);
         };
 
+        // ── Undo (recall) event from Zalo app ──
+        const onUndo = (undoData: Undo) => {
+            try {
+                console.log(`[ZaloService] Undo event received for session ${sessionId}:`, JSON.stringify(undoData?.data || undoData));
+
+                const raw = undoData?.data || undoData;
+                const undoEvent: ZaloUndoEvent = {
+                    msgId: String(raw.msgId || (raw as any).content?.globalMsgId || ''),
+                    cliMsgId: String(raw.cliMsgId || ''),
+                    threadId: undoData.threadId || String(raw.idTo || raw.uidFrom || ''),
+                    threadType: undoData.isGroup ? 'group' : 'user',
+                    uidFrom: String(raw.uidFrom || ''),
+                    isSelf: undoData.isSelf || false,
+                };
+
+                // Remove from message cache
+                const cacheKey = `${sessionId}:${undoEvent.threadId}`;
+                const cached = messageCache.get(cacheKey);
+                if (cached) {
+                    const idx = cached.findIndex(m => m.msgId === undoEvent.msgId);
+                    if (idx !== -1) {
+                        cached.splice(idx, 1);
+                        console.log(`[ZaloService] Removed recalled message ${undoEvent.msgId} from cache`);
+                    }
+                }
+
+                // Notify via primary callback
+                if (session.onUndo) {
+                    session.onUndo(undoEvent);
+                }
+
+                // Notify via additional callbacks
+                if (session.additionalUndoCallbacks) {
+                    for (const cb of session.additionalUndoCallbacks) {
+                        try { cb(undoEvent); } catch (e) { console.error('[ZaloService] Additional undo callback error:', e); }
+                    }
+                }
+            } catch (err) {
+                console.error(`[ZaloService] Undo event processing error:`, err);
+            }
+        };
+
         session.api.listener.on('message', onMessage);
+        session.api.listener.on('undo', onUndo);
         session.api.listener.on('error', onError);
         session.api.listener.on('closed', onClosed);
 
@@ -845,6 +957,7 @@ function cleanupListener(sessionId: string): void {
     try { session.api?.listener?.stop(); } catch { /* ignore */ }
     try {
         session.api?.listener?.removeAllListeners?.('message');
+        session.api?.listener?.removeAllListeners?.('undo');
         session.api?.listener?.removeAllListeners?.('error');
         session.api?.listener?.removeAllListeners?.('closed');
     } catch { /* ignore */ }
@@ -878,10 +991,11 @@ function scheduleReconnect(sessionId: string, reason: string): void {
     const timer = setTimeout(async () => {
         reconnectTimers.delete(sessionId);
         try {
-            // Get the onMessage/onError callbacks from the session before destroying it
+            // Get the onMessage/onError/onUndo callbacks from the session before destroying it
             const session = sessions.get(sessionId);
             const onMessage = session?.onMessage;
             const onError = session?.onError;
+            const onUndo = session?.onUndo;
 
             if (!onMessage) {
                 console.warn(`[ZaloService] Cannot reconnect ${sessionId} — no onMessage callback found`);
@@ -896,7 +1010,8 @@ function scheduleReconnect(sessionId: string, reason: string): void {
             const success = await restoreZaloSession(
                 sessionId,
                 onMessage,
-                onError || ((err) => console.error(`[ZaloService] Reconnected session ${sessionId} error:`, err))
+                onError || ((err) => console.error(`[ZaloService] Reconnected session ${sessionId} error:`, err)),
+                onUndo
             );
 
             if (success) {
@@ -1163,10 +1278,11 @@ function registerDMHistoryAPI(session: ZaloSession): void {
     }
 }
 
-// Helper: extract image URLs from Zalo message content
-function extractMediaUrls(content: unknown): { attachmentUrl: string; thumbUrl: string; mediaType: string } {
+// Helper: extract image/sticker URLs from Zalo message content
+function extractMediaUrls(content: unknown): { attachmentUrl: string; thumbUrl: string; stickerUrl: string; mediaType: string } {
     let attachmentUrl = '';
     let thumbUrl = '';
+    let stickerUrl = '';
     let mediaType = 'media';
     
     let obj: Record<string, unknown> | null = null;
@@ -1177,15 +1293,48 @@ function extractMediaUrls(content: unknown): { attachmentUrl: string; thumbUrl: 
     }
     
     if (obj) {
-        if (obj.hdUrl) attachmentUrl = String(obj.hdUrl);
-        else if (obj.normalUrl) attachmentUrl = String(obj.normalUrl);
-        else if (obj.href) attachmentUrl = String(obj.href);
-        if (obj.thumb) thumbUrl = String(obj.thumb);
-        else if (obj.thumbUrl) thumbUrl = String(obj.thumbUrl);
-        if (attachmentUrl || thumbUrl) mediaType = 'image';
+        // Check for sticker content (has id + cateId)
+        if (obj.id && (obj.cateId || obj.cateid || obj.cate_id || obj.catId)) {
+            const stickerId = Number(obj.id);
+            if (stickerId) {
+                stickerUrl = `https://zalo-api.zadn.vn/api/emoticon/sticker/webpc?eid=${stickerId}&size=240`;
+                mediaType = 'sticker';
+            }
+        }
+        // Check nested params for sticker
+        else if (obj.params) {
+            const p = typeof obj.params === 'string' ? (() => { try { return JSON.parse(obj.params as string); } catch { return null; } })() : obj.params as Record<string, unknown>;
+            if (p && p.id && (p.cateId || p.cateid || p.cate_id || p.catId)) {
+                const stickerId = Number(p.id);
+                if (stickerId) {
+                    stickerUrl = `https://zalo-api.zadn.vn/api/emoticon/sticker/webpc?eid=${stickerId}&size=240`;
+                    mediaType = 'sticker';
+                }
+            }
+            // params with only id (some sticker formats)
+            else if (p && p.id && !isNaN(Number(p.id)) && !obj.hdUrl && !obj.normalUrl) {
+                stickerUrl = `https://zalo-api.zadn.vn/api/emoticon/sticker/webpc?eid=${Number(p.id)}&size=240`;
+                mediaType = 'sticker';
+            }
+        }
+        // Fallback: object has id but no cateId, and no image URLs — likely a sticker
+        else if (obj.id && !isNaN(Number(obj.id)) && !obj.hdUrl && !obj.normalUrl && !obj.href) {
+            stickerUrl = `https://zalo-api.zadn.vn/api/emoticon/sticker/webpc?eid=${Number(obj.id)}&size=240`;
+            mediaType = 'sticker';
+        }
+        
+        // Image detection (only if not a sticker)
+        if (!stickerUrl) {
+            if (obj.hdUrl) attachmentUrl = String(obj.hdUrl);
+            else if (obj.normalUrl) attachmentUrl = String(obj.normalUrl);
+            else if (obj.href) attachmentUrl = String(obj.href);
+            if (obj.thumb) thumbUrl = String(obj.thumb);
+            else if (obj.thumbUrl) thumbUrl = String(obj.thumbUrl);
+            if (attachmentUrl || thumbUrl) mediaType = 'image';
+        }
     }
     
-    return { attachmentUrl, thumbUrl, mediaType };
+    return { attachmentUrl, thumbUrl, stickerUrl, mediaType };
 }
 
 export async function getZaloMessages(
@@ -1213,7 +1362,7 @@ export async function getZaloMessages(
                     const ts = resolveTimestamp(data.ts);
                     const senderId = data.uidFrom || data.uid || '';
                     const isText = typeof rawContent === 'string' && !rawContent.startsWith('{');
-                    const media = isText ? { attachmentUrl: '', thumbUrl: '', mediaType: 'text' } : extractMediaUrls(rawContent);
+                    const media = isText ? { attachmentUrl: '', thumbUrl: '', stickerUrl: '', mediaType: 'text' } : extractMediaUrls(rawContent);
                     return {
                         id: data.msgId || `zca_gmsg_${Date.now()}_${i}`,
                         cliMsgId: data.cliMsgId || undefined,
@@ -1225,6 +1374,7 @@ export async function getZaloMessages(
                         senderId: String(senderId),
                         attachmentUrl: media.attachmentUrl || undefined,
                         thumbUrl: media.thumbUrl || undefined,
+                        stickerUrl: media.stickerUrl || undefined,
                     };
                 });
             } catch (err: any) {
@@ -1272,7 +1422,7 @@ export async function getZaloMessages(
                             isSelf = true;
                         }
                         const isText = typeof rawContent === 'string' && !rawContent.startsWith('{');
-                        const media = isText ? { attachmentUrl: '', thumbUrl: '', mediaType: 'text' } : extractMediaUrls(rawContent);
+                        const media = isText ? { attachmentUrl: '', thumbUrl: '', stickerUrl: '', mediaType: 'text' } : extractMediaUrls(rawContent);
                         return {
                             id: data.msgId || `zca_dm_${Date.now()}_${i}`,
                             cliMsgId: data.cliMsgId || undefined,
@@ -1284,6 +1434,7 @@ export async function getZaloMessages(
                             senderId: String(senderId),
                             attachmentUrl: media.attachmentUrl || undefined,
                             thumbUrl: media.thumbUrl || undefined,
+                            stickerUrl: media.stickerUrl || undefined,
                         };
                     });
                 }
@@ -1314,6 +1465,7 @@ function mapCachedToOutput(msg: ZaloIncomingMessage) {
         senderId: msg.senderId,
         attachmentUrl: msg.attachmentUrl,
         thumbUrl: msg.thumbUrl,
+        stickerUrl: msg.stickerUrl,
     };
 }
 
@@ -1626,14 +1778,59 @@ export function clearSessionMessageCallbacks(sessionId: string): void {
     const session = sessions.get(sessionId);
     if (session) {
         session.additionalCallbacks = [];
-        console.log(`[ZaloService] Cleared additional message callbacks for session ${sessionId}`);
+        session.additionalUndoCallbacks = [];
+        console.log(`[ZaloService] Cleared additional message + undo callbacks for session ${sessionId}`);
     }
+}
+
+/**
+ * Register an additional undo callback for an existing connected session.
+ * Used by socket handlers to forward undo events to the frontend in realtime.
+ */
+export function addSessionUndoCallback(
+    sessionId: string,
+    callback: (undoEvent: ZaloUndoEvent) => void
+): boolean {
+    const session = sessions.get(sessionId);
+    if (!session || session.status !== 'connected') return false;
+    if (!session.additionalUndoCallbacks) session.additionalUndoCallbacks = [];
+    session.additionalUndoCallbacks.push(callback);
+    console.log(`[ZaloService] Added additional undo callback for session ${sessionId} (total: ${session.additionalUndoCallbacks.length})`);
+    return true;
 }
 
 export function getActiveZaloSessions(): string[] {
     return Array.from(sessions.entries())
         .filter(([_, s]) => s.status === 'connected')
         .map(([id]) => id);
+}
+
+/**
+ * Fetch a Zalo user's profile info (displayName, avatar) via getUserInfo API.
+ * Used to resolve real account names after session restore.
+ */
+export async function getZaloUserInfo(sessionId: string, userId: string): Promise<{ displayName: string; avatar: string } | null> {
+    const session = sessions.get(sessionId);
+    if (!session || session.status !== 'connected' || !session.api?.getUserInfo) return null;
+    
+    try {
+        const result = await session.api.getUserInfo([userId]);
+        if (!result) return null;
+        
+        const info = result instanceof Map 
+            ? result.get(userId)
+            : (result[userId] || result);
+        
+        if (info) {
+            return {
+                displayName: info.displayName || info.zaloName || info.name || '',
+                avatar: info.avatar || info.thumbAvatar || '',
+            };
+        }
+    } catch (err: any) {
+        console.warn(`[ZaloService] getUserInfo(${userId}) failed:`, err.message);
+    }
+    return null;
 }
 
 // ========================
@@ -1693,6 +1890,74 @@ export async function undoZaloMessage(
         return result;
     } catch (err: any) {
         console.error(`[ZaloService] undo error:`, err.message || err);
+        // Surface friendlier error messages
+        if (err.message?.includes('status') || err.message?.includes('timeout')) {
+            throw new Error('Không thể thu hồi — tin nhắn đã quá thời gian cho phép (thường 2 tiếng)');
+        }
+        throw err;
+    }
+}
+
+/**
+ * Delete a message (for self only, or for everyone)
+ */
+export async function deleteZaloMessage(
+    sessionId: string,
+    msgId: string,
+    cliMsgId: string,
+    uidFrom: string,
+    threadId: string,
+    threadType: 'user' | 'group' = 'user',
+    onlyMe: boolean = true
+): Promise<{ status: number }> {
+    const session = sessions.get(sessionId);
+    if (!session?.api || session.status !== 'connected') {
+        throw new Error('Zalo session not connected');
+    }
+    const type = threadType === 'group' ? ThreadType.Group : ThreadType.User;
+
+    // Try to find the real cliMsgId if not provided
+    let realCliMsgId = cliMsgId;
+    if (!realCliMsgId || realCliMsgId === msgId) {
+        if (sentMsgCliIds.has(msgId)) {
+            realCliMsgId = sentMsgCliIds.get(msgId)!;
+        } else if (sentMsgCliIds.has(String(msgId))) {
+            realCliMsgId = sentMsgCliIds.get(String(msgId))!;
+        } else {
+            const cacheKey = `${sessionId}:${threadId}`;
+            if (messageCache.has(cacheKey)) {
+                const cached = messageCache.get(cacheKey)!;
+                const found = cached.find((m: any) => m.msgId === msgId || m.msgId === String(msgId));
+                if (found?.cliMsgId && found.cliMsgId !== msgId) {
+                    realCliMsgId = found.cliMsgId;
+                }
+            }
+        }
+    }
+
+    console.log(`[ZaloService] deleteMessage: msgId=${msgId}, cliMsgId=${realCliMsgId}, threadId=${threadId}, onlyMe=${onlyMe}`);
+    try {
+        const result = await session.api.deleteMessage({
+            data: {
+                cliMsgId: String(realCliMsgId),
+                msgId: String(msgId),
+                uidFrom: String(uidFrom),
+            },
+            threadId,
+            type,
+        }, onlyMe);
+        console.log(`[ZaloService] deleteMessage result:`, JSON.stringify(result));
+
+        // Remove from message cache
+        const cacheKey = `${sessionId}:${threadId}`;
+        if (messageCache.has(cacheKey)) {
+            const cached = messageCache.get(cacheKey)!;
+            messageCache.set(cacheKey, cached.filter((m: any) => m.msgId !== String(msgId)));
+        }
+
+        return result;
+    } catch (err: any) {
+        console.error(`[ZaloService] deleteMessage error:`, err.message || err);
         throw err;
     }
 }
