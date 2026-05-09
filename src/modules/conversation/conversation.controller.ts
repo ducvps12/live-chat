@@ -561,4 +561,35 @@ export const conversationController = {
 
         res.status(200).json({ success: true, data: result });
     }),
+
+    // ── Update message reactions (agent emoji reactions) ──
+
+    updateReactions: asyncHandler(async (req: Request, res: Response) => {
+        const messageId = req.params.messageId as string;
+        const { reactions } = req.body;
+
+        const msg = await prisma.message.findUnique({
+            where: { id: messageId },
+            select: { id: true, conversationId: true },
+        });
+
+        if (!msg) {
+            throw new (require('../../middlewares/errorHandler').AppError)('Message not found', 404, 'NOT_FOUND');
+        }
+
+        await prisma.message.update({
+            where: { id: messageId },
+            data: { reactions: reactions || {} },
+        });
+
+        // Broadcast to other connected clients
+        const { emitToConversation } = require('../../infra/socket');
+        emitToConversation(msg.conversationId, 'message:reaction', {
+            messageId: msg.id,
+            conversationId: msg.conversationId,
+            reactions: reactions || {},
+        });
+
+        res.status(200).json({ success: true });
+    }),
 };

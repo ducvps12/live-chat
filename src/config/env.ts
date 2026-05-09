@@ -19,4 +19,15 @@ export const env = {
     ACB_API_TOKEN: process.env.ACB_API_TOKEN || 'ec4f8aeb9d87bc0ffa48f709365313d1',
     ACB_API_URL: process.env.ACB_API_URL || 'https://api.sieuthicode.net/historyapiacb',
     ACB_ACCOUNT_NAME: process.env.ACB_ACCOUNT_NAME || 'NEMARK DIGITAL',
+
+    // Google OAuth
+    GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || '',
+    GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET || '',
+    GOOGLE_CALLBACK_URL: process.env.GOOGLE_CALLBACK_URL || 'http://localhost/api/google-auth',
+
+    // reCAPTCHA v3
+    RECAPTCHA_SECRET_KEY: process.env.RECAPTCHA_SECRET_KEY || '',
+
+    // Frontend URL
+    FRONTEND_URL: process.env.FRONTEND_URL || 'http://localhost:3010',
 };

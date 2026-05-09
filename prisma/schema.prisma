@@ -7,17 +7,28 @@ datasource db {
 }
 
 // ═══════════════════════════════════════════════
+// SYSTEM SETTINGS (Key-Value Config)
+// ═══════════════════════════════════════════════
+
+model SystemSetting {
+  key       String   @id
+  value     String   @db.Text
+  updatedAt DateTime @updatedAt
+}
+
+// ═══════════════════════════════════════════════
 // AUTH
 // ═══════════════════════════════════════════════
 
 model User {
   id                  String    @id @default(cuid())
   email               String    @unique
-  passwordHash        String
+  passwordHash        String    @default("")
   name                String
   role                String    @default("agent") // admin | agent | member
   avatarUrl           String?   @db.Text
   isActive            Boolean   @default(true)
+  googleId            String?   @unique
   resetPasswordToken  String?
   resetPasswordExpires DateTime?
   createdAt           DateTime  @default(now())
@@ -36,7 +47,7 @@ model User {
   taxes               Tax[]
   emailAccounts       EmailAccount[]
   distributionRules   DistributionRule[]
-  campaigns           Campaign[]
+  campaigns           Campaign[]          @relation("CampaignCreator")
 
   @@index([role])
   @@index([isActive])
@@ -245,6 +256,7 @@ model Message {
   editedAt        DateTime?
   isDeleted       Boolean   @default(false)
   originalContent String?   @db.LongText
+  reactions       Json      @default("{}") // { emoji: [userId, ...] }
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
@@ -472,7 +484,7 @@ model Campaign {
   updatedAt        DateTime  @updatedAt
 
   workspace        Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  createdBy        User?     @relation(fields: [createdById], references: [id])
+  createdBy        User?     @relation("CampaignCreator", fields: [createdById], references: [id])
 
   @@index([workspaceId, status, createdAt])
 }
@@ -780,3 +792,4 @@ model BusinessHours {
 
   workspace      Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 }
+

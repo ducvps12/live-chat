@@ -10,12 +10,17 @@ export const userRepo = {
         return prisma.user.findUnique({ where: { id } });
     },
 
+    async findByGoogleId(googleId: string): Promise<User | null> {
+        return prisma.user.findUnique({ where: { googleId } });
+    },
+
     async createUser(data: {
         email: string;
         passwordHash: string;
         name: string;
         role?: string;
         avatarUrl?: string;
+        googleId?: string;
     }): Promise<User> {
         return prisma.user.create({ data });
     },
@@ -31,3 +36,4 @@ export const userRepo = {
         });
     },
 };
+

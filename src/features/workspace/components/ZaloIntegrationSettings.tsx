@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Spin, Modal, message, Progress } from 'antd';
+import { Spin, Modal, message, Progress, Tooltip } from 'antd';
 import { useZaloStatus, useGenerateZaloQR, useDisconnectZalo } from '../../../domains/zalo/zalo.hooks';
 import { Smartphone, RefreshCw, CheckCircle2, ScanLine, Wifi, WifiOff, Zap, Plus, Trash2, Users, Database, Loader2 } from 'lucide-react';
 import { zaloService } from '../../../services/zalo.service';
@@ -11,6 +11,7 @@ interface ZaloAccount {
     zaloId: string;
     status: 'active' | 'disconnected';
     isOnline: boolean;
+    hasCredentials?: boolean;
 }
 
 interface SyncStatus {
@@ -26,10 +27,18 @@ export default function ZaloIntegrationSettings({ workspaceId }: { workspaceId: 
     const [hoverBtn, setHoverBtn] = useState<string | null>(null);
     const [confirmDisconnect, setConfirmDisconnect] = useState<string | null>(null);
 
+    // Track accounts count when QR was first shown — so we can detect NEW account login
+    const accountsCountOnQrOpen = useRef<number>(0);
+
     // Sync state
     const [syncing, setSyncing] = useState(false);
     const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
     const syncPollRef = useRef<NodeJS.Timeout | null>(null);
+
+    // Per-account sync state
+    const [syncingAccountId, setSyncingAccountId] = useState<string | null>(null);
+    // Per-account reconnect state
+    const [reconnectingAccountId, setReconnectingAccountId] = useState<string | null>(null);
 
     const { data: res, isLoading, refetch } = useZaloStatus(workspaceId, !!localQrUrl);
     const { mutate: generateQR, isPending: isGenerating } = useGenerateZaloQR();
@@ -40,6 +49,8 @@ export default function ZaloIntegrationSettings({ workspaceId }: { workspaceId: 
     const hasAnyConnected = accounts.some(a => a.isOnline);
 
     const handleConnect = () => {
+        // Capture current accounts count BEFORE generating QR
+        accountsCountOnQrOpen.current = accounts.length;
         generateQR(workspaceId, {
             onSuccess: (data: any) => {
                 const qrUrl = data?.data?.qrUrl || data?.qrUrl;
@@ -88,10 +99,51 @@ export default function ZaloIntegrationSettings({ workspaceId }: { workspaceId: 
         }
     };
 
+    // ── Per-account sync handler ──
+    const handleSyncAccount = async (accountId: string) => {
+        if (syncingAccountId) return;
+        setSyncingAccountId(accountId);
+        try {
+            const res = await zaloService.syncAccount(workspaceId, accountId);
+            const data = res?.data;
+            if (data?.name) {
+                message.success(`Đã đồng bộ: ${data.name}`);
+            } else {
+                message.success('Đã đồng bộ dữ liệu tài khoản');
+            }
+            // Refresh status to show updated name
+            refetch();
+        } catch (err: any) {
+            message.error(err?.response?.data?.message || 'Lỗi khi đồng bộ tài khoản');
+        } finally {
+            setSyncingAccountId(null);
+        }
+    };
+
+    // ── Per-account reconnect handler ──
+    const handleReconnectAccount = async (accountId: string) => {
+        if (reconnectingAccountId) return;
+        setReconnectingAccountId(accountId);
+        try {
+            const res = await zaloService.reconnectAccount(workspaceId, accountId);
+            const data = res?.data;
+            message.success(data?.message || 'Đã kết nối lại thành công!');
+            // Refresh status to show updated connection state
+            refetch();
+        } catch (err: any) {
+            const errMsg = err?.response?.data?.error?.message || err?.response?.data?.message || 'Không thể kết nối lại. Vui lòng quét QR mới.';
+            message.error(errMsg);
+        } finally {
+            setReconnectingAccountId(null);
+        }
+    };
+
     useEffect(() => { return () => { if (syncPollRef.current) clearInterval(syncPollRef.current); }; }, []);
 
+    // Auto-close QR only when a NEW account successfully logged in
+    // (accounts.length increases compared to when QR was opened)
     useEffect(() => {
-        if (localQrUrl && accounts.length > 0 && accounts.some(a => a.isOnline)) {
+        if (localQrUrl && accounts.length > accountsCountOnQrOpen.current && accounts.some(a => a.isOnline)) {
             const timer = setTimeout(() => { if (localQrUrl) setLocalQrUrl(null); }, 2000);
             return () => clearTimeout(timer);
         }
@@ -149,13 +201,42 @@ export default function ZaloIntegrationSettings({ workspaceId }: { workspaceId: 
                                                 {account.isOnline ? (<><Wifi size={12} className="text-emerald-500" /><span className="text-emerald-600 font-medium">Đang hoạt động</span></>) : (<><WifiOff size={12} className="text-slate-400" /><span>Mất kết nối</span></>)}
                                             </div>
                                         </div>
-                                        <button onClick={() => setConfirmDisconnect(account.accountId)} disabled={isDisconnecting}
-                                            onMouseEnter={() => setHoverBtn(`del-${account.accountId}`)} onMouseLeave={() => setHoverBtn(null)}
-                                            className="inline-flex h-9 w-9 items-center justify-center rounded-xl border transition-all duration-200 shrink-0"
-                                            style={{ cursor: isDisconnecting ? 'not-allowed' : 'pointer', opacity: isDisconnecting ? 0.5 : 1, background: hoverBtn === `del-${account.accountId}` ? '#fef2f2' : 'white', borderColor: hoverBtn === `del-${account.accountId}` ? '#fecaca' : '#e2e8f0', color: '#ef4444' }}
-                                            title="Ngắt kết nối">
-                                            <Trash2 size={15} />
-                                        </button>
+                                        <div className="flex items-center gap-2 shrink-0">
+                                            {/* Per-account reconnect button (when offline and has saved credentials) */}
+                                            {!account.isOnline && account.hasCredentials !== false && (
+                                                <Tooltip title="Kết nối lại từ phiên đã lưu">
+                                                    <button onClick={() => handleReconnectAccount(account.accountId)}
+                                                        disabled={reconnectingAccountId === account.accountId}
+                                                        onMouseEnter={() => setHoverBtn(`reconnect-${account.accountId}`)} onMouseLeave={() => setHoverBtn(null)}
+                                                        className="inline-flex h-9 items-center gap-1.5 rounded-xl border transition-all duration-200"
+                                                        style={{ padding: '0 12px', cursor: reconnectingAccountId === account.accountId ? 'not-allowed' : 'pointer', opacity: reconnectingAccountId === account.accountId ? 0.5 : 1, background: hoverBtn === `reconnect-${account.accountId}` ? '#ecfdf5' : 'white', borderColor: hoverBtn === `reconnect-${account.accountId}` ? '#6ee7b7' : '#e2e8f0', color: '#059669', fontSize: 12, fontWeight: 600 }}
+                                                    >
+                                                        {reconnectingAccountId === account.accountId ? <Loader2 size={14} className="animate-spin" /> : <Wifi size={14} />}
+                                                        {reconnectingAccountId === account.accountId ? 'Đang kết nối...' : 'Kết nối lại'}
+                                                    </button>
+                                                </Tooltip>
+                                            )}
+                                            {/* Per-account sync button */}
+                                            {account.isOnline && (
+                                                <Tooltip title="Đồng bộ tên & dữ liệu">
+                                                    <button onClick={() => handleSyncAccount(account.accountId)}
+                                                        disabled={syncingAccountId === account.accountId}
+                                                        onMouseEnter={() => setHoverBtn(`sync-${account.accountId}`)} onMouseLeave={() => setHoverBtn(null)}
+                                                        className="inline-flex h-9 w-9 items-center justify-center rounded-xl border transition-all duration-200"
+                                                        style={{ cursor: syncingAccountId === account.accountId ? 'not-allowed' : 'pointer', opacity: syncingAccountId === account.accountId ? 0.5 : 1, background: hoverBtn === `sync-${account.accountId}` ? '#eef2ff' : 'white', borderColor: hoverBtn === `sync-${account.accountId}` ? '#c7d2fe' : '#e2e8f0', color: '#6366f1' }}
+                                                    >
+                                                        {syncingAccountId === account.accountId ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
+                                                    </button>
+                                                </Tooltip>
+                                            )}
+                                            <button onClick={() => setConfirmDisconnect(account.accountId)} disabled={isDisconnecting}
+                                                onMouseEnter={() => setHoverBtn(`del-${account.accountId}`)} onMouseLeave={() => setHoverBtn(null)}
+                                                className="inline-flex h-9 w-9 items-center justify-center rounded-xl border transition-all duration-200"
+                                                style={{ cursor: isDisconnecting ? 'not-allowed' : 'pointer', opacity: isDisconnecting ? 0.5 : 1, background: hoverBtn === `del-${account.accountId}` ? '#fef2f2' : 'white', borderColor: hoverBtn === `del-${account.accountId}` ? '#fecaca' : '#e2e8f0', color: '#ef4444' }}
+                                                title="Ngắt kết nối">
+                                                <Trash2 size={15} />
+                                            </button>
+                                        </div>
                                     </div>
                                 ))}
                             </div>

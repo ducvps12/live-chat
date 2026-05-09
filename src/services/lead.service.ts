@@ -55,4 +55,32 @@ export const leadService = {
         const res = await httpClient.get(`/workspaces/${workspaceId}/leads/ai-analysis/${conversationId}`);
         return res.data;
     },
+
+    // ── Lead Activity Timeline ──
+    getTimeline: async (workspaceId: string, leadId: string) => {
+        const res = await httpClient.get(`/workspaces/${workspaceId}/leads/${leadId}/timeline`);
+        return res.data;
+    },
+
+    // ── Auto Score ──
+    autoScore: async (workspaceId: string) => {
+        const res = await httpClient.post(`/workspaces/${workspaceId}/leads/auto-score`);
+        return res.data;
+    },
+
+    // ── CRM Intelligence ──
+    findDuplicates: async (workspaceId: string) => {
+        const res = await httpClient.get(`/workspaces/${workspaceId}/leads/duplicates`);
+        return res.data;
+    },
+
+    mergeLeads: async (workspaceId: string, primaryId: string, secondaryId: string) => {
+        const res = await httpClient.post(`/workspaces/${workspaceId}/leads/merge`, { primaryId, secondaryId });
+        return res.data;
+    },
+
+    getDashboard: async (workspaceId: string) => {
+        const res = await httpClient.get(`/workspaces/${workspaceId}/leads/dashboard`);
+        return res.data;
+    },
 };

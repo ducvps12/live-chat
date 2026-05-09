@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import authRoutes from './modules/auth/auth.routes';
+import { googleCallback } from './modules/auth/auth.routes';
 import workspaceRoutes from './modules/workspace/workspace.routes';
 import conversationRoutes from './modules/conversation/conversation.routes';
 import macroRoutes from './modules/macro/macro.routes';
@@ -17,6 +18,9 @@ import adminRoutes from './modules/admin/admin.routes';
 import bankRoutes from './modules/bank/bank.routes';
 
 const rootRouter = Router();
+
+// Google OAuth callback — mounted at /api/google-auth (matches Google Cloud Console callback URL)
+rootRouter.get('/google-auth', googleCallback);
 
 // Mount modules
 rootRouter.use('/auth', authRoutes);
@@ -42,4 +46,3 @@ rootRouter.get('/health', (req, res) => {
 });
 
 export default rootRouter;
-

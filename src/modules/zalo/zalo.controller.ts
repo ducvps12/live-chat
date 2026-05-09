@@ -349,6 +349,21 @@ export const zaloController = {
     }),
 
     /**
+     * Đồng bộ tên + dữ liệu cho 1 tài khoản Zalo cụ thể
+     * POST /zalo/accounts/:accountId/sync
+     */
+    syncAccount: asyncHandler(async (req: Request, res: Response) => {
+        const workspaceId = req.params.workspaceId as string;
+        const accountId = req.params.accountId as string;
+        const result = await zaloService.syncAccountData(workspaceId, accountId);
+        res.status(200).json({
+            success: true,
+            data: result,
+            message: `Đã đồng bộ tài khoản: ${result.name}`,
+        });
+    }),
+
+    /**
      * Manually trigger avatar backfill for all Zalo conversations
      */
     backfillAvatars: asyncHandler(async (req: Request, res: Response) => {
@@ -364,6 +379,21 @@ export const zaloController = {
         const accountId = (connected._id as unknown as string).toString();
         await zaloService.backfillAvatars(workspaceId, accountId);
         res.status(200).json({ success: true, message: 'Đã cập nhật avatar cho các cuộc hội thoại' });
+    }),
+
+    /**
+     * Kết nối lại 1 tài khoản Zalo bị mất kết nối
+     * POST /zalo/accounts/:accountId/reconnect
+     */
+    reconnectAccount: asyncHandler(async (req: Request, res: Response) => {
+        const workspaceId = req.params.workspaceId as string;
+        const accountId = req.params.accountId as string;
+        const result = await zaloService.reconnectAccount(workspaceId, accountId);
+        res.status(200).json({
+            success: true,
+            data: result,
+            message: result.message || 'Đã kết nối lại thành công',
+        });
     }),
 
     // ══════════════════════════════════════

@@ -16,6 +16,7 @@ import { Zalo, ThreadType } from 'zca-js';
 import { LoginQRCallbackEventType } from 'zca-js';
 import type { LoginQRCallbackEvent } from 'zca-js';
 import type { Undo } from 'zca-js';
+import { Reaction as ZcaReaction, Reactions as ZcaReactions } from 'zca-js';
 import fs from 'fs';
 import path from 'path';
 
@@ -52,6 +53,37 @@ export interface ZaloUndoEvent {
     isSelf: boolean;
 }
 
+export interface ZaloReactionEvent {
+    msgId: string;
+    threadId: string;
+    threadType: 'user' | 'group';
+    uidFrom: string;
+    isSelf: boolean;
+    emoji: string;       // mapped emoji (👍, ❤️, etc)
+    rType: number;       // 1 = add, 0 = remove
+    actionId: string;
+}
+
+// Map Zalo reaction icon codes to emoji for display
+const ZALO_REACTION_TO_EMOJI: Record<string, string> = {
+    [ZcaReactions.HEART]: '❤️',
+    [ZcaReactions.LIKE]: '👍',
+    [ZcaReactions.HAHA]: '😆',
+    [ZcaReactions.WOW]: '😮',
+    [ZcaReactions.CRY]: '😢',
+    [ZcaReactions.ANGRY]: '😡',
+    [ZcaReactions.DISLIKE]: '👎',
+    [ZcaReactions.KISS]: '😘',
+    [ZcaReactions.TEARS_OF_JOY]: '😂',
+    [ZcaReactions.LOVE]: '🥰',
+    [ZcaReactions.COOL]: '😎',
+    [ZcaReactions.OK]: '👌',
+    [ZcaReactions.PEACE]: '✌️',
+    [ZcaReactions.ROSE]: '🌹',
+    [ZcaReactions.BROKEN_HEART]: '💔',
+    [ZcaReactions.NONE]: '',
+};
+
 export interface ZaloSession {
     sessionId: string;
     api: any;
@@ -59,6 +91,7 @@ export interface ZaloSession {
     listenerStarted: boolean;
     onMessage?: (msg: ZaloIncomingMessage) => void;
     onUndo?: (undoEvent: ZaloUndoEvent) => void;
+    onReaction?: (reactionEvent: ZaloReactionEvent) => void;
     onError?: (error: string) => void;
     additionalCallbacks?: Array<(msg: ZaloIncomingMessage) => void>;
     additionalUndoCallbacks?: Array<(undoEvent: ZaloUndoEvent) => void>;
@@ -431,6 +464,7 @@ export async function createZaloSession(
     onMessage: (msg: ZaloIncomingMessage) => void,
     onError: (error: string) => void,
     onUndo?: (undoEvent: ZaloUndoEvent) => void,
+    onReaction?: (reactionEvent: ZaloReactionEvent) => void,
 ): Promise<void> {
     try {
         if (sessions.has(sessionId)) {
@@ -474,6 +508,7 @@ export async function createZaloSession(
             listenerStarted: false,
             onMessage,
             onUndo,
+            onReaction,
             onError,
             createdAt: new Date(),
         };
@@ -579,6 +614,7 @@ export async function restoreZaloSession(
     onMessage: (msg: ZaloIncomingMessage) => void,
     onError: (error: string) => void,
     onUndo?: (undoEvent: ZaloUndoEvent) => void,
+    onReaction?: (reactionEvent: ZaloReactionEvent) => void,
 ): Promise<boolean> {
     const creds = readCredentials(sessionId);
     loadActivityFromDisk(sessionId);
@@ -645,6 +681,7 @@ export async function restoreZaloSession(
             listenerStarted: false,
             onMessage,
             onUndo,
+            onReaction,
             onError,
             createdAt: new Date(creds.createdAt),
             connectedAt: new Date(),
@@ -658,9 +695,22 @@ export async function restoreZaloSession(
 
     } catch (err: any) {
         console.error(`[ZaloService] Session ${sessionId} restore failed:`, err);
-        // Clear invalid credentials
-        clearCredentials(sessionId);
-        onError(err.message || 'Session restore failed — credentials expired');
+        // Only clear credentials if the error indicates they are truly invalid
+        // (auth errors, expired tokens). Don't clear on network/timeout errors.
+        const errMsg = (err.message || '').toLowerCase();
+        const isAuthError = errMsg.includes('invalid') || errMsg.includes('expired')
+            || errMsg.includes('unauthorized') || errMsg.includes('permission')
+            || errMsg.includes('access denied') || errMsg.includes('login')
+            || errMsg.includes('credential') || errMsg.includes('token')
+            || errMsg.includes('đăng nhập') || errMsg.includes('thất bại')
+            || errMsg.includes('hết hạn') || errMsg.includes('bị khoá');
+        if (isAuthError) {
+            clearCredentials(sessionId);
+            console.warn(`[ZaloService] Credentials cleared for ${sessionId} (auth error: ${errMsg})`);
+        } else {
+            console.log(`[ZaloService] Keeping credentials for ${sessionId} (non-auth error, can retry)`);
+        }
+        onError(err.message || 'Session restore failed');
         return false;
     }
 }
@@ -929,8 +979,47 @@ function startMessageListener(sessionId: string): void {
             }
         };
 
+        // ── Reaction event from Zalo ──
+        const onReaction = (reactionObj: ZcaReaction) => {
+            try {
+                const raw = reactionObj?.data || reactionObj;
+                const rIcon = raw?.content?.rIcon || '';
+                const rType = raw?.content?.rType ?? 1; // 1 = add, 0 = remove
+                const emoji = ZALO_REACTION_TO_EMOJI[rIcon] || rIcon || '👍';
+                const threadId = reactionObj.threadId || String(raw.idTo || '');
+
+                // Get the actual message IDs being reacted to
+                const rMsgs = raw?.content?.rMsg || [];
+                for (const rMsg of rMsgs) {
+                    const msgId = String(rMsg.gMsgID || rMsg.cMsgID || '');
+                    if (!msgId) continue;
+
+                    const reactionEvent: ZaloReactionEvent = {
+                        msgId,
+                        threadId,
+                        threadType: reactionObj.isGroup ? 'group' : 'user',
+                        uidFrom: String(raw.uidFrom || ''),
+                        isSelf: reactionObj.isSelf || false,
+                        emoji,
+                        rType,
+                        actionId: String(raw.actionId || ''),
+                    };
+
+                    console.log(`[ZaloService] Reaction event: ${emoji} on msg ${msgId} from ${reactionEvent.uidFrom} (type=${rType}, self=${reactionEvent.isSelf})`);
+
+                    // Notify via primary callback
+                    if (session.onReaction) {
+                        session.onReaction(reactionEvent);
+                    }
+                }
+            } catch (err) {
+                console.error(`[ZaloService] Reaction event processing error:`, err);
+            }
+        };
+
         session.api.listener.on('message', onMessage);
         session.api.listener.on('undo', onUndo);
+        session.api.listener.on('reaction', onReaction);
         session.api.listener.on('error', onError);
         session.api.listener.on('closed', onClosed);
 
@@ -958,6 +1047,7 @@ function cleanupListener(sessionId: string): void {
     try {
         session.api?.listener?.removeAllListeners?.('message');
         session.api?.listener?.removeAllListeners?.('undo');
+        session.api?.listener?.removeAllListeners?.('reaction');
         session.api?.listener?.removeAllListeners?.('error');
         session.api?.listener?.removeAllListeners?.('closed');
     } catch { /* ignore */ }
@@ -996,6 +1086,7 @@ function scheduleReconnect(sessionId: string, reason: string): void {
             const onMessage = session?.onMessage;
             const onError = session?.onError;
             const onUndo = session?.onUndo;
+            const onReaction = session?.onReaction;
 
             if (!onMessage) {
                 console.warn(`[ZaloService] Cannot reconnect ${sessionId} — no onMessage callback found`);
@@ -1011,7 +1102,8 @@ function scheduleReconnect(sessionId: string, reason: string): void {
                 sessionId,
                 onMessage,
                 onError || ((err) => console.error(`[ZaloService] Reconnected session ${sessionId} error:`, err)),
-                onUndo
+                onUndo,
+                onReaction
             );
 
             if (success) {
@@ -1753,6 +1845,37 @@ export function isZaloSessionConnected(sessionId: string): boolean {
     return session?.status === 'connected' && !!session.api;
 }
 
+export function getZaloSession(sessionId: string): ZaloSession | undefined {
+    return sessions.get(sessionId);
+}
+
+/**
+ * Extract and save credentials from a currently-connected session's API context.
+ * Fallback for when QR credential capture and file copy both fail.
+ */
+export function writeCredentialsFromSession(sessionId: string): boolean {
+    const session = sessions.get(sessionId);
+    if (!session?.api || session.status !== 'connected') return false;
+    try {
+        const ctx = session.api.getContext();
+        const cookieJar = session.api.getCookie();
+        const cookieJson = cookieJar?.toJSON?.();
+        if (ctx?.imei) {
+            writeCredentials(sessionId, {
+                imei: ctx.imei,
+                cookie: cookieJson?.cookies ?? [],
+                userAgent: ctx.userAgent,
+                language: ctx.language,
+            });
+            console.log(`[ZaloService] ✅ Credentials captured from active session context for ${sessionId}`);
+            return true;
+        }
+    } catch (err: any) {
+        console.warn(`[ZaloService] writeCredentialsFromSession failed for ${sessionId}:`, err.message);
+    }
+    return false;
+}
+
 /**
  * Register an additional message callback for an existing connected session.
  * Used by socket handlers to forward messages to the frontend in realtime
@@ -1817,11 +1940,19 @@ export async function getZaloUserInfo(sessionId: string, userId: string): Promis
         const result = await session.api.getUserInfo([userId]);
         if (!result) return null;
         
-        const info = result instanceof Map 
-            ? result.get(userId)
-            : (result[userId] || result);
+        // Zalo API returns { changed_profiles: { uid: {...} }, unchanged_profiles: {...} }
+        let info: any = null;
+        if (result instanceof Map) {
+            info = result.get(userId);
+        } else if (result?.changed_profiles?.[userId]) {
+            info = result.changed_profiles[userId];
+        } else if (result[userId]) {
+            info = result[userId];
+        } else {
+            info = result;
+        }
         
-        if (info) {
+        if (info && (info.displayName || info.zaloName || info.name)) {
             return {
                 displayName: info.displayName || info.zaloName || info.name || '',
                 avatar: info.avatar || info.thumbAvatar || '',

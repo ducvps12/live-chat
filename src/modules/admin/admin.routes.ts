@@ -77,4 +77,30 @@ router.get('/payment-config', async (_req: Request, res: Response) => {
     });
 });
 
+// ── System Settings (reCAPTCHA, Google OAuth, etc.) ──
+import { settingsService } from './settings.service';
+
+router.get('/settings', async (_req: Request, res: Response) => {
+    try {
+        const all = await settingsService.getAll();
+        res.json({ success: true, data: all });
+    } catch (err: any) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+router.put('/settings', async (req: Request, res: Response) => {
+    try {
+        const entries = req.body;
+        if (!entries || typeof entries !== 'object') {
+            res.status(400).json({ success: false, error: 'Body must be a key-value object' });
+            return;
+        }
+        await settingsService.setMany(entries);
+        res.json({ success: true, message: 'Đã lưu cài đặt thành công' });
+    } catch (err: any) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 export default router;

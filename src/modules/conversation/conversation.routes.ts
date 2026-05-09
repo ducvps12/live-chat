@@ -289,4 +289,12 @@ router.patch(
     conversationController.updateConversationMetadata
 );
 
+// ────────── Message reactions ──────────
+router.put(
+    '/workspace/:workspaceId/messages/:messageId/reactions',
+    requireAuth,
+    scopeCheck,
+    conversationController.updateReactions
+);
+
 export default router;

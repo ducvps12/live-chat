@@ -1,11 +1,35 @@
 import { campaignRepo } from './repos/campaign.repo';
-import { ICampaign, CampaignStatus } from './repos/campaign.model';
-import { ZaloContactModel } from '../zalo/repos/zalo-contact.model';
+import type { CampaignStatus } from './repos/campaign.repo';
 import { zaloService } from '../zalo/zalo.service';
 import { getZaloGroupMembers } from '../../infra/zaloService';
 import { zaloAccountRepo } from '../zalo/repos/zalo-account.repo';
 import { isZaloSessionConnected } from '../../infra/zaloService';
-import mongoose from 'mongoose';
+import prisma from '../../infra/prisma';
+
+// ── Types (aligned with Prisma JSON fields) ──
+
+interface CampaignAudience {
+    type: 'all' | 'filter' | 'manual' | 'group';
+    filters?: {
+        source?: 'friend' | 'stranger' | 'group';
+        minMessages?: number;
+        lastActiveWithinDays?: number;
+        tags?: string[];
+    };
+    manualIds?: string[];
+    groupId?: string;
+}
+
+interface CampaignSchedule {
+    startAt?: Date | string;
+    sendWindow?: { startHour: number; endHour: number };
+}
+
+interface CampaignAntiSpam {
+    delayBetweenMs: number;
+    maxPerHour: number;
+    randomizeDelay: boolean;
+}
 
 interface CampaignProgress {
     campaignId: string;
@@ -33,17 +57,17 @@ class CampaignService {
     async create(workspaceId: string, userId: string, data: {
         name: string;
         messages: string[];
-        audience: ICampaign['audience'];
-        schedule?: ICampaign['schedule'];
-        antiSpam?: Partial<ICampaign['antiSpam']>;
-    }): Promise<ICampaign> {
+        audience: CampaignAudience;
+        schedule?: CampaignSchedule;
+        antiSpam?: Partial<CampaignAntiSpam>;
+    }) {
         // Validate
         if (!data.messages?.length) throw new Error('Cần ít nhất 1 tin nhắn');
         if (data.messages.length > 10) throw new Error('Tối đa 10 tin nhắn mỗi campaign');
         if (!data.name?.trim()) throw new Error('Cần đặt tên campaign');
 
         const campaign = await campaignRepo.create({
-            workspaceId: new mongoose.Types.ObjectId(workspaceId),
+            workspaceId,
             name: data.name.trim(),
             status: 'draft',
             messages: data.messages,
@@ -54,11 +78,8 @@ class CampaignService {
                 maxPerHour: Math.min(Math.max(data.antiSpam?.maxPerHour || 30, 5), 100),
                 randomizeDelay: data.antiSpam?.randomizeDelay !== false,
             },
-            stats: { total: 0, sent: 0, failed: 0, pending: 0 },
             recipientIds: [],
-            failedRecipients: [],
-            currentIndex: 0,
-            createdBy: new mongoose.Types.ObjectId(userId),
+            createdById: userId,
         });
 
         return campaign;
@@ -70,13 +91,13 @@ class CampaignService {
     async update(campaignId: string, workspaceId: string, data: Partial<{
         name: string;
         messages: string[];
-        audience: ICampaign['audience'];
-        schedule: ICampaign['schedule'];
-        antiSpam: Partial<ICampaign['antiSpam']>;
-    }>): Promise<ICampaign | null> {
+        audience: CampaignAudience;
+        schedule: CampaignSchedule;
+        antiSpam: Partial<CampaignAntiSpam>;
+    }>) {
         const campaign = await campaignRepo.findById(campaignId);
         if (!campaign) throw new Error('Campaign không tồn tại');
-        if (campaign.workspaceId.toString() !== workspaceId) throw new Error('Không có quyền');
+        if (campaign.workspaceId !== workspaceId) throw new Error('Không có quyền');
         if (campaign.status !== 'draft') throw new Error('Chỉ có thể chỉnh sửa campaign ở trạng thái nháp');
 
         const updateData: any = {};
@@ -85,10 +106,11 @@ class CampaignService {
         if (data.audience) updateData.audience = data.audience;
         if (data.schedule) updateData.schedule = data.schedule;
         if (data.antiSpam) {
+            const currentAntiSpam = (campaign.antiSpam as any) || {};
             updateData.antiSpam = {
-                delayBetweenMs: Math.max(data.antiSpam.delayBetweenMs || campaign.antiSpam.delayBetweenMs, 5000),
-                maxPerHour: Math.min(Math.max(data.antiSpam.maxPerHour || campaign.antiSpam.maxPerHour, 5), 100),
-                randomizeDelay: data.antiSpam.randomizeDelay ?? campaign.antiSpam.randomizeDelay,
+                delayBetweenMs: Math.max(data.antiSpam.delayBetweenMs || currentAntiSpam.delayBetweenMs || 8000, 5000),
+                maxPerHour: Math.min(Math.max(data.antiSpam.maxPerHour || currentAntiSpam.maxPerHour || 30, 5), 100),
+                randomizeDelay: data.antiSpam.randomizeDelay ?? currentAntiSpam.randomizeDelay ?? true,
             };
         }
 
@@ -96,9 +118,9 @@ class CampaignService {
     }
 
     /**
-     * Resolve audience → list of Zalo threadIds
+     * Resolve audience → list of Zalo threadIds (uses Prisma Lead/ZaloContact)
      */
-    private async resolveAudience(workspaceId: string, audience: ICampaign['audience']): Promise<string[]> {
+    private async resolveAudience(workspaceId: string, audience: CampaignAudience): Promise<string[]> {
         if (audience.type === 'manual' && audience.manualIds?.length) {
             return audience.manualIds;
         }
@@ -106,37 +128,33 @@ class CampaignService {
         // Group audience: fetch members directly from Zalo session
         if (audience.type === 'group' && audience.groupId) {
             const accounts = await zaloAccountRepo.findByWorkspaceId(workspaceId);
-            const connected = accounts.find(a => isZaloSessionConnected((a._id as unknown as string).toString()));
+            const connected = accounts.find(a => isZaloSessionConnected(a.id));
             if (!connected) throw new Error('Tài khoản Zalo chưa kết nối');
-            const sessionId = (connected._id as unknown as string).toString();
+            const sessionId = connected.id;
             const members = await getZaloGroupMembers(sessionId, audience.groupId);
             return members.map(m => m.userId);
         }
 
-        // Build filter query
-        const filter: any = { workspaceId: new mongoose.Types.ObjectId(workspaceId) };
+        // For 'all' or 'filter': query Leads from Prisma
+        const where: any = { workspaceId, zaloUserId: { not: '' } };
 
         if (audience.type === 'filter' && audience.filters) {
             if (audience.filters.source) {
-                filter.source = audience.filters.source;
-            }
-            if (audience.filters.minMessages) {
-                filter.totalMessages = { $gte: audience.filters.minMessages };
+                where.source = audience.filters.source;
             }
             if (audience.filters.lastActiveWithinDays) {
                 const cutoff = new Date();
                 cutoff.setDate(cutoff.getDate() - audience.filters.lastActiveWithinDays);
-                filter.lastMessageAt = { $gte: cutoff };
+                where.lastContactedAt = { gte: cutoff };
             }
         }
 
-        // Fetch contacts
-        const contacts = await ZaloContactModel
-            .find(filter)
-            .select('zaloUserId')
-            .lean();
+        const leads = await prisma.lead.findMany({
+            where,
+            select: { zaloUserId: true },
+        });
 
-        return contacts.map(c => c.zaloUserId);
+        return leads.map(l => l.zaloUserId).filter(Boolean);
     }
 
     /**
@@ -145,17 +163,19 @@ class CampaignService {
     async start(campaignId: string, workspaceId: string): Promise<{ total: number }> {
         const campaign = await campaignRepo.findById(campaignId);
         if (!campaign) throw new Error('Campaign không tồn tại');
-        if (campaign.workspaceId.toString() !== workspaceId) throw new Error('Không có quyền');
+        if (campaign.workspaceId !== workspaceId) throw new Error('Không có quyền');
         if (!['draft', 'paused'].includes(campaign.status)) {
             throw new Error(`Không thể bắt đầu campaign ở trạng thái: ${campaign.status}`);
         }
 
+        const audience = (campaign.audience as any) || {};
+
         // Resolve audience if starting fresh (not resuming)
-        let recipientIds = campaign.recipientIds || [];
+        let recipientIds = (campaign.recipientIds as string[]) || [];
         let startIndex = campaign.currentIndex || 0;
 
         if (campaign.status === 'draft' || recipientIds.length === 0) {
-            recipientIds = await this.resolveAudience(workspaceId, campaign.audience);
+            recipientIds = await this.resolveAudience(workspaceId, audience);
             if (recipientIds.length === 0) throw new Error('Không tìm thấy người nhận nào phù hợp');
             await campaignRepo.setRecipientIds(campaignId, recipientIds, recipientIds.length);
             startIndex = 0;
@@ -163,8 +183,11 @@ class CampaignService {
 
         await campaignRepo.setStatus(campaignId, 'running');
 
+        const antiSpam = (campaign.antiSpam as any) || { delayBetweenMs: 8000, maxPerHour: 30, randomizeDelay: true };
+        const messages = (campaign.messages as string[]) || [];
+
         // Start execution in background
-        this.executeInBackground(campaignId, workspaceId, campaign.messages, recipientIds, startIndex, campaign.antiSpam);
+        this.executeInBackground(campaignId, workspaceId, messages, recipientIds, startIndex, antiSpam);
 
         return { total: recipientIds.length };
     }
@@ -175,7 +198,7 @@ class CampaignService {
     async pause(campaignId: string, workspaceId: string): Promise<void> {
         const campaign = await campaignRepo.findById(campaignId);
         if (!campaign) throw new Error('Campaign không tồn tại');
-        if (campaign.workspaceId.toString() !== workspaceId) throw new Error('Không có quyền');
+        if (campaign.workspaceId !== workspaceId) throw new Error('Không có quyền');
         if (campaign.status !== 'running') throw new Error('Campaign không đang chạy');
 
         const job = this.activeJobs.get(campaignId);
@@ -198,7 +221,7 @@ class CampaignService {
     async cancel(campaignId: string, workspaceId: string): Promise<void> {
         const campaign = await campaignRepo.findById(campaignId);
         if (!campaign) throw new Error('Campaign không tồn tại');
-        if (campaign.workspaceId.toString() !== workspaceId) throw new Error('Không có quyền');
+        if (campaign.workspaceId !== workspaceId) throw new Error('Không có quyền');
 
         // Abort if running
         const job = this.activeJobs.get(campaignId);
@@ -232,13 +255,13 @@ class CampaignService {
     /**
      * Get single campaign
      */
-    async getById(campaignId: string, workspaceId: string): Promise<ICampaign & { liveProgress?: CampaignProgress }> {
+    async getById(campaignId: string, workspaceId: string) {
         const campaign = await campaignRepo.findById(campaignId);
         if (!campaign) throw new Error('Campaign không tồn tại');
-        if (campaign.workspaceId.toString() !== workspaceId) throw new Error('Không có quyền');
+        if (campaign.workspaceId !== workspaceId) throw new Error('Không có quyền');
 
         const liveProgress = this.getProgress(campaignId);
-        return { ...campaign, liveProgress } as any;
+        return { ...campaign, liveProgress };
     }
 
     /**
@@ -258,7 +281,7 @@ class CampaignService {
         messages: string[],
         recipientIds: string[],
         startIndex: number,
-        antiSpam: ICampaign['antiSpam'],
+        antiSpam: CampaignAntiSpam,
     ) {
         const abortController = new AbortController();
         const jobState = {
@@ -296,17 +319,18 @@ class CampaignService {
         messages: string[],
         recipientIds: string[],
         startIndex: number,
-        antiSpam: ICampaign['antiSpam'],
-        jobState: ReturnType<typeof this.activeJobs.get> & {},
+        antiSpam: CampaignAntiSpam,
+        jobState: any,
     ) {
-        let sentCount = startIndex; // Already processed before pause
+        let sentCount = startIndex;
         let failedCount = 0;
 
         // Reload stats from DB to get accurate counts after resume
         const existing = await campaignRepo.findById(campaignId);
         if (existing) {
-            jobState.progress.sent = existing.stats.sent;
-            failedCount = existing.stats.failed;
+            const stats = (existing.stats as any) || {};
+            jobState.progress.sent = stats.sent || 0;
+            failedCount = stats.failed || 0;
             jobState.progress.failed = failedCount;
         }
 
@@ -314,7 +338,6 @@ class CampaignService {
             // Check abort/pause
             if (jobState.abortController.signal.aborted) break;
             if (jobState.paused) {
-                // Save progress before pausing
                 await campaignRepo.updateStats(campaignId, {
                     sent: jobState.progress.sent,
                     failed: failedCount,
@@ -341,17 +364,17 @@ class CampaignService {
             const now = new Date();
             const hour = now.getHours();
             const campaign = await campaignRepo.findById(campaignId);
-            if (campaign?.schedule?.sendWindow) {
-                const { startHour, endHour } = campaign.schedule.sendWindow;
+            const schedule = (campaign?.schedule as any) || {};
+            if (schedule.sendWindow) {
+                const { startHour, endHour } = schedule.sendWindow;
                 if (hour < startHour || hour >= endHour) {
-                    // Wait until start hour
                     const nextStart = new Date();
                     if (hour >= endHour) nextStart.setDate(nextStart.getDate() + 1);
                     nextStart.setHours(startHour, 0, 0, 0);
                     const waitMs = nextStart.getTime() - Date.now();
                     console.log(`[CampaignService] ${campaignId}: Outside send window, waiting until ${startHour}:00...`);
-                    await new Promise(resolve => setTimeout(resolve, Math.min(waitMs, 60000))); // Check every minute
-                    i--; // Retry this index
+                    await new Promise(resolve => setTimeout(resolve, Math.min(waitMs, 60000)));
+                    i--;
                     continue;
                 }
             }
@@ -363,7 +386,7 @@ class CampaignService {
                 // Send each message to this recipient
                 for (let j = 0; j < messages.length; j++) {
                     if (j > 0) {
-                        await new Promise(resolve => setTimeout(resolve, 1000)); // 1s between messages
+                        await new Promise(resolve => setTimeout(resolve, 1000));
                     }
                     await zaloService.sendMessage(workspaceId, threadId, messages[j]);
                 }
@@ -397,7 +420,6 @@ class CampaignService {
             if (i < recipientIds.length - 1) {
                 let delay = antiSpam.delayBetweenMs;
                 if (antiSpam.randomizeDelay) {
-                    // ±30% jitter
                     const jitter = delay * 0.3;
                     delay = delay - jitter + Math.random() * jitter * 2;
                 }

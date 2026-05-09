@@ -240,7 +240,9 @@ export default function LeadsPage() {
             if (search) params.search = search;
             if (filterSource) params.source = filterSource;
             const res = await leadService.list(workspaceId as string, params);
-            setLeads(res?.data?.leads || []);
+            const rawLeads = res?.data?.leads || [];
+            // Normalize: Prisma returns `id`, frontend uses `_id`
+            setLeads(rawLeads.map((l: any) => ({ ...l, _id: l._id || l.id })));
         } catch { /* silent */ }
         finally { setLoading(false); }
     }, [workspaceId, search, filterSource]);
@@ -340,7 +342,10 @@ export default function LeadsPage() {
                             <span style={{ fontSize: 12, fontWeight: 500, opacity: 0.85, letterSpacing: 0.5 }}>TỔNG LEAD</span>
                         </div>
                         <div style={{ fontSize: 32, fontWeight: 800, lineHeight: 1, marginBottom: 4 }}>{totalLeads}</div>
-                        <div style={{ fontSize: 11, opacity: 0.7 }}>{stats?.total || 0} tất cả thời gian</div>
+                        <div style={{ fontSize: 11, opacity: 0.7 }}>
+                            {stats?.activity?.today > 0 && <span>+{stats.activity.today} hôm nay · </span>}
+                            {stats?.activity?.last7Days || 0} tuần qua
+                        </div>
                     </div>
 
                     {/* Conversion Card */}
@@ -359,8 +364,62 @@ export default function LeadsPage() {
                         <Progress percent={conversionRate} strokeColor="#10b981" trailColor="#ecfdf5" showInfo={false} size="small" />
                     </div>
 
+                    {/* Hot Leads Card */}
+                    <div style={{
+                        background: 'linear-gradient(135deg, #f59e0b 0%, #ef4444 100%)',
+                        borderRadius: 16,
+                        padding: '20px 22px',
+                        color: 'white',
+                        position: 'relative',
+                        overflow: 'hidden',
+                        minHeight: 110,
+                    }}>
+                        <div style={{ position: 'absolute', right: -10, top: -10, width: 70, height: 70, background: 'rgba(255,255,255,0.1)', borderRadius: '50%' }} />
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                            <Target size={16} style={{ opacity: 0.9 }} />
+                            <span style={{ fontSize: 12, fontWeight: 500, opacity: 0.85, letterSpacing: 0.5 }}>HOT LEADS</span>
+                        </div>
+                        <div style={{ fontSize: 32, fontWeight: 800, lineHeight: 1, marginBottom: 4 }}>{stats?.hotLeads || 0}</div>
+                        <div style={{ fontSize: 11, opacity: 0.7 }}>Score ≥ 70 · Avg: {stats?.scoring?.avg || 0}</div>
+                    </div>
+
+                    {/* Score Distribution Card */}
+                    <div style={{
+                        background: 'white',
+                        borderRadius: 16,
+                        padding: '20px 22px',
+                        border: '1px solid #e2e8f0',
+                        minHeight: 110,
+                    }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                            <BarChart3 size={16} color="#6366f1" />
+                            <span style={{ fontSize: 12, fontWeight: 500, color: '#64748b', letterSpacing: 0.5 }}>PHÂN BỐ ĐIỂM</span>
+                        </div>
+                        <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end', height: 40, marginBottom: 6 }}>
+                            {[
+                                { label: 'Thấp', count: stats?.scoring?.distribution?.low || 0, color: '#fecaca', textColor: '#991b1b' },
+                                { label: 'TB', count: stats?.scoring?.distribution?.mid || 0, color: '#fde68a', textColor: '#92400e' },
+                                { label: 'Cao', count: stats?.scoring?.distribution?.high || 0, color: '#a7f3d0', textColor: '#166534' },
+                            ].map(b => {
+                                const maxCount = Math.max(b.count, 1);
+                                const totalAll = (stats?.scoring?.distribution?.low || 0) + (stats?.scoring?.distribution?.mid || 0) + (stats?.scoring?.distribution?.high || 0);
+                                const pct = totalAll > 0 ? Math.max(8, (b.count / totalAll) * 100) : 33;
+                                return (
+                                    <div key={b.label} style={{ flex: 1, textAlign: 'center' }}>
+                                        <div style={{
+                                            height: `${pct}%`, minHeight: 8,
+                                            background: b.color, borderRadius: 4,
+                                            marginBottom: 4, transition: 'height 0.3s',
+                                        }} />
+                                        <div style={{ fontSize: 9, color: b.textColor, fontWeight: 600 }}>{b.label} ({b.count})</div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+
                     {/* Stage Mini-Cards */}
-                    {STAGES.slice(0, 4).map(s => (
+                    {STAGES.slice(0, 2).map(s => (
                         <div key={s.key} style={{
                             background: 'white',
                             borderRadius: 16,
@@ -605,6 +664,39 @@ export default function LeadsPage() {
                         )}
                     </button>
 
+                    {/* Auto-Score Button */}
+                    <button
+                        onClick={async () => {
+                            try {
+                                message.loading({ content: 'Đang tính điểm lead...', key: 'score' });
+                                const res = await leadService.autoScore(workspaceId as string);
+                                message.success({ content: `✅ ${res?.message || 'Hoàn thành'}`, key: 'score' });
+                                fetchLeads();
+                            } catch (err: any) {
+                                message.error({ content: `Lỗi: ${err?.message || 'Không thể tính điểm'}`, key: 'score' });
+                            }
+                        }}
+                        style={{
+                            height: 42,
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 8,
+                            borderRadius: 12,
+                            padding: '0 16px',
+                            fontSize: 13,
+                            fontWeight: 600,
+                            color: '#6366f1',
+                            background: 'white',
+                            border: '1.5px solid #c7d2fe',
+                            cursor: 'pointer',
+                            transition: 'all 0.2s',
+                        }}
+                        onMouseEnter={e => { (e.currentTarget as any).style.background = '#eef2ff'; (e.currentTarget as any).style.borderColor = '#818cf8'; }}
+                        onMouseLeave={e => { (e.currentTarget as any).style.background = 'white'; (e.currentTarget as any).style.borderColor = '#c7d2fe'; }}
+                    >
+                        <Target size={15} /> Tính điểm
+                    </button>
+
                     {/* Add Lead Button */}
                     <button onClick={() => setCreateModalOpen(true)} style={{
                         height: 42,
@@ -813,6 +905,14 @@ export default function LeadsPage() {
                                                         <span style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 11, color: '#94a3b8' }}>
                                                             <MessageSquare size={11} /> {lead.conversationCount}
                                                         </span>
+                                                    )}
+                                                    {lead.score > 0 && (
+                                                        <span style={{
+                                                            fontSize: 10, fontWeight: 700,
+                                                            padding: '1px 6px', borderRadius: 4,
+                                                            background: lead.score >= 70 ? '#dcfce7' : lead.score >= 40 ? '#fef3c7' : '#fee2e2',
+                                                            color: lead.score >= 70 ? '#166534' : lead.score >= 40 ? '#92400e' : '#991b1b',
+                                                        }}>🎯 {lead.score}</span>
                                                     )}
                                                     <span style={{ fontSize: 11, color: '#cbd5e1', marginLeft: 'auto' }}>
                                                         {dayjs(lead.createdAt).fromNow()}
@@ -1305,7 +1405,7 @@ export default function LeadsPage() {
                             </div>
 
                             {/* ── Notes ── */}
-                            <div style={{ flex: 1, overflowY: 'auto', padding: '18px 28px' }}>
+                            <div style={{ overflowY: 'auto', padding: '18px 28px' }}>
                                 <div style={{ fontSize: 11, fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 14 }}>
                                     Ghi chú ({selectedLead.notes?.length || 0})
                                 </div>
@@ -1319,7 +1419,6 @@ export default function LeadsPage() {
                                         }}>
                                             <p style={{ margin: 0, fontSize: 13, color: '#334155', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{note.text}</p>
                                             <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 8
-
  }}>
                                                 <Clock size={11} color="#cbd5e1" />
                                                 <span style={{ fontSize: 11, color: '#cbd5e1' }}>{dayjs(note.createdAt).fromNow()}</span>
@@ -1334,6 +1433,9 @@ export default function LeadsPage() {
                                     )}
                                 </div>
                             </div>
+
+                            {/* ── Activity Timeline ── */}
+                            <TimelineSection workspaceId={workspaceId as string} leadId={selectedLead._id} />
 
                             {/* ── Note Input + Actions ── */}
                             <div style={{ borderTop: '1px solid #e8ecf0', padding: '16px 28px 20px', background: 'white' }}>
@@ -2206,5 +2308,100 @@ Ví dụ: Xin chào! Bên mình đang có chương trình khuyến mãi đặc b
                 </div>
             </Modal>
         </AppLayout>
+    );
+}
+
+// ── Timeline Sub-Component ──
+function TimelineSection({ workspaceId, leadId }: { workspaceId: string; leadId: string }) {
+    const [timeline, setTimeline] = useState<any[]>([]);
+    const [loading, setLoading] = useState(false);
+    const [expanded, setExpanded] = useState(false);
+
+    useEffect(() => {
+        if (!expanded || !leadId || !workspaceId) return;
+        let cancelled = false;
+        setLoading(true);
+        leadService.getTimeline(workspaceId, leadId)
+            .then(res => { if (!cancelled) setTimeline(res?.data || []); })
+            .catch(() => { /* silent */ })
+            .finally(() => { if (!cancelled) setLoading(false); });
+        return () => { cancelled = true; };
+    }, [expanded, leadId, workspaceId]);
+
+    const iconMap: Record<string, { icon: string; color: string; bg: string }> = {
+        message: { icon: '💬', color: '#6366f1', bg: '#eef2ff' },
+        chat: { icon: '📩', color: '#0ea5e9', bg: '#f0f9ff' },
+        note: { icon: '📝', color: '#f59e0b', bg: '#fffbeb' },
+        ai: { icon: '🤖', color: '#8b5cf6', bg: '#f5f3ff' },
+        conversation: { icon: '🗨️', color: '#10b981', bg: '#ecfdf5' },
+        created: { icon: '⭐', color: '#f59e0b', bg: '#fffbeb' },
+        star: { icon: '⭐', color: '#f59e0b', bg: '#fffbeb' },
+    };
+
+    return (
+        <div style={{ padding: '0 28px 18px' }}>
+            <button
+                onClick={() => setExpanded(!expanded)}
+                style={{
+                    width: '100%', height: 38,
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    padding: '0 14px',
+                    borderRadius: 10,
+                    border: '1px solid #e2e8f0',
+                    background: expanded ? '#f8fafc' : 'white',
+                    cursor: 'pointer',
+                    fontSize: 12, fontWeight: 600, color: '#475569',
+                    transition: 'all 0.2s',
+                }}
+            >
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <Activity size={13} /> Lịch sử hoạt động
+                </span>
+                <ChevronRight size={14} style={{ transform: expanded ? 'rotate(90deg)' : 'none', transition: 'transform 0.2s' }} />
+            </button>
+
+            {expanded && (
+                <div style={{ marginTop: 12, position: 'relative' }}>
+                    {loading ? (
+                        <div style={{ textAlign: 'center', padding: '20px 0' }}><Spin size="small" /></div>
+                    ) : timeline.length === 0 ? (
+                        <div style={{ textAlign: 'center', padding: '20px 0', color: '#cbd5e1', fontSize: 12 }}>Chưa có hoạt động</div>
+                    ) : (
+                        <div style={{ position: 'relative' }}>
+                            {/* Vertical line */}
+                            <div style={{ position: 'absolute', left: 15, top: 8, bottom: 8, width: 2, background: '#e2e8f0', borderRadius: 1 }} />
+
+                            {timeline.slice(0, 20).map((item, i) => {
+                                const style = iconMap[item.icon] || iconMap.message;
+                                return (
+                                    <div key={i} style={{ display: 'flex', gap: 12, marginBottom: 12, position: 'relative' }}>
+                                        <div style={{
+                                            width: 30, height: 30, borderRadius: 8, flexShrink: 0,
+                                            background: style.bg, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                            fontSize: 13, zIndex: 1, border: '2px solid white',
+                                        }}>
+                                            {style.icon}
+                                        </div>
+                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                            <div style={{
+                                                fontSize: 12.5, color: '#334155', lineHeight: 1.5,
+                                                overflow: 'hidden', textOverflow: 'ellipsis',
+                                                display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as any,
+                                            }}>
+                                                {item.content}
+                                            </div>
+                                            <div style={{ fontSize: 10.5, color: '#94a3b8', marginTop: 2 }}>
+                                                {dayjs(item.createdAt).fromNow()}
+                                                {item.senderName && <span> · {item.senderName}</span>}
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </div>
+            )}
+        </div>
     );
 }

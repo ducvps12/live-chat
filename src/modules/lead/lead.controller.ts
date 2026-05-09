@@ -136,4 +136,49 @@ export const leadController = {
         const analysis = await leadAIService.getAnalysis(conversationId);
         res.status(200).json({ success: true, data: analysis });
     }),
+
+    // ── Lead Activity Timeline ──
+    getTimeline: asyncHandler(async (req: Request, res: Response) => {
+        const workspaceId = req.params.workspaceId as string;
+        const leadId = req.params.leadId as string;
+
+        const timeline = await leadAIService.getLeadTimeline(workspaceId, leadId);
+        res.status(200).json({ success: true, data: timeline });
+    }),
+
+    // ── Auto-Score Leads ──
+    autoScore: asyncHandler(async (req: Request, res: Response) => {
+        const workspaceId = req.params.workspaceId as string;
+        const result = await leadAIService.autoScoreLeads(workspaceId);
+        res.status(200).json({
+            success: true,
+            data: result,
+            message: `Đã cập nhật điểm cho ${result.updated} lead`,
+        });
+    }),
+
+    // ── Duplicate Detection ──
+    findDuplicates: asyncHandler(async (req: Request, res: Response) => {
+        const workspaceId = req.params.workspaceId as string;
+        const result = await leadService.findDuplicates(workspaceId);
+        res.status(200).json({ success: true, data: result });
+    }),
+
+    // ── Merge Leads ──
+    mergeLeads: asyncHandler(async (req: Request, res: Response) => {
+        const { primaryId, secondaryId } = req.body;
+        if (!primaryId || !secondaryId) {
+            res.status(400).json({ success: false, message: 'Cần primaryId và secondaryId' });
+            return;
+        }
+        const merged = await leadService.mergeLeads(primaryId, secondaryId);
+        res.status(200).json({ success: true, data: merged, message: 'Đã gộp lead thành công' });
+    }),
+
+    // ── Dashboard Overview ──
+    getDashboard: asyncHandler(async (req: Request, res: Response) => {
+        const workspaceId = req.params.workspaceId as string;
+        const dashboard = await leadService.getDashboard(workspaceId);
+        res.status(200).json({ success: true, data: dashboard });
+    }),
 };

@@ -899,43 +899,7 @@ export default function AdminPanelPage() {
                             )}
 
                             {/* ═══ Settings Tab ═══ */}
-                            {tab === 'settings' && (
-                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 20 }}>
-                                    <PanelCard title="Thông tin hệ thống" subtitle="Cấu hình chung">
-                                        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                                            {[
-                                                ['Tên hệ thống', 'NemarkChat'],
-                                                ['Phiên bản', 'v2.0.0'],
-                                                ['Ngôn ngữ', 'Tiếng Việt'],
-                                                ['Múi giờ', 'Asia/Ho_Chi_Minh (UTC+7)'],
-                                                ['Hotline', '0964 543 556'],
-                                                ['Email hỗ trợ', 'support@nemark.chat'],
-                                            ].map(([k, v]) => (
-                                                <div key={k} style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 14px', background: '#f8fafc', borderRadius: 8, fontSize: 13 }}>
-                                                    <span style={{ color: '#64748b' }}>{k}</span>
-                                                    <span style={{ fontWeight: 600, color: '#1e293b' }}>{v}</span>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    </PanelCard>
-                                    <PanelCard title="Cấu hình ngân hàng" subtitle="Auto Bank — MB Bank">
-                                        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                                            {[
-                                                ['Ngân hàng', bankData?.account?.bank || 'MB Bank'],
-                                                ['Số tài khoản', bankData?.account?.number || '070028386'],
-                                                ['Chủ tài khoản', bankData?.account?.holder || 'PHAM TRONG DUONG'],
-                                                ['API Provider', 'api.sieuthicode.net'],
-                                                ['Trạng thái', '🟢 Đang hoạt động'],
-                                            ].map(([k, v]) => (
-                                                <div key={k} style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 14px', background: '#f8fafc', borderRadius: 8, fontSize: 13 }}>
-                                                    <span style={{ color: '#64748b' }}>{k}</span>
-                                                    <span style={{ fontWeight: 600, color: '#1e293b' }}>{v}</span>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    </PanelCard>
-                                </div>
-                            )}
+                            {tab === 'settings' && <SettingsTab />}
 
                             {/* ═══ Cron Link Tab ═══ */}
                             {tab === 'cron' && (
@@ -1423,6 +1387,344 @@ const AutoBankTab = ({ bankData, bankFilter, setBankFilter, fetchDashboard }: {
                         />
                     </PanelCard>
                 </div>
+            )}
+        </>
+    );
+};
+
+/* ─── Settings Tab Component ─── */
+type SettingsSubTab = 'general' | 'recaptcha' | 'google_oauth';
+
+const SettingsTab = () => {
+    const [subTab, setSubTab] = useState<SettingsSubTab>('general');
+    const [settings, setSettings] = useState<Record<string, string>>({});
+    const [loadingSettings, setLoadingSettings] = useState(true);
+    const [saving, setSaving] = useState(false);
+
+    // Form states for reCAPTCHA
+    const [recaptchaEnabled, setRecaptchaEnabled] = useState(false);
+    const [recaptchaSiteKey, setRecaptchaSiteKey] = useState('');
+    const [recaptchaSecretKey, setRecaptchaSecretKey] = useState('');
+
+    // Form states for Google OAuth
+    const [googleEnabled, setGoogleEnabled] = useState(true);
+    const [googleClientId, setGoogleClientId] = useState('');
+    const [googleClientSecret, setGoogleClientSecret] = useState('');
+    const [googleCallbackUrl, setGoogleCallbackUrl] = useState('');
+
+    useEffect(() => {
+        loadSettings();
+    }, []);
+
+    const loadSettings = async () => {
+        setLoadingSettings(true);
+        try {
+            const res = await httpClient.get('/admin/settings');
+            if (res.data?.success) {
+                const s = res.data.data;
+                setSettings(s);
+                setRecaptchaEnabled(s.recaptcha_enabled === 'true');
+                setRecaptchaSiteKey(s.recaptcha_site_key || '');
+                setRecaptchaSecretKey(s.recaptcha_secret_key || '');
+                setGoogleEnabled((s.google_auth_enabled ?? 'true') === 'true');
+                setGoogleClientId(s.google_client_id || '');
+                setGoogleClientSecret(s.google_client_secret || '');
+                setGoogleCallbackUrl(s.google_callback_url || '');
+            }
+        } catch { /* silent */ }
+        setLoadingSettings(false);
+    };
+
+    const saveRecaptcha = async () => {
+        setSaving(true);
+        try {
+            await httpClient.put('/admin/settings', {
+                recaptcha_enabled: recaptchaEnabled ? 'true' : 'false',
+                recaptcha_site_key: recaptchaSiteKey,
+                recaptcha_secret_key: recaptchaSecretKey,
+            });
+            message.success('Đã lưu cấu hình reCAPTCHA!');
+        } catch { message.error('Lỗi lưu cài đặt'); }
+        setSaving(false);
+    };
+
+    const saveGoogleOAuth = async () => {
+        setSaving(true);
+        try {
+            await httpClient.put('/admin/settings', {
+                google_auth_enabled: googleEnabled ? 'true' : 'false',
+                google_client_id: googleClientId,
+                google_client_secret: googleClientSecret,
+                google_callback_url: googleCallbackUrl,
+            });
+            message.success('Đã lưu cấu hình Google OAuth!');
+        } catch { message.error('Lỗi lưu cài đặt'); }
+        setSaving(false);
+    };
+
+    const settingsTabs: { key: SettingsSubTab; label: string; icon: string }[] = [
+        { key: 'general', label: 'THÔNG TIN CHUNG', icon: '⚙️' },
+        { key: 'recaptcha', label: 'RECAPTCHA', icon: '🛡️' },
+        { key: 'google_oauth', label: 'GOOGLE OAUTH', icon: '🔑' },
+    ];
+
+    if (loadingSettings) {
+        return <div style={{ display: 'flex', justifyContent: 'center', padding: 60 }}><Spin size="large" /></div>;
+    }
+
+    return (
+        <>
+            <style>{`
+                .settings-tabs { display: flex; gap: 0; background: #f1f5f9; border-radius: 12px; padding: 4px; margin-bottom: 24px; }
+                .settings-tab {
+                    flex: 1; padding: 10px 16px; border: none; cursor: pointer; font-size: 12px; font-weight: 600;
+                    background: transparent; color: #64748b; border-radius: 9px; transition: all 0.2s;
+                    display: flex; align-items: center; justify-content: center; gap: 6px;
+                    text-transform: uppercase; letter-spacing: 0.5px;
+                }
+                .settings-tab.active { background: #fff; color: #0f172a; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+                .settings-tab:hover:not(.active) { background: rgba(255,255,255,0.5); color: #475569; }
+                .settings-field {
+                    margin-bottom: 20px;
+                }
+                .settings-field label {
+                    display: block; font-size: 13px; font-weight: 700; color: #1e293b; margin-bottom: 8px;
+                }
+                .settings-field .hint {
+                    font-size: 11px; color: #94a3b8; font-weight: 400; font-style: italic; margin-top: 4px;
+                }
+            `}</style>
+
+            <div className="settings-tabs">
+                {settingsTabs.map(t => (
+                    <button
+                        key={t.key}
+                        className={`settings-tab ${subTab === t.key ? 'active' : ''}`}
+                        onClick={() => setSubTab(t.key)}
+                    >
+                        <span>{t.icon}</span> {t.label}
+                    </button>
+                ))}
+            </div>
+
+            {/* ── General ── */}
+            {subTab === 'general' && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 20 }}>
+                    <PanelCard title="Thông tin hệ thống" subtitle="Cấu hình chung">
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                            {[
+                                ['Tên hệ thống', 'NemarkChat'],
+                                ['Phiên bản', 'v2.0.0'],
+                                ['Ngôn ngữ', 'Tiếng Việt'],
+                                ['Múi giờ', 'Asia/Ho_Chi_Minh (UTC+7)'],
+                                ['Hotline', '0964 543 556'],
+                                ['Email hỗ trợ', 'support@nemark.chat'],
+                            ].map(([k, v]) => (
+                                <div key={k} style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 14px', background: '#f8fafc', borderRadius: 8, fontSize: 13 }}>
+                                    <span style={{ color: '#64748b' }}>{k}</span>
+                                    <span style={{ fontWeight: 600, color: '#1e293b' }}>{v}</span>
+                                </div>
+                            ))}
+                        </div>
+                    </PanelCard>
+                    <PanelCard title="Trạng thái dịch vụ" subtitle="Tổng quan các tính năng">
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                            {[
+                                { label: 'Google OAuth', enabled: googleEnabled, color: '#4285f4' },
+                                { label: 'reCAPTCHA', enabled: recaptchaEnabled, color: '#4caf50' },
+                                { label: 'Auto Bank (MB)', enabled: true, color: '#1976d2' },
+                                { label: 'ACB Revenue', enabled: true, color: '#ff9800' },
+                                { label: 'Zalo Integration', enabled: true, color: '#0068ff' },
+                                { label: 'Facebook Integration', enabled: true, color: '#1877f2' },
+                            ].map((item, idx) => (
+                                <div key={idx} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', background: '#f8fafc', borderRadius: 8, fontSize: 13 }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                        <div style={{ width: 8, height: 8, borderRadius: '50%', background: item.enabled ? '#10b981' : '#ef4444' }} />
+                                        <span style={{ color: '#1e293b', fontWeight: 500 }}>{item.label}</span>
+                                    </div>
+                                    <Tag color={item.enabled ? 'green' : 'red'} style={{ margin: 0, fontSize: 11 }}>
+                                        {item.enabled ? 'Đang bật' : 'Đang tắt'}
+                                    </Tag>
+                                </div>
+                            ))}
+                        </div>
+                    </PanelCard>
+                </div>
+            )}
+
+            {/* ── reCAPTCHA ── */}
+            {subTab === 'recaptcha' && (
+                <PanelCard title="Cấu hình reCAPTCHA" subtitle="Bảo vệ trang đăng nhập và đăng ký khỏi bot tự động">
+                    {/* Status Toggle */}
+                    <div className="settings-field">
+                        <label>Trạng thái</label>
+                        <Select
+                            value={recaptchaEnabled ? 'ON' : 'OFF'}
+                            onChange={(v: string) => setRecaptchaEnabled(v === 'ON')}
+                            style={{ width: '100%' }}
+                            options={[
+                                { value: 'OFF', label: '🔴 OFF — Tắt reCAPTCHA (mặc định khi dev)' },
+                                { value: 'ON', label: '🟢 ON — Bật reCAPTCHA (production)' },
+                            ]}
+                        />
+                        {!recaptchaEnabled && (
+                            <p className="hint" style={{ color: '#f59e0b' }}>
+                                ⚠️ Vui lòng cấu hình thông tin phía dưới trước khi kích hoạt ON reCAPTCHA.
+                            </p>
+                        )}
+                    </div>
+
+                    {/* Site Key */}
+                    <div className="settings-field">
+                        <label>reCAPTCHA Site Key</label>
+                        <Input
+                            value={recaptchaSiteKey}
+                            onChange={e => setRecaptchaSiteKey(e.target.value)}
+                            placeholder="6Lcng-EsAAAAA..."
+                            style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 13 }}
+                        />
+                        <p className="hint">
+                            Sử dụng Site Key trong HTML code phía client. Lấy từ{' '}
+                            <a href="https://www.google.com/recaptcha/admin" target="_blank" rel="noopener noreferrer" style={{ color: '#6366f1' }}>
+                                Google reCAPTCHA Admin Console
+                            </a>
+                        </p>
+                    </div>
+
+                    {/* Secret Key */}
+                    <div className="settings-field">
+                        <label>reCAPTCHA Secret Key</label>
+                        <Input.Password
+                            value={recaptchaSecretKey}
+                            onChange={e => setRecaptchaSecretKey(e.target.value)}
+                            placeholder="6Lcng-EsAAAAA..."
+                            style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 13 }}
+                        />
+                        <p className="hint">
+                            Sử dụng Secret Key để xác thực ở phía server. Không chia sẻ key này cho bất kỳ ai.
+                        </p>
+                    </div>
+
+                    {/* Domain info */}
+                    <div style={{ padding: '14px 18px', background: '#eef2ff', borderRadius: 10, border: '1px solid #c7d2fe', marginBottom: 20 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                            <Shield size={15} color="#4f46e5" />
+                            <span style={{ fontSize: 13, fontWeight: 700, color: '#3730a3' }}>Domain đã đăng ký</span>
+                        </div>
+                        <p style={{ fontSize: 12, color: '#4338ca', margin: 0, lineHeight: 1.6 }}>
+                            <strong>nemark.vn</strong> — Đã được đăng ký với Google reCAPTCHA.
+                            Khi dev local, hãy để trạng thái <strong>OFF</strong>. Khi deploy production trên <code style={{ background: 'rgba(99,102,241,0.1)', padding: '2px 6px', borderRadius: 4 }}>nemark.vn</code>, chuyển sang <strong>ON</strong>.
+                        </p>
+                    </div>
+
+                    {/* Save Button */}
+                    <button
+                        onClick={saveRecaptcha}
+                        disabled={saving}
+                        style={{
+                            display: 'flex', alignItems: 'center', gap: 8,
+                            padding: '10px 28px', borderRadius: 10,
+                            background: 'linear-gradient(135deg, #10b981, #059669)',
+                            color: '#fff', fontWeight: 700, fontSize: 14,
+                            border: 'none', cursor: 'pointer',
+                            boxShadow: '0 4px 14px rgba(16, 185, 129, 0.3)',
+                            transition: 'all 0.2s',
+                        }}
+                    >
+                        {saving ? '⏳ Đang lưu...' : '💾 Lưu Ngay'}
+                    </button>
+                </PanelCard>
+            )}
+
+            {/* ── Google OAuth ── */}
+            {subTab === 'google_oauth' && (
+                <PanelCard title="Cấu hình Google OAuth" subtitle="Cho phép người dùng đăng nhập bằng tài khoản Google">
+                    {/* Status Toggle */}
+                    <div className="settings-field">
+                        <label>Trạng thái</label>
+                        <Select
+                            value={googleEnabled ? 'ON' : 'OFF'}
+                            onChange={(v: string) => setGoogleEnabled(v === 'ON')}
+                            style={{ width: '100%' }}
+                            options={[
+                                { value: 'OFF', label: '🔴 OFF — Tắt đăng nhập Google' },
+                                { value: 'ON', label: '🟢 ON — Bật đăng nhập Google' },
+                            ]}
+                        />
+                    </div>
+
+                    {/* Client ID */}
+                    <div className="settings-field">
+                        <label>Client ID</label>
+                        <Input
+                            value={googleClientId}
+                            onChange={e => setGoogleClientId(e.target.value)}
+                            placeholder="xxxx-xxxx.apps.googleusercontent.com"
+                            style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12 }}
+                        />
+                        <p className="hint">
+                            Lấy từ{' '}
+                            <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer" style={{ color: '#6366f1' }}>
+                                Google Cloud Console → APIs → Credentials
+                            </a>
+                        </p>
+                    </div>
+
+                    {/* Client Secret */}
+                    <div className="settings-field">
+                        <label>Client Secret</label>
+                        <Input.Password
+                            value={googleClientSecret}
+                            onChange={e => setGoogleClientSecret(e.target.value)}
+                            placeholder="GOCSPX-..."
+                            style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12 }}
+                        />
+                    </div>
+
+                    {/* Callback URL */}
+                    <div className="settings-field">
+                        <label>Callback URL</label>
+                        <Input
+                            value={googleCallbackUrl}
+                            onChange={e => setGoogleCallbackUrl(e.target.value)}
+                            placeholder="http://localhost/api/google-auth"
+                            style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12 }}
+                        />
+                        <p className="hint">
+                            URL callback phải khớp với cấu hình trong Google Cloud Console. 
+                            Khi deploy production: <code style={{ background: '#f1f5f9', padding: '2px 6px', borderRadius: 4 }}>https://nemark.vn/api/google-auth</code>
+                        </p>
+                    </div>
+
+                    {/* Info box */}
+                    <div style={{ padding: '14px 18px', background: '#fff7ed', borderRadius: 10, border: '1px solid #fed7aa', marginBottom: 20 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                            <AlertTriangle size={15} color="#ea580c" />
+                            <span style={{ fontSize: 13, fontWeight: 700, color: '#9a3412' }}>Lưu ý quan trọng</span>
+                        </div>
+                        <p style={{ fontSize: 12, color: '#9a3412', margin: 0, lineHeight: 1.6 }}>
+                            Nếu để trống Client ID hoặc Client Secret ở đây, hệ thống sẽ sử dụng giá trị từ file <code style={{ background: 'rgba(234,88,12,0.1)', padding: '2px 6px', borderRadius: 4 }}>.env</code> làm fallback.
+                            Chỉ cần điền ở đây khi muốn thay đổi mà không cần restart server.
+                        </p>
+                    </div>
+
+                    {/* Save Button */}
+                    <button
+                        onClick={saveGoogleOAuth}
+                        disabled={saving}
+                        style={{
+                            display: 'flex', alignItems: 'center', gap: 8,
+                            padding: '10px 28px', borderRadius: 10,
+                            background: 'linear-gradient(135deg, #10b981, #059669)',
+                            color: '#fff', fontWeight: 700, fontSize: 14,
+                            border: 'none', cursor: 'pointer',
+                            boxShadow: '0 4px 14px rgba(16, 185, 129, 0.3)',
+                            transition: 'all 0.2s',
+                        }}
+                    >
+                        {saving ? '⏳ Đang lưu...' : '💾 Lưu Ngay'}
+                    </button>
+                </PanelCard>
             )}
         </>
     );

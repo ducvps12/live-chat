@@ -23,6 +23,14 @@ export const zaloService = {
         const res = await httpClient.get(`/workspaces/${workspaceId}/zalo/sync/status`);
         return res.data;
     },
+    syncAccount: async (workspaceId: string, accountId: string) => {
+        const res = await httpClient.post(`/workspaces/${workspaceId}/zalo/accounts/${accountId}/sync`);
+        return res.data;
+    },
+    reconnectAccount: async (workspaceId: string, accountId: string) => {
+        const res = await httpClient.post(`/workspaces/${workspaceId}/zalo/accounts/${accountId}/reconnect`);
+        return res.data;
+    },
     getGroups: async (workspaceId: string) => {
         const res = await httpClient.get(`/workspaces/${workspaceId}/zalo/groups`);
         return res.data;

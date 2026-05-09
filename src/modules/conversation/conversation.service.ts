@@ -23,6 +23,14 @@ const _botReplyTimestamps = new Map<string, number>();
 const BOT_REPLY_COOLDOWN_MS = 10_000; // 10 seconds between bot replies per conversation
 const AGENT_REPLY_SUPPRESS_MS = 60_000; // If human agent replied within 60s, skip bot
 
+/**
+ * Debounce map for lead auto-sync.
+ * Prevents hammering DB on rapid successive messages from the same user.
+ * Maps `userId` → last sync timestamp.
+ */
+const _leadSyncTimestamps = new Map<string, number>();
+const LEAD_SYNC_DEBOUNCE_MS = 30_000; // Only sync once per 30 seconds per user
+
 export const conversationService = {
     /**
      * Find existing open conversation for visitor, or create a new one.
@@ -204,10 +212,29 @@ export const conversationService = {
             }
         }
 
+        // Backfill metadata.accountId on existing conversations that don't have it
+        if (conversation && !isNew && zaloAccountId && zaloAccountName) {
+            const existingAccountId = (conversation as any).metadata?.accountId;
+            if (!existingAccountId) {
+                try {
+                    await prisma.conversation.update({
+                        where: { id: getId(conversation) },
+                        data: {
+                            metadata: {
+                                ...((conversation as any).metadata || {}),
+                                accountId: zaloAccountId,
+                                pageName: zaloAccountName,
+                            }
+                        }
+                    });
+                } catch { /* silent - metadata update is best-effort */ }
+            }
+        }
+
         // Add message to conversation
         // For group messages: use individual sender name instead of group name
         const messageSenderName = groupSenderName || zaloUserName;
-        return this.addMessage(
+        const result = await this.addMessage(
             getId(conversation),
             { type: 'visitor', id: visitorId, name: messageSenderName },
             content,
@@ -215,6 +242,14 @@ export const conversationService = {
             attachments,
             clientMessageId
         );
+
+        // ── Auto-Sync Lead from incoming Zalo message ──
+        // Non-blocking: runs in background, errors are silently caught
+        this.autoSyncLeadFromZalo(workspaceId, zaloUserId, zaloUserName, zaloAvatar, content, 'zalo').catch(
+            err => console.error('[ConvService] Auto-sync lead error:', err)
+        );
+
+        return result;
     },
 
     /**
@@ -367,7 +402,7 @@ export const conversationService = {
             }
         }
 
-        return this.addMessage(
+        const result = await this.addMessage(
             getId(conversation),
             { type: 'visitor', id: visitorId, name: fbUserName },
             content,
@@ -375,6 +410,13 @@ export const conversationService = {
             attachments,
             clientMessageId
         );
+
+        // ── Auto-Sync Lead from incoming Facebook message ──
+        this.autoSyncLeadFromZalo(workspaceId, fbUserId, fbUserName, fbAvatar || '', content, 'facebook').catch(
+            err => console.error('[ConvService] Auto-sync FB lead error:', err)
+        );
+
+        return result;
     },
 
     /**
@@ -1332,5 +1374,88 @@ export const conversationService = {
         options?: { status?: string; limit?: number }
     ) {
         return conversationRepo.searchByMessageContent(workspaceId, query, options);
+    },
+
+    /**
+     * Auto-sync Lead from incoming messages.
+     * Creates a new Lead if none exists, or updates lastContactedAt + extracted info.
+     * Runs asynchronously (fire-and-forget) to not block message processing.
+     */
+    async autoSyncLeadFromZalo(
+        workspaceId: string,
+        userId: string,
+        userName: string,
+        avatar: string,
+        messageContent: string,
+        source: 'zalo' | 'facebook' = 'zalo'
+    ) {
+        try {
+            // ── Debounce: skip if synced recently for this user ──
+            const lastSync = _leadSyncTimestamps.get(userId);
+            if (lastSync && Date.now() - lastSync < LEAD_SYNC_DEBOUNCE_MS) {
+                return; // Already synced within debounce window
+            }
+            _leadSyncTimestamps.set(userId, Date.now());
+
+            // Determine lookup field
+            const lookupField = source === 'facebook' ? 'fbUserId' : 'zaloUserId';
+            const lookupValue = userId;
+
+            // Check if lead already exists
+            const existing = await prisma.lead.findFirst({
+                where: { workspaceId, [lookupField]: lookupValue },
+            });
+
+            // Extract email/phone from message content (simple regex)
+            let extractedEmail = '';
+            let extractedPhone = '';
+            if (messageContent && messageContent.length > 3) {
+                const emailMatch = messageContent.match(/[\w.+-]+@[\w-]+\.[\w.]+/);
+                if (emailMatch) extractedEmail = emailMatch[0];
+                const phoneMatch = messageContent.match(/(?:^|\s)(0\d{9,10}|(?:\+84)\d{9,10})(?:\s|$)/);
+                if (phoneMatch) extractedPhone = phoneMatch[1];
+            }
+
+            if (existing) {
+                // Update existing lead: lastContactedAt + increment conversationCount + fill missing info
+                const updates: any = { lastContactedAt: new Date() };
+
+                // Fill missing info from message content
+                if (extractedEmail && !existing.email) updates.email = extractedEmail;
+                if (extractedPhone && !existing.phone) updates.phone = extractedPhone;
+                if (avatar && !existing.avatar) updates.avatar = avatar;
+                if (userName && existing.name !== userName && userName.length > 2) {
+                    // Don't overwrite with generic names like "Thành viên xxx"
+                    if (!userName.startsWith('Thành viên') && !userName.startsWith('FB User')) {
+                        updates.name = userName;
+                    }
+                }
+
+                await prisma.lead.update({
+                    where: { id: existing.id },
+                    data: updates,
+                });
+            } else {
+                // Create new lead
+                await prisma.lead.create({
+                    data: {
+                        workspaceId,
+                        name: userName || `${source === 'facebook' ? 'FB' : 'Zalo'} User ${userId.slice(-6)}`,
+                        phone: extractedPhone,
+                        email: extractedEmail,
+                        avatar: avatar || '',
+                        stage: 'mới',
+                        source,
+                        [lookupField]: userId,
+                        lastContactedAt: new Date(),
+                        conversationCount: 1,
+                    },
+                });
+                console.log(`[ConvService] Auto-created Lead for ${source} user ${userId} (${userName})`);
+            }
+        } catch (err) {
+            // Non-critical: log and move on
+            console.error(`[ConvService] autoSyncLead error for ${source}/${userId}:`, err);
+        }
     },
 };

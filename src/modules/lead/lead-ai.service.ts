@@ -1,8 +1,8 @@
 import axios from 'axios';
-import mongoose from 'mongoose';
-import { LeadModel, ILead } from './lead.model';
-import { MessageModel } from '../conversation/repos/message.model';
+import prisma from '../../infra/prisma';
 import { ConversationModel } from '../conversation/repos/conversation.model';
+import { MessageModel } from '../conversation/repos/message.model';
+import mongoose from 'mongoose';
 
 // ── AI API configuration ──
 const AI_API_URL = process.env.AI_API_URL || 'https://rk674rm.9router.com/v1';
@@ -40,6 +40,8 @@ const INTENT_TO_STAGE: Record<string, string> = {
     'khiếu_nại': 'khách_hàng',
     'khác': 'mới',
 };
+
+const STAGE_ORDER = ['mới', 'tiềm_năng', 'đang_tư_vấn', 'chốt_đơn', 'khách_hàng'];
 
 /**
  * Build the analysis prompt for AI
@@ -86,7 +88,7 @@ async function callAIAnalysis(conversationText: string): Promise<AIAnalysisResul
                     { role: 'user', content: `Phân tích cuộc hội thoại sau:\n\n${conversationText}` },
                 ],
                 max_tokens: 800,
-                temperature: 0.3, // Low temperature for more consistent JSON output
+                temperature: 0.3,
                 top_p: 0.9,
             },
             {
@@ -94,7 +96,7 @@ async function callAIAnalysis(conversationText: string): Promise<AIAnalysisResul
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${AI_API_KEY}`,
                 },
-                timeout: 60000, // 60s for analysis
+                timeout: 60000,
             }
         );
 
@@ -104,20 +106,15 @@ async function callAIAnalysis(conversationText: string): Promise<AIAnalysisResul
             return null;
         }
 
-        // Parse JSON from response (handle potential markdown wrapping)
         let jsonStr = reply.trim();
-        // Remove markdown code block if present
         if (jsonStr.startsWith('```')) {
             jsonStr = jsonStr.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
         }
         
         const parsed = JSON.parse(jsonStr) as AIAnalysisResult;
         console.log(`[LeadAI] ✅ Analysis complete:`, {
-            name: parsed.name,
-            phone: parsed.phone,
-            email: parsed.email,
-            intent: parsed.intent,
-            score: parsed.score,
+            name: parsed.name, phone: parsed.phone, email: parsed.email,
+            intent: parsed.intent, score: parsed.score,
         });
         return parsed;
     } catch (err: any) {
@@ -147,7 +144,7 @@ function formatConversationForAI(messages: any[]): string {
 export const leadAIService = {
     /**
      * Analyze a single conversation and extract customer info
-     * Creates or updates the corresponding Lead automatically
+     * Creates or updates the corresponding Lead automatically (via Prisma)
      */
     async analyzeConversation(
         workspaceId: string,
@@ -156,16 +153,16 @@ export const leadAIService = {
     ): Promise<{ analysis: AIAnalysisResult | null; lead: any | null; conversationId: string }> {
         const { autoCreateLead = true } = options || {};
 
-        // 1. Get conversation
+        // 1. Get conversation (Mongoose)
         const conversation = await ConversationModel.findById(conversationId).lean();
         if (!conversation) {
             throw new Error('Cuộc hội thoại không tồn tại');
         }
 
-        // 2. Get messages
+        // 2. Get messages (Mongoose)
         const messages = await MessageModel.find({ conversationId: new mongoose.Types.ObjectId(conversationId) })
             .sort({ createdAt: 1 })
-            .limit(50) // Last 50 messages for context
+            .limit(50)
             .lean();
 
         if (messages.length < 2) {
@@ -184,7 +181,7 @@ export const leadAIService = {
             return { analysis: null, lead: null, conversationId };
         }
 
-        // 4. Store analysis result in conversation metadata
+        // 4. Store analysis result in conversation metadata (Mongoose)
         await ConversationModel.findByIdAndUpdate(conversationId, {
             $set: {
                 'metadata.aiAnalysis': {
@@ -195,7 +192,7 @@ export const leadAIService = {
             },
         });
 
-        // 5. Auto-create/update Lead if enabled
+        // 5. Auto-create/update Lead if enabled (Prisma)
         let lead = null;
         if (autoCreateLead) {
             lead = await this.upsertLeadFromAnalysis(workspaceId, conversation, analysis);
@@ -205,7 +202,7 @@ export const leadAIService = {
     },
 
     /**
-     * Create or update a Lead from AI analysis results
+     * Create or update a Lead from AI analysis results (Prisma)
      */
     async upsertLeadFromAnalysis(
         workspaceId: string,
@@ -215,148 +212,104 @@ export const leadAIService = {
         const visitorId = conversation.visitorId;
         const channel = conversation.channel || 'widget';
 
-        // Determine source from channel
-        const sourceMap: Record<string, string> = {
-            'zalo': 'zalo',
-            'facebook': 'facebook',
-            'widget': 'widget',
-        };
+        const sourceMap: Record<string, string> = { 'zalo': 'zalo', 'facebook': 'facebook', 'widget': 'widget' };
         const source = sourceMap[channel] || 'widget';
 
-        // Look for existing lead by visitorId metadata
+        // Look for existing lead by platform userId (Prisma)
         let existingLead = null;
+        let lookupField = '';
+        let lookupValue = '';
 
         if (channel === 'zalo') {
-            const zaloUserId = conversation.metadata?.zaloUserId || visitorId.replace('zalo_', '');
-            existingLead = await LeadModel.findOne({
-                workspaceId: new mongoose.Types.ObjectId(workspaceId),
-                zaloUserId,
-            });
+            lookupField = 'zaloUserId';
+            lookupValue = conversation.metadata?.zaloUserId || visitorId.replace('zalo_', '');
+            existingLead = await prisma.lead.findFirst({ where: { workspaceId, zaloUserId: lookupValue } });
         } else if (channel === 'facebook') {
-            const fbUserId = conversation.metadata?.fbUserId || visitorId.replace('fb_', '');
-            existingLead = await LeadModel.findOne({
-                workspaceId: new mongoose.Types.ObjectId(workspaceId),
-                fbUserId,
-            });
+            lookupField = 'fbUserId';
+            lookupValue = conversation.metadata?.fbUserId || visitorId.replace('fb_', '');
+            existingLead = await prisma.lead.findFirst({ where: { workspaceId, fbUserId: lookupValue } });
         }
 
-        // Also try matching by name from conversation visitor info
+        // Also try matching by name if no platform match
         if (!existingLead && conversation.visitorInfo?.name) {
-            existingLead = await LeadModel.findOne({
-                workspaceId: new mongoose.Types.ObjectId(workspaceId),
-                name: conversation.visitorInfo.name,
-                source,
+            existingLead = await prisma.lead.findFirst({
+                where: { workspaceId, name: conversation.visitorInfo.name, source },
             });
         }
 
-        // Build update data from analysis
-        const updateData: any = {};
-        if (analysis.phone && analysis.phone !== 'null') updateData.phone = analysis.phone;
-        if (analysis.email && analysis.email !== 'null') updateData.email = analysis.email;
-        if (analysis.score !== undefined && analysis.score !== null) updateData.score = Math.min(100, Math.max(0, analysis.score));
-        
-        // Build tags from analysis
+        // Build AI tags
         const aiTags: string[] = [];
         if (analysis.intent) aiTags.push(`intent:${analysis.intent}`);
         if (analysis.sentiment) aiTags.push(`sentiment:${analysis.sentiment}`);
         if (analysis.urgency) aiTags.push(`urgency:${analysis.urgency}`);
-        if (analysis.products?.length) {
-            analysis.products.forEach(p => aiTags.push(`product:${p}`));
-        }
-        if (analysis.tags?.length) {
-            analysis.tags.forEach(t => aiTags.push(t));
-        }
+        if (analysis.products?.length) analysis.products.forEach(p => aiTags.push(`product:${p}`));
+        if (analysis.tags?.length) analysis.tags.forEach(t => aiTags.push(t));
 
-        // Store AI summary in metadata
-        const aiMetadata = {
-            aiSummary: analysis.summary || '',
-            aiIntent: analysis.intent || 'khác',
-            aiScore: analysis.score || 0,
-            aiSentiment: analysis.sentiment || 'trung_lập',
-            aiUrgency: analysis.urgency || 'thấp',
-            aiProducts: analysis.products || [],
-            aiAnalyzedAt: new Date(),
-        };
+        // Build AI note
+        const aiNote = analysis.summary
+            ? `🤖 AI Phân tích: ${analysis.summary}${analysis.intent ? ` | Ý định: ${INTENT_LABELS[analysis.intent] || analysis.intent}` : ''}${analysis.score !== undefined ? ` | Score: ${analysis.score}/100` : ''}`
+            : null;
 
         if (existingLead) {
-            // Update existing lead — merge, don't overwrite existing data
-            const mergedUpdate: any = { ...updateData };
-            if (updateData.phone && existingLead.phone) delete mergedUpdate.phone; // Don't overwrite existing phone
-            if (updateData.email && existingLead.email) delete mergedUpdate.email; // Don't overwrite existing email
+            // Update existing lead
+            const updates: any = {};
+            if (analysis.phone && analysis.phone !== 'null' && !existingLead.phone) updates.phone = analysis.phone;
+            if (analysis.email && analysis.email !== 'null' && !existingLead.email) updates.email = analysis.email;
+            if (analysis.score !== undefined && analysis.score !== null) updates.score = Math.min(100, Math.max(0, analysis.score));
 
             // Update name from AI if visitor has generic name
             if (analysis.name && analysis.name !== 'null' && (!existingLead.name || existingLead.name.startsWith('Thành viên'))) {
-                mergedUpdate.name = analysis.name;
+                updates.name = analysis.name;
             }
 
-            // Suggested stage from intent
+            // Suggested stage from intent (only upgrade, never downgrade)
             if (analysis.intent && INTENT_TO_STAGE[analysis.intent]) {
                 const suggestedStage = INTENT_TO_STAGE[analysis.intent];
-                // Only auto-upgrade stage, never downgrade
-                const stageOrder = ['mới', 'tiềm_năng', 'đang_tư_vấn', 'chốt_đơn', 'khách_hàng'];
-                const currentIdx = stageOrder.indexOf(existingLead.stage);
-                const suggestedIdx = stageOrder.indexOf(suggestedStage);
+                const currentIdx = STAGE_ORDER.indexOf(existingLead.stage);
+                const suggestedIdx = STAGE_ORDER.indexOf(suggestedStage);
                 if (suggestedIdx > currentIdx && existingLead.stage !== 'từ_chối') {
-                    mergedUpdate.stage = suggestedStage;
+                    updates.stage = suggestedStage;
                 }
             }
 
             // Merge tags (avoid duplicates)
-            const existingTags = new Set(existingLead.tags || []);
-            const newTags = aiTags.filter(t => !existingTags.has(t));
-            
-            const updateOp: any = { $set: mergedUpdate };
-            if (newTags.length > 0) {
-                updateOp.$addToSet = { tags: { $each: newTags } };
+            const existingTags = (existingLead.tags as string[]) || [];
+            const mergedTags = [...new Set([...existingTags, ...aiTags])];
+            updates.tags = mergedTags;
+
+            // Add AI note
+            if (aiNote) {
+                const existingNotes = (existingLead.notes as any[]) || [];
+                existingNotes.push({ text: aiNote, createdAt: new Date(), createdBy: null });
+                updates.notes = existingNotes;
             }
 
-            // Store AI analysis in notes
-            if (analysis.summary) {
-                updateOp.$push = {
-                    notes: {
-                        text: `🤖 AI Phân tích: ${analysis.summary}${analysis.intent ? ` | Ý định: ${INTENT_LABELS[analysis.intent] || analysis.intent}` : ''}${analysis.score !== undefined ? ` | Score: ${analysis.score}/100` : ''}`,
-                        createdAt: new Date(),
-                        createdBy: null,
-                    },
-                };
-            }
-
-            const updated = await LeadModel.findByIdAndUpdate(existingLead._id, updateOp, { new: true }).lean();
-            console.log(`[LeadAI] ✅ Updated lead ${existingLead._id} with AI analysis`);
+            const updated = await prisma.lead.update({ where: { id: existingLead.id }, data: updates });
+            console.log(`[LeadAI] ✅ Updated lead ${existingLead.id} with AI analysis`);
             return updated;
         } else {
             // Create new lead
             const visitorName = analysis.name || conversation.visitorInfo?.name || `Khách ${visitorId.slice(-6)}`;
-            const newLeadData: Partial<ILead> = {
-                workspaceId: new mongoose.Types.ObjectId(workspaceId) as any,
-                name: visitorName,
-                phone: updateData.phone || '',
-                email: updateData.email || '',
-                avatar: conversation.visitorInfo?.avatar || '',
-                stage: (analysis.intent ? (INTENT_TO_STAGE[analysis.intent] as any) : 'mới') || 'mới',
-                source: source as any,
-                score: updateData.score || 0,
-                tags: aiTags,
-                conversationCount: 1,
-                lastContactedAt: new Date(),
-                notes: analysis.summary ? [{
-                    text: `🤖 AI Phân tích: ${analysis.summary}${analysis.intent ? ` | Ý định: ${INTENT_LABELS[analysis.intent] || analysis.intent}` : ''}${analysis.score !== undefined ? ` | Score: ${analysis.score}/100` : ''}`,
-                    createdAt: new Date(),
-                    createdBy: null as any,
-                }] : [],
-            };
-
-            // Set platform-specific IDs
-            if (channel === 'zalo') {
-                newLeadData.zaloUserId = conversation.metadata?.zaloUserId || visitorId.replace('zalo_', '');
-            } else if (channel === 'facebook') {
-                newLeadData.fbUserId = conversation.metadata?.fbUserId || visitorId.replace('fb_', '');
-            }
-
-            const lead = new LeadModel(newLeadData);
-            await lead.save();
-            console.log(`[LeadAI] ✅ Created new lead ${lead._id} from AI analysis`);
-            return lead.toObject();
+            const newLead = await prisma.lead.create({
+                data: {
+                    workspaceId,
+                    name: visitorName,
+                    phone: (analysis.phone && analysis.phone !== 'null') ? analysis.phone : '',
+                    email: (analysis.email && analysis.email !== 'null') ? analysis.email : '',
+                    avatar: conversation.visitorInfo?.avatar || '',
+                    stage: (analysis.intent ? (INTENT_TO_STAGE[analysis.intent] || 'mới') : 'mới'),
+                    source,
+                    score: Math.min(100, Math.max(0, analysis.score || 0)),
+                    tags: aiTags,
+                    ...(channel === 'zalo' ? { zaloUserId: lookupValue } : {}),
+                    ...(channel === 'facebook' ? { fbUserId: lookupValue } : {}),
+                    lastContactedAt: new Date(),
+                    conversationCount: 1,
+                    notes: aiNote ? [{ text: aiNote, createdAt: new Date(), createdBy: null }] : [],
+                },
+            });
+            console.log(`[LeadAI] ✅ Created new lead ${newLead.id} from AI analysis`);
+            return newLead;
         }
     },
 
@@ -375,9 +328,8 @@ export const leadAIService = {
         results: Array<{ conversationId: string; status: string; intent?: string; score?: number }>;
     }> {
         const { limit = 50, forceReanalyze = false } = options || {};
-        const cutoffDate = new Date(Date.now() - 24 * 60 * 60 * 1000); // 24h ago
+        const cutoffDate = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
-        // Find conversations to analyze
         const filter: any = {
             workspaceId: new mongoose.Types.ObjectId(workspaceId),
         };
@@ -424,7 +376,7 @@ export const leadAIService = {
                     });
                 }
 
-                // Rate limiting: wait 1s between calls to avoid overloading API
+                // Rate limiting: wait 1s between calls
                 await new Promise(resolve => setTimeout(resolve, 1000));
             } catch (err: any) {
                 failed++;
@@ -436,18 +388,12 @@ export const leadAIService = {
             }
         }
 
-        return {
-            total: conversations.length,
-            analyzed,
-            skipped,
-            failed,
-            results,
-        };
+        return { total: conversations.length, analyzed, skipped, failed, results };
     },
 
     /**
      * Quick analysis: extract just phone/email/name from recent messages
-     * Used for auto-extraction hook (lightweight, no full analysis)
+     * Used for auto-extraction hook (lightweight, no full AI call)
      */
     async quickExtract(
         workspaceId: string,
@@ -462,13 +408,11 @@ export const leadAIService = {
 
             if (visitorMessages.length < 10) return;
 
-            // Quick regex extraction (no AI call needed for basic info)
             const phoneMatch = visitorMessages.match(/(?:\+84|0)[\s.-]?\d{2,3}[\s.-]?\d{3}[\s.-]?\d{3,4}/);
             const emailMatch = visitorMessages.match(/[\w.+-]+@[\w-]+\.[\w.]+/);
 
             if (!phoneMatch && !emailMatch) return;
 
-            // Find conversation to get visitor info
             const conversation = await ConversationModel.findById(conversationId).lean();
             if (!conversation) return;
 
@@ -477,16 +421,10 @@ export const leadAIService = {
 
             if (channel === 'zalo') {
                 const zaloUserId = (conversation as any).metadata?.zaloUserId || conversation.visitorId.replace('zalo_', '');
-                lead = await LeadModel.findOne({
-                    workspaceId: new mongoose.Types.ObjectId(workspaceId),
-                    zaloUserId,
-                });
+                lead = await prisma.lead.findFirst({ where: { workspaceId, zaloUserId } });
             } else if (channel === 'facebook') {
                 const fbUserId = (conversation as any).metadata?.fbUserId || conversation.visitorId.replace('fb_', '');
-                lead = await LeadModel.findOne({
-                    workspaceId: new mongoose.Types.ObjectId(workspaceId),
-                    fbUserId,
-                });
+                lead = await prisma.lead.findFirst({ where: { workspaceId, fbUserId } });
             }
 
             if (lead) {
@@ -495,8 +433,8 @@ export const leadAIService = {
                 if (emailMatch && !lead.email) updates.email = emailMatch[0];
 
                 if (Object.keys(updates).length > 0) {
-                    await LeadModel.findByIdAndUpdate(lead._id, { $set: updates });
-                    console.log(`[LeadAI] Quick-extracted info for lead ${lead._id}:`, updates);
+                    await prisma.lead.update({ where: { id: lead.id }, data: updates });
+                    console.log(`[LeadAI] Quick-extracted info for lead ${lead.id}:`, updates);
                 }
             }
         } catch (err) {
@@ -510,5 +448,157 @@ export const leadAIService = {
     async getAnalysis(conversationId: string): Promise<AIAnalysisResult | null> {
         const conv = await ConversationModel.findById(conversationId).select('metadata').lean();
         return (conv as any)?.metadata?.aiAnalysis || null;
+    },
+
+    /**
+     * Get lead activity timeline — combines messages, stage changes, and notes
+     */
+    async getLeadTimeline(workspaceId: string, leadId: string): Promise<any[]> {
+        const lead = await prisma.lead.findUnique({ where: { id: leadId } });
+        if (!lead) throw new Error('Lead không tồn tại');
+
+        const timeline: any[] = [];
+
+        // Add notes to timeline
+        const notes = (lead.notes as any[]) || [];
+        notes.forEach(note => {
+            timeline.push({
+                type: 'note',
+                content: note.text,
+                createdAt: note.createdAt,
+                createdBy: note.createdBy,
+                icon: note.text?.startsWith('🤖') ? 'ai' : 'note',
+            });
+        });
+
+        // Find conversations linked to this lead
+        const lookupId = lead.zaloUserId || lead.fbUserId || '';
+        if (lookupId) {
+            const prefix = lead.source === 'facebook' ? 'fb_' : 'zalo_';
+            const conversations = await ConversationModel.find({
+                visitorId: `${prefix}${lookupId}`,
+            })
+                .select('_id status lastMessageAt visitorInfo metadata createdAt')
+                .sort({ lastMessageAt: -1 })
+                .limit(10)
+                .lean();
+
+            for (const conv of conversations) {
+                // Add conversation start event
+                timeline.push({
+                    type: 'conversation',
+                    content: `Cuộc hội thoại ${conv.status === 'closed' ? '(đã đóng)' : '(đang mở)'}`,
+                    createdAt: conv.createdAt,
+                    conversationId: (conv._id as any).toString(),
+                    status: conv.status,
+                    icon: 'message',
+                });
+
+                // Get last 3 messages from this conversation
+                const messages = await MessageModel.find({
+                    conversationId: conv._id,
+                    isDeleted: { $ne: true },
+                    'sender.type': 'visitor',
+                })
+                    .sort({ createdAt: -1 })
+                    .limit(3)
+                    .lean();
+
+                messages.reverse().forEach(msg => {
+                    timeline.push({
+                        type: 'message',
+                        content: msg.content?.substring(0, 200) || '[Đính kèm]',
+                        createdAt: msg.createdAt,
+                        conversationId: (conv._id as any).toString(),
+                        senderName: msg.sender?.name,
+                        icon: 'chat',
+                    });
+                });
+            }
+        }
+
+        // Add creation event
+        timeline.push({
+            type: 'created',
+            content: `Lead được tạo từ ${lead.source}`,
+            createdAt: lead.createdAt,
+            icon: 'star',
+        });
+
+        // Sort by date (newest first)
+        timeline.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+        return timeline;
+    },
+
+    /**
+     * Score all leads based on activity (batch job)
+     * Updates score based on: message count, recency, conversation count
+     */
+    async autoScoreLeads(workspaceId: string): Promise<{ updated: number }> {
+        const leads = await prisma.lead.findMany({
+            where: { workspaceId, stage: { notIn: ['từ_chối', 'khách_hàng'] } },
+        });
+
+        let updated = 0;
+        for (const lead of leads) {
+            const lookupId = lead.zaloUserId || lead.fbUserId || '';
+            if (!lookupId) continue;
+
+            const prefix = lead.source === 'facebook' ? 'fb_' : 'zalo_';
+            
+            // Count conversations and messages for this lead
+            const conversations = await ConversationModel.find({
+                visitorId: `${prefix}${lookupId}`,
+            }).select('_id lastMessageAt').lean();
+
+            let totalMessages = 0;
+            for (const conv of conversations) {
+                const msgCount = await MessageModel.countDocuments({
+                    conversationId: conv._id,
+                    'sender.type': 'visitor',
+                    isDeleted: { $ne: true },
+                });
+                totalMessages += msgCount;
+            }
+
+            // Calculate score
+            let score = 0;
+            // Messages factor (0-30 points)
+            score += Math.min(30, totalMessages * 3);
+            // Conversation count factor (0-20 points)
+            score += Math.min(20, conversations.length * 5);
+            // Recency factor (0-25 points)
+            if (lead.lastContactedAt) {
+                const daysSinceContact = (Date.now() - new Date(lead.lastContactedAt).getTime()) / (1000 * 60 * 60 * 24);
+                if (daysSinceContact < 1) score += 25;
+                else if (daysSinceContact < 3) score += 20;
+                else if (daysSinceContact < 7) score += 15;
+                else if (daysSinceContact < 14) score += 10;
+                else if (daysSinceContact < 30) score += 5;
+            }
+            // Contact info factor (0-15 points)
+            if (lead.phone) score += 8;
+            if (lead.email) score += 7;
+            // Has been engaged before (0-10)
+            if (lead.conversationCount > 0) score += Math.min(10, lead.conversationCount * 2);
+
+            score = Math.min(100, score);
+
+            // Update if score changed
+            if (score !== lead.score) {
+                await prisma.lead.update({
+                    where: { id: lead.id },
+                    data: {
+                        score,
+                        conversationCount: conversations.length,
+                    },
+                });
+                updated++;
+            }
+        }
+
+        console.log(`[LeadAI] Auto-scored ${updated}/${leads.length} leads in workspace ${workspaceId}`);
+        return { updated };
     },
 };

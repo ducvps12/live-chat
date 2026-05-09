@@ -30,6 +30,8 @@ router.patch('/contacts/:zaloUserId', zaloController.updateContact); // PATCH (u
 // ── Friends (live from Zalo session) ──
 router.get('/friends', zaloController.getFriends);               // GET ?search=...&page=1&limit=50
 router.post('/backfill-avatars', zaloController.backfillAvatars); // POST — backfill missing avatars
+router.post('/accounts/:accountId/sync', zaloController.syncAccount); // POST — sync name + data for specific account
+router.post('/accounts/:accountId/reconnect', zaloController.reconnectAccount); // POST — reconnect disconnected account
 
 // ── Historical Sync ──
 router.post('/sync', zaloController.startSync);                  // POST — start full history sync

@@ -14,7 +14,9 @@ import {
     getZaloConversations,
     getZaloMessages,
     ZaloIncomingMessage,
+    ZaloReactionEvent,
     isZaloSessionConnected,
+    hasStoredCredentials,
     migrateZaloSession,
     copyZaloCredentials,
     getZaloGroups,
@@ -24,6 +26,8 @@ import {
     getZaloFriendIds,
     getZaloAliasList,
 } from '../../infra/zaloService';
+import { emitToConversation } from '../../infra/socket';
+import prisma from '../../infra/prisma';
 
 class ZaloService {
     // Map accountId → workspaceId for message routing
@@ -50,7 +54,9 @@ class ZaloService {
                     await restoreZaloSession(
                         accountId,
                         (msg) => this.handleMessage(workspaceId, msg, accountId),
-                        (err) => console.error(`[ZaloService] Account ${accountId} listener error:`, err)
+                        (err) => console.error(`[ZaloService] Account ${accountId} listener error:`, err),
+                        undefined, // onUndo
+                        (reaction) => this.handleReaction(workspaceId, reaction)
                     );
                     console.log(`[ZaloService] Successfully booted account ${accountId} for workspace ${workspaceId}`);
 
@@ -58,29 +64,74 @@ class ZaloService {
                     const currentName = account.name || '';
                     if (!currentName || currentName.includes('Unknown') || currentName.includes('bạn bè')) {
                         setTimeout(async () => {
+                            console.log(`[ZaloService] Auto-fix: attempting name fix for ${accountId} (current: "${currentName}")`);
                             try {
-                                const { isZaloSessionConnected } = await import('../../infra/zaloService');
-                                if (!isZaloSessionConnected(accountId)) return;
-                                
-                                const session = (await import('../../infra/zaloService')).getZaloSessionStatus(accountId);
-                                if (session !== 'connected') return;
+                                const { isZaloSessionConnected, getZaloSession } = await import('../../infra/zaloService');
+                                if (!isZaloSessionConnected(accountId)) {
+                                    console.log(`[ZaloService] Auto-fix: session not connected, skipping`);
+                                    return;
+                                }
 
-                                // Try getUserInfo to get real name
-                                const convs = await getZaloConversations(accountId);
-                                // We can't directly access session.api from here, so use a workaround:
-                                // fetch the account's own Zalo ID from DB and lookup in conversations
-                                const zaloId = account.zaloId;
-                                
-                                // Try to get own profile name from Zalo API via getZaloConversations context
-                                // The real fix: call getUserInfo via the infra layer
-                                const { getZaloUserInfo } = await import('../../infra/zaloService');
-                                if (getZaloUserInfo) {
-                                    const info = await getZaloUserInfo(accountId, zaloId);
-                                    if (info && info.displayName && info.displayName !== currentName) {
-                                        await zaloAccountRepo.update(accountId, { name: info.displayName, avatar: info.avatar || account.avatar });
-                                        this.accountNameMap.set(accountId, info.displayName);
-                                        console.log(`[ZaloService] Auto-fixed name: "${currentName}" → "${info.displayName}" for account ${accountId}`);
+                                const session = getZaloSession(accountId);
+                                if (!session?.api) {
+                                    console.log(`[ZaloService] Auto-fix: no API on session, skipping`);
+                                    return;
+                                }
+
+                                // Log available API methods
+                                const apiMethods = Object.keys(session.api).filter(k => typeof (session.api as any)[k] === 'function');
+                                console.log(`[ZaloService] Auto-fix: API methods available: ${apiMethods.join(', ')}`);
+
+                                // Get own UID first
+                                let ownId = '';
+                                try { ownId = session.api.getOwnId?.() || ''; } catch (e: any) {
+                                    console.log(`[ZaloService] Auto-fix: getOwnId error: ${e.message}`);
+                                }
+                                if (!ownId) {
+                                    try {
+                                        const ctx = (session.api as any).getContext?.();
+                                        ownId = ctx?.uid || '';
+                                        console.log(`[ZaloService] Auto-fix: getContext keys: ${ctx ? Object.keys(ctx).join(', ') : 'null'}`);
+                                    } catch (e: any) {
+                                        console.log(`[ZaloService] Auto-fix: getContext error: ${e.message}`);
                                     }
+                                }
+                                console.log(`[ZaloService] Auto-fix: ownId resolved to "${ownId}"`);
+
+                                if (ownId) {
+                                    // Look up own profile
+                                    try {
+                                        const result = await session.api.getUserInfo([ownId]);
+                                        console.log(`[ZaloService] Auto-fix: getUserInfo result type: ${typeof result}, isMap: ${result instanceof Map}`);
+                                        // Zalo API returns { changed_profiles: { uid: {...} }, unchanged_profiles: {...} }
+                                        let info: any = null;
+                                        if (result instanceof Map) {
+                                            info = result.get(ownId);
+                                        } else if (result?.changed_profiles?.[ownId]) {
+                                            info = result.changed_profiles[ownId];
+                                        } else if (result?.[ownId]) {
+                                            info = result[ownId];
+                                        } else {
+                                            info = result;
+                                        }
+                                        console.log(`[ZaloService] Auto-fix: info = ${JSON.stringify(info)?.slice(0, 300)}`);
+                                        if (info) {
+                                            const resolved = info.displayName || info.zaloName || info.name || '';
+                                            console.log(`[ZaloService] Auto-fix: resolved name = "${resolved}"`);
+                                            if (resolved && resolved !== currentName && resolved !== 'Unknown Zalo') {
+                                                await zaloAccountRepo.update(accountId, {
+                                                    name: resolved,
+                                                    avatar: info.avatar || info.thumbAvatar || account.avatar,
+                                                });
+                                                this.accountNameMap.set(accountId, resolved);
+                                                console.log(`[ZaloService] Auto-fixed name: "${currentName}" → "${resolved}" for account ${accountId}`);
+                                            }
+                                        }
+                                    } catch (e: any) {
+                                        console.warn(`[ZaloService] Auto-fix getUserInfo failed:`, e.message);
+                                    }
+                                } else {
+                                    console.log(`[ZaloService] Auto-fix: ownId is empty, cannot resolve name`);
                                 }
                             } catch (e) {
                                 console.warn(`[ZaloService] Auto-fix name failed for ${accountId}:`, e);
@@ -226,7 +277,26 @@ class ZaloService {
                         // Without this, isZaloSessionConnected(accountId) returns false
                         // because the session is stored under the temp QR session ID
                         migrateZaloSession(tempSessionId, accountId);
-                        copyZaloCredentials(tempSessionId, accountId);
+                        const credCopied = copyZaloCredentials(tempSessionId, accountId);
+
+                        // Delayed verification: if initial copy failed, retry after credentials are written
+                        if (!credCopied) {
+                            console.warn(`[ZaloService] Credential copy failed for ${accountId}, scheduling retry...`);
+                            setTimeout(() => {
+                                const { hasStoredCredentials: hasCreds } = require('../../infra/zaloService');
+                                if (!hasCreds(accountId)) {
+                                    // Try copy again (file may exist now)
+                                    const retried = copyZaloCredentials(tempSessionId, accountId);
+                                    if (!retried) {
+                                        // Last resort: capture from active API context
+                                        try {
+                                            const { writeCredentialsFromSession } = require('../../infra/zaloService');
+                                            if (writeCredentialsFromSession) writeCredentialsFromSession(accountId);
+                                        } catch { /* silent */ }
+                                    }
+                                }
+                            }, 3000);
+                        }
 
                         // Background: backfill avatars + sync history for existing conversations
                         setTimeout(() => this.backfillAvatars(workspaceId, accountId), 3000);
@@ -242,7 +312,9 @@ class ZaloService {
                         qrResolved = true;
                         reject(new Error(error));
                     }
-                }
+                },
+                undefined, // onUndo
+                (reaction) => this.handleReaction(workspaceId, reaction)
             ).catch(err => {
                 if (!qrResolved) {
                     qrResolved = true;
@@ -273,6 +345,7 @@ class ZaloService {
                 avatar: account.avatar,
                 zaloId: account.zaloId,
                 isOnline: isConnected,
+                hasCredentials: !isConnected ? hasStoredCredentials(accountId) : true,
             };
         });
 
@@ -312,6 +385,66 @@ class ZaloService {
             }
         }
         return { success: true };
+    }
+
+    /**
+     * Kết nối lại 1 Zalo account bị mất kết nối (sử dụng credentials đã lưu)
+     */
+    async reconnectAccount(workspaceId: string, accountId: string) {
+        const account = await zaloAccountRepo.findById(accountId);
+        if (!account || account.workspaceId.toString() !== workspaceId) {
+            throw new AppError('Tài khoản Zalo không tồn tại', 404, 'NOT_FOUND');
+        }
+
+        // Already connected?
+        if (isZaloSessionConnected(accountId)) {
+            return { success: true, message: 'Tài khoản đã được kết nối', name: account.name };
+        }
+
+        // Check if we have saved credentials
+        if (!hasStoredCredentials(accountId)) {
+            throw new AppError('Không có phiên kết nối đã lưu. Vui lòng quét QR mới.', 400, 'NO_CREDENTIALS');
+        }
+
+        console.log(`[ZaloService] Manual reconnect for account ${accountId} in workspace ${workspaceId}...`);
+
+        // Destroy any stale session first
+        try { await destroyZaloSession(accountId); } catch { /* ignore */ }
+
+        // Restore session from credentials
+        const success = await restoreZaloSession(
+            accountId,
+            (msg) => this.handleMessage(workspaceId, msg, accountId),
+            (err) => console.error(`[ZaloService] Reconnected account ${accountId} error:`, err),
+            undefined, // onUndo
+            (reaction) => this.handleReaction(workspaceId, reaction)
+        );
+
+        if (!success) {
+            throw new AppError('Không thể kết nối lại. Phiên có thể đã hết hạn, vui lòng quét QR mới.', 500, 'RECONNECT_FAILED');
+        }
+
+        // Re-register mappings
+        this.accountWorkspaceMap.set(accountId, workspaceId);
+        this.accountNameMap.set(accountId, account.name || 'Zalo App');
+
+        // Auto-fix name + backfill after reconnect
+        setTimeout(async () => {
+            try {
+                const { getZaloUserInfo } = await import('../../infra/zaloService');
+                if (getZaloUserInfo && account.zaloId) {
+                    const info = await getZaloUserInfo(accountId, account.zaloId);
+                    if (info?.displayName && info.displayName !== account.name) {
+                        await zaloAccountRepo.update(accountId, { name: info.displayName, avatar: info.avatar || account.avatar });
+                        this.accountNameMap.set(accountId, info.displayName);
+                    }
+                }
+            } catch { /* silent */ }
+        }, 5000);
+        setTimeout(() => this.backfillAvatars(workspaceId, accountId), 8000);
+
+        console.log(`[ZaloService] ✅ Manual reconnect successful for account ${accountId}`);
+        return { success: true, message: 'Đã kết nối lại thành công', name: account.name };
     }
 
     /**
@@ -539,6 +672,79 @@ class ZaloService {
             }
         } catch (err) {
             console.error(`[ZaloService] Error handling incoming Zalo message for Workspace ${workspaceId}:`, err);
+        }
+    }
+
+    /**
+     * Handle reaction events from Zalo → update DB + emit socket
+     */
+    private async handleReaction(workspaceId: string, reaction: ZaloReactionEvent) {
+        try {
+            // Skip empty emoji (NONE reaction = just removal with no new reaction)
+            if (!reaction.emoji && reaction.rType === 0) {
+                // This is a removal — still need to process
+            }
+
+            // Find the inbox Message by clientMessageId (which is the Zalo msgId)
+            const dbMessage = await prisma.message.findFirst({
+                where: {
+                    clientMessageId: reaction.msgId,
+                    conversation: { workspaceId },
+                },
+                select: { id: true, conversationId: true, reactions: true },
+            });
+
+            if (!dbMessage) {
+                console.log(`[ZaloService] Reaction: No inbox message found for Zalo msgId ${reaction.msgId}`);
+                return;
+            }
+
+            // Parse existing reactions
+            let reactions: Record<string, string[]> = {};
+            if (dbMessage.reactions && typeof dbMessage.reactions === 'object') {
+                reactions = dbMessage.reactions as Record<string, string[]>;
+            }
+
+            const userId = `zalo_${reaction.uidFrom}`;
+            const emoji = reaction.emoji;
+
+            if (reaction.rType === 0 || !emoji) {
+                // Remove: remove user from all emoji arrays
+                for (const key of Object.keys(reactions)) {
+                    reactions[key] = (reactions[key] || []).filter(u => u !== userId);
+                    if (reactions[key].length === 0) delete reactions[key];
+                }
+            } else {
+                // Add: remove user from other emojis first (only one reaction per user)
+                for (const key of Object.keys(reactions)) {
+                    reactions[key] = (reactions[key] || []).filter(u => u !== userId);
+                    if (reactions[key].length === 0) delete reactions[key];
+                }
+                // Add to new emoji
+                if (!reactions[emoji]) reactions[emoji] = [];
+                reactions[emoji].push(userId);
+            }
+
+            // Update DB
+            await prisma.message.update({
+                where: { id: dbMessage.id },
+                data: { reactions },
+            });
+
+            // Emit socket event to frontend
+            emitToConversation(dbMessage.conversationId, 'message:reaction', {
+                messageId: dbMessage.id,
+                conversationId: dbMessage.conversationId,
+                reactions,
+                // Extra info for UI
+                emoji,
+                userId,
+                action: reaction.rType === 0 ? 'remove' : 'add',
+            });
+
+            console.log(`[ZaloService] Reaction updated: ${emoji} on msg ${dbMessage.id} by ${userId}`);
+        } catch (err) {
+            console.error(`[ZaloService] Error handling reaction:`, err);
         }
     }
 
@@ -1105,6 +1311,115 @@ class ZaloService {
      */
     getSyncStatus(workspaceId: string): SyncJobStatus | null {
         return this.syncJobs.get(workspaceId) || null;
+    }
+
+    /**
+     * Đồng bộ dữ liệu + tên cho 1 tài khoản Zalo cụ thể
+     * - Gọi Zalo API để lấy tên thật (fetchAccountInfo / getUserInfo / friends fallback)
+     * - Cập nhật tên + avatar vào DB
+     * - Trigger backfill avatars cho các cuộc hội thoại
+     */
+    async syncAccountData(workspaceId: string, accountId: string) {
+        const account = await zaloAccountRepo.findById(accountId);
+        if (!account || account.workspaceId.toString() !== workspaceId) {
+            throw new AppError('Tài khoản không tồn tại hoặc không thuộc workspace này', 404, 'ACCOUNT_NOT_FOUND');
+        }
+
+        if (!isZaloSessionConnected(accountId)) {
+            throw new AppError('Tài khoản Zalo chưa kết nối', 400, 'ZALO_NOT_CONNECTED');
+        }
+
+        let name = account.name || 'Unknown Zalo';
+        let avatar = account.avatar || '';
+        const zaloId = account.zaloId;
+        let nameUpdated = false;
+
+        // ── Try to resolve real name via Zalo API ──
+
+        // Strategy 1: Use getOwnId() to get self UID, then getUserInfo() on it
+        try {
+            const { getZaloSession } = await import('../../infra/zaloService');
+            const session = getZaloSession(accountId);
+            if (session && session.api) {
+                // Get own UID
+                let ownId = '';
+                try { ownId = session.api.getOwnId?.() || ''; } catch {}
+                if (!ownId) {
+                    try { ownId = (session.api as any).getContext?.()?.uid || ''; } catch {}
+                }
+
+                if (ownId) {
+                    // Now look up own profile via getUserInfo
+                    try {
+                        const result = await session.api.getUserInfo([ownId]);
+                        // Zalo API returns { changed_profiles: { uid: {...} }, unchanged_profiles: {...} }
+                        let info: any = null;
+                        if (result instanceof Map) {
+                            info = result.get(ownId);
+                        } else if (result?.changed_profiles?.[ownId]) {
+                            info = result.changed_profiles[ownId];
+                        } else if (result?.[ownId]) {
+                            info = result[ownId];
+                        } else {
+                            info = result;
+                        }
+                        if (info && (info.displayName || info.zaloName || info.name)) {
+                            const resolved = info.displayName || info.zaloName || info.name || '';
+                            if (resolved && resolved !== 'Unknown Zalo') {
+                                name = resolved;
+                                if (info.avatar || info.thumbAvatar) avatar = info.avatar || info.thumbAvatar;
+                                nameUpdated = true;
+                                console.log(`[ZaloService] syncAccountData: getOwnId+getUserInfo → "${name}"`);
+                            }
+                        }
+                    } catch (e) {
+                        console.warn(`[ZaloService] syncAccountData getUserInfo(ownId) failed:`, e);
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn(`[ZaloService] syncAccountData Strategy 1 failed:`, e);
+        }
+
+        // Strategy 2: Try getZaloUserInfo with stored zaloId (for older accounts)
+        if (!nameUpdated && zaloId && zaloId !== 'unknown') {
+            try {
+                const { getZaloUserInfo } = await import('../../infra/zaloService');
+                const info = await getZaloUserInfo(accountId, zaloId);
+                if (info && info.displayName) {
+                    name = info.displayName;
+                    if (info.avatar) avatar = info.avatar;
+                    nameUpdated = true;
+                    console.log(`[ZaloService] syncAccountData: getUserInfo(zaloId) → "${name}"`);
+                }
+            } catch (e) {
+                console.warn(`[ZaloService] syncAccountData Strategy 2 failed:`, e);
+            }
+        }
+
+        // Strategy 3: Fallback — get friends count for display
+        if (!nameUpdated || name === 'Unknown Zalo' || name.includes('bạn bè')) {
+            try {
+                const { getZaloConversations } = await import('../../infra/zaloService');
+                const convs = await getZaloConversations(accountId);
+                const friendCount = convs.filter(c => c.threadType === 'user').length;
+                if ((name === 'Unknown Zalo' || name.includes('bạn bè')) && friendCount > 0) {
+                    name = `Zalo (${friendCount} bạn bè)`;
+                }
+            } catch (e) {
+                console.warn(`[ZaloService] syncAccountData conversations failed:`, e);
+            }
+        }
+
+        // Update DB
+        await zaloAccountRepo.update(accountId, { name, avatar });
+        this.accountNameMap.set(accountId, name);
+        console.log(`[ZaloService] syncAccountData: updated account ${accountId} → name="${name}"`);
+
+        // Trigger avatar backfill in background
+        setTimeout(() => this.backfillAvatars(workspaceId, accountId), 1000);
+
+        return { accountId, name, avatar, synced: true };
     }
 
     // ═══════════════════════════════════

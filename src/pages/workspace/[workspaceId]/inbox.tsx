@@ -368,7 +368,14 @@ export default function InboxPage() {
     const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
     const [messages, setMessages] = useState<Message[]>([]);
     const [loadingMsgs, setLoadingMsgs] = useState(false);
-    const [inputText, setInputText] = useState('');
+    const [hasInputText, setHasInputText] = useState(false);
+    // Helper to set the input value without triggering a full re-render
+    const setInputValue = useCallback((val: string) => {
+        const el = chatInputRef.current;
+        if (el) { el.value = val; el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 120) + 'px'; }
+        setHasInputText(val.trim().length > 0);
+    }, []);
+    const getInputValue = useCallback(() => chatInputRef.current?.value || '', []);
     const [sending, setSending] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
     const [filterStatus, setFilterStatus] = useState<'all' | 'open' | 'pending' | 'closed'>('all');
@@ -382,6 +389,8 @@ export default function InboxPage() {
     const [domainOptions, setDomainOptions] = useState<{label: string, value: string}[]>([]);
     const [filterPageId, setFilterPageId] = useState<string>('all');
     const [fbPages, setFbPages] = useState<Array<{ id: string; pageId: string; pageName: string; pageAvatar: string; status: string }>>([]);
+    const [filterZaloAccountId, setFilterZaloAccountId] = useState<string>('all');
+    const [zaloAccounts, setZaloAccounts] = useState<Array<{ accountId: string; name: string; isOnline: boolean }>>([]);
 
     const [typingVisitor, setTypingVisitor] = useState<string | null>(null);
     const [msgPage, setMsgPage] = useState(1);
@@ -448,7 +457,7 @@ export default function InboxPage() {
     const selectedConvIdRef = useRef<string | null>(null);
     const convListRef = useRef<HTMLDivElement>(null);
     const messagesRef = useRef<Message[]>([]);
-    const chatInputRef = useRef<HTMLInputElement>(null);
+    const chatInputRef = useRef<HTMLTextAreaElement>(null);
 
     useEffect(() => {
         messagesRef.current = messages;
@@ -604,6 +613,13 @@ export default function InboxPage() {
         httpClient.get(`/workspaces/${workspaceId}/facebook/pages`)
             .then(res => setFbPages(res.data?.data?.pages || []))
             .catch(() => {});
+        // Fetch Zalo accounts for account filter
+        httpClient.get(`/workspaces/${workspaceId}/zalo/status`)
+            .then(res => {
+                const accounts = res.data?.data?.accounts || [];
+                setZaloAccounts(accounts.map((a: any) => ({ accountId: a.accountId, name: a.name || 'Zalo', isOnline: a.isOnline })));
+            })
+            .catch(() => {});
     }, [workspaceId]);
 
     // ── Debounced message content search ──
@@ -663,9 +679,22 @@ export default function InboxPage() {
             if (res.data?.success) {
                 const items = res.data.data.items || [];
                 const total = res.data.data.total || 0;
-                setMessages(normalizeMsgs(items));
+                const normalizedMsgs = normalizeMsgs(items);
+                setMessages(normalizedMsgs);
                 setMsgPage(targetPageNum);
                 setHasMoreMsgs(items.length < total);
+
+                // Load reactions from message data (persisted in DB)
+                const reactionsMap: Record<string, Record<string, string[]>> = {};
+                for (const msg of normalizedMsgs) {
+                    const raw = (msg as any).reactions;
+                    if (raw && typeof raw === 'object' && Object.keys(raw).length > 0) {
+                        reactionsMap[msg._id] = raw;
+                    }
+                }
+                if (Object.keys(reactionsMap).length > 0) {
+                    setMessageReactions(prev => ({ ...prev, ...reactionsMap }));
+                }
 
                 // Scroll and highlight if jumping
                 if (jumpToMessageId) {
@@ -699,9 +728,22 @@ export default function InboxPage() {
             if (res.data?.success) {
                 const olderItems = res.data.data.items || [];
                 const total = res.data.data.total || 0;
-                setMessages((prev) => [...normalizeMsgs(olderItems), ...prev]);
+                const normalizedOlder = normalizeMsgs(olderItems);
+                setMessages((prev) => [...normalizedOlder, ...prev]);
                 setMsgPage(nextPage);
                 setHasMoreMsgs(nextPage * 30 < total);
+
+                // Load reactions from older messages
+                const reactionsMap: Record<string, Record<string, string[]>> = {};
+                for (const msg of normalizedOlder) {
+                    const raw = (msg as any).reactions;
+                    if (raw && typeof raw === 'object' && Object.keys(raw).length > 0) {
+                        reactionsMap[msg._id] = raw;
+                    }
+                }
+                if (Object.keys(reactionsMap).length > 0) {
+                    setMessageReactions(prev => ({ ...prev, ...reactionsMap }));
+                }
             }
         } catch { /* */ }
         finally { setLoadingOlder(false); }
@@ -742,25 +784,33 @@ export default function InboxPage() {
 
     // ── Smart auto-scroll (only when user is at bottom) ──
     const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
-        messagesEndRef.current?.scrollIntoView({ behavior });
+        requestAnimationFrame(() => {
+            messagesEndRef.current?.scrollIntoView({ behavior });
+        });
         setNewMsgCount(0);
     }, []);
 
     const handleMessagesScroll = useCallback(() => {
         const el = messagesContainerRef.current;
         if (!el) return;
-        // Consider "at bottom" if within 80px of the bottom
-        const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+        // Consider "at bottom" if within 150px of the bottom (more generous threshold)
+        const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
         isAtBottomRef.current = atBottom;
         if (atBottom) setNewMsgCount(0);
     }, []);
 
     useEffect(() => {
-        if (isAtBottomRef.current) {
-            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        if (messages.length === 0) return;
+        const lastMsg = messages[messages.length - 1];
+        const isOwnMsg = lastMsg?.sender?.type === 'agent';
+
+        if (isOwnMsg || isAtBottomRef.current) {
+            // Always scroll for own messages; scroll for others only if near bottom
+            requestAnimationFrame(() => {
+                messagesEndRef.current?.scrollIntoView({ behavior: isOwnMsg ? 'instant' : 'smooth' });
+            });
         } else {
             // Count new messages while scrolled up (only from non-self senders)
-            const lastMsg = messages[messages.length - 1];
             if (lastMsg && lastMsg.sender?.type === 'visitor') {
                 setNewMsgCount(prev => prev + 1);
             }
@@ -835,7 +885,9 @@ export default function InboxPage() {
                             };
                             setMessages((prev) =>
                                 prev.map((m) => {
-                                    const freshStatus = statuses[(m._id as any).toString()];
+                                    const msgId = m._id || m.id;
+                                    if (!msgId) return m;
+                                    const freshStatus = statuses[String(msgId)];
                                     if (freshStatus && freshStatus !== m.status) {
                                         return { ...m, status: freshStatus as any };
                                     }
@@ -913,8 +965,7 @@ export default function InboxPage() {
                 queryClient.invalidateQueries({ queryKey: conversationKeys.unreadCount(workspaceId) });
             }
 
-            // Preserve scroll position across conversation list re-order
-            const scrollBefore = convListRef.current?.scrollTop ?? 0;
+            // ALWAYS move conversation to top on new message (latest = first)
             setConversations((prev) => {
                 const idx = prev.findIndex(c => c._id === data.conversationId);
                 if (idx === -1) return prev;
@@ -929,9 +980,9 @@ export default function InboxPage() {
                         : ((isFromVisitor && isTargetSelected && isWindowFocused) ? 0 : prev[idx].unreadCount)
                 };
 
-                // Only move to top if NOT the currently selected conversation
-                if (isTargetSelected) {
-                    return prev.map(c => c._id === data.conversationId ? updated : c);
+                // Already at top? Just update in place
+                if (idx === 0) {
+                    return [updated, ...prev.slice(1)];
                 }
 
                 // Move to top: remove from current position, insert at front
@@ -939,10 +990,6 @@ export default function InboxPage() {
                 next.splice(idx, 1);
                 next.unshift(updated);
                 return next;
-            });
-            // Restore scroll position after React re-render
-            requestAnimationFrame(() => {
-                if (convListRef.current) convListRef.current.scrollTop = scrollBefore;
             });
         });
 
@@ -1108,6 +1155,12 @@ export default function InboxPage() {
         socket.on('typing:stop', (data: { sender: any }) => {
             if (data.sender?.type === 'visitor') setTypingVisitor(null);
         });
+        // ── Reaction events from Zalo ──
+        socket.on('message:reaction', (data: { messageId: string; conversationId: string; reactions: Record<string, string[]> }) => {
+            if (data.messageId && data.reactions) {
+                setMessageReactions(prev => ({ ...prev, [data.messageId]: data.reactions }));
+            }
+        });
 
         // ── Presence events ──
         socket.on('presence:agentStatus', (data: { userId: string; name?: string; status: 'online' | 'away' | 'offline' }) => {
@@ -1163,9 +1216,10 @@ export default function InboxPage() {
 
     // ── Send text message ──
     const handleSend = async () => {
-        if (!inputText.trim() || !selectedConvId || !workspaceId || sending) return;
-        const text = inputText.trim();
-        setInputText('');
+        const currentText = getInputValue();
+        if (!currentText.trim() || !selectedConvId || !workspaceId || sending) return;
+        const text = currentText.trim();
+        setInputValue('');
         const replyContext = replyingTo ? {
             messageId: replyingTo._id,
             content: replyingTo.content,
@@ -1173,6 +1227,9 @@ export default function InboxPage() {
         } : undefined;
         setReplyingTo(null);
         setSending(true);
+
+        // Force scroll position to bottom before adding message
+        isAtBottomRef.current = true;
 
         // Optimistic
         const tempMsg: Message = {
@@ -1468,6 +1525,7 @@ export default function InboxPage() {
     const REACTION_EMOJIS = ['👍', '❤️', '😆', '😮', '😢', '😡'];
     const handleToggleReaction = (msgId: string, emoji: string) => {
         const myId = me?.user?.id || '';
+        let updatedReactions: Record<string, string[]> = {};
         setMessageReactions(prev => {
             const msgReactions = { ...(prev[msgId] || {}) };
             const users = [...(msgReactions[emoji] || [])];
@@ -1483,8 +1541,15 @@ export default function InboxPage() {
                 });
                 msgReactions[emoji] = [...(msgReactions[emoji] || []), myId];
             }
+            updatedReactions = msgReactions;
             return { ...prev, [msgId]: msgReactions };
         });
+
+        // Persist to DB
+        httpClient.put(
+            `/conversations/workspace/${workspaceId}/messages/${msgId}/reactions`,
+            { reactions: updatedReactions }
+        ).catch(err => console.error('[Reaction] Failed to persist:', err));
     };
 
     // ── Reset all messages ──
@@ -1555,6 +1620,11 @@ export default function InboxPage() {
             if (filterStatus !== 'all' && c.status !== filterStatus) return false;
             // Label filter
             if (filterLabel && !(c.tags || []).includes(filterLabel)) return false;
+            // Zalo account filter
+            if (filterZaloAccountId !== 'all') {
+                const convAccountId = (c as any).metadata?.accountId;
+                if (!convAccountId || convAccountId !== filterZaloAccountId) return false;
+            }
             if (searchQuery && searchQuery.trim().length >= 2) {
                 const q = searchQuery.toLowerCase();
                 const name = visitorName(c).toLowerCase();
@@ -1586,7 +1656,7 @@ export default function InboxPage() {
             return 0; // keep existing order within same pin status
         });
         return filtered;
-    }, [conversations, filterStatus, filterLabel, searchQuery, searchResultIds]);
+    }, [conversations, filterStatus, filterLabel, filterZaloAccountId, searchQuery, searchResultIds]);
 
     const selectedConv = conversations.find((c) => c._id === selectedConvId);
 
@@ -1895,6 +1965,23 @@ export default function InboxPage() {
                                     ]}
                                 />
                             )}
+                            {/* Zalo account sub-filter (visible when channel=zalo or all, and multiple accounts exist) */}
+                            {(filterChannel === 'zalo' || filterChannel === 'all') && zaloAccounts.length > 1 && (
+                                <Select
+                                    size="small"
+                                    value={filterZaloAccountId}
+                                    onChange={(v) => setFilterZaloAccountId(v)}
+                                    style={{ minWidth: 160, fontSize: 11 }}
+                                    popupMatchSelectWidth={false}
+                                    options={[
+                                        { label: '💬 Tất cả Zalo', value: 'all' },
+                                        ...zaloAccounts.map((acc, idx) => ({
+                                            label: `${acc.isOnline ? '🟢' : '🔴'} ${acc.name || `Zalo ${idx + 1}`}`,
+                                            value: acc.accountId,
+                                        })),
+                                    ]}
+                                />
+                            )}
                             {/* Page size selector */}
                             <Select
                                 size="small"
@@ -2174,15 +2261,26 @@ export default function InboxPage() {
                                                         verticalAlign: 'middle',
                                                     }}>FB</span>
                                                 )}
-                                                {(conv as any).channel === 'zalo' && (
-                                                    <span style={{
-                                                        display: 'inline-flex', alignItems: 'center', gap: 2,
-                                                        fontSize: 9, fontWeight: 700, color: '#fff',
-                                                        background: '#0068ff', borderRadius: 4,
-                                                        padding: '1px 5px', marginRight: 5, lineHeight: '14px',
-                                                        verticalAlign: 'middle',
-                                                    }}>Zalo</span>
-                                                )}
+                                                {(conv as any).channel === 'zalo' && (() => {
+                                                    const acctId = (conv as any).metadata?.accountId;
+                                                    const acctInfo = acctId ? zaloAccounts.find(a => a.accountId === acctId) : null;
+                                                    const shortName = acctInfo?.name ? (acctInfo.name.length > 15 ? acctInfo.name.slice(0, 15) + '…' : acctInfo.name) : null;
+                                                    // Generate a unique hue per accountId for distinguishing multiple accounts
+                                                    const hue = acctId ? (acctId.charCodeAt(0) * 37 + acctId.charCodeAt(acctId.length - 1) * 53) % 360 : 210;
+                                                    const badgeBg = zaloAccounts.length > 1 && acctId ? `hsl(${hue}, 70%, 48%)` : '#0068ff';
+                                                    return (
+                                                        <Tooltip title={acctInfo?.name || 'Zalo'}>
+                                                            <span style={{
+                                                                display: 'inline-flex', alignItems: 'center', gap: 2,
+                                                                fontSize: 9, fontWeight: 700, color: '#fff',
+                                                                background: badgeBg, borderRadius: 4,
+                                                                padding: '1px 5px', marginRight: 5, lineHeight: '14px',
+                                                                verticalAlign: 'middle', maxWidth: 120,
+                                                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                                            }}>{shortName ? `Z·${shortName}` : 'Zalo'}</span>
+                                                        </Tooltip>
+                                                    );
+                                                })()}
                                                 {(!(conv as any).channel || (conv as any).channel === 'widget') && (
                                                     <span style={{
                                                         display: 'inline-flex', alignItems: 'center', gap: 2,
@@ -2226,6 +2324,29 @@ export default function InboxPage() {
                                                 {getAssignedName(conv)}
                                             </div>
                                         )}
+                                        {/* Lead stage badge */}
+                                        {conv.metadata?.leadStage && (() => {
+                                            const stageMap: Record<string, { label: string; icon: string; color: string; bg: string }> = {
+                                                intake: { label: 'Intake', icon: '📥', color: '#1a73e8', bg: '#e8f0fe' },
+                                                qualified: { label: 'Qualified', icon: '✅', color: '#0d652d', bg: '#e6f4ea' },
+                                                potential: { label: 'Tiềm năng', icon: '🔥', color: '#e37400', bg: '#fef7e0' },
+                                                purchased: { label: 'Đã mua', icon: '🛒', color: '#137333', bg: '#ceead6' },
+                                                skipped: { label: 'Bỏ qua', icon: '⏭️', color: '#5f6368', bg: '#f1f3f4' },
+                                            };
+                                            const stage = stageMap[conv.metadata.leadStage];
+                                            if (!stage) return null;
+                                            return (
+                                                <div style={{
+                                                    display: 'inline-flex', alignItems: 'center', gap: 3,
+                                                    fontSize: 10, fontWeight: 600, marginTop: 3,
+                                                    color: stage.color, background: stage.bg,
+                                                    padding: '1px 8px', borderRadius: 10, lineHeight: '16px',
+                                                    border: `1px solid ${stage.color}20`,
+                                                }}>
+                                                    <span style={{ fontSize: 10 }}>{stage.icon}</span> {stage.label}
+                                                </div>
+                                            );
+                                        })()}
                                         {/* Tags/Labels on conversation item */}
                                         {conv.tags && conv.tags.length > 0 && (
                                             <div style={{ display: 'flex', gap: 3, marginTop: 3, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -2719,7 +2840,7 @@ export default function InboxPage() {
                                                             </div>
                                                         )}
                                                         <div id={`msg-${msg._id}`} style={styles.systemMsg}>
-                                                            {msg.content}
+                                                            {decodeHTMLEntities(msg.content)}
                                                         </div>
                                                     </Fragment>
                                                 );
@@ -2745,7 +2866,7 @@ export default function InboxPage() {
                                                                 <div style={{ fontSize: 10, color: '#b45309', fontWeight: 600, marginBottom: 3, display: 'flex', alignItems: 'center', gap: 4 }}>
                                                                     📝 Ghi chú nội bộ · {msg.sender?.name || 'Agent'}
                                                                 </div>
-                                                                <div style={{ color: '#78350f' }}>{msg.content}</div>
+                                                                <div style={{ color: '#78350f' }}>{decodeHTMLEntities(msg.content)}</div>
                                                                 <div style={{ fontSize: 10, color: '#d97706', marginTop: 3 }}>
                                                                     {new Date(msg.createdAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}
                                                                 </div>
@@ -2945,7 +3066,7 @@ export default function InboxPage() {
                                                                 if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
                                                             }}>
                                                                 <div style={{ fontWeight: 600, color: isAgent ? '#fff' : '#8b5cf6', marginBottom: 2 }}>{msg.replyTo.senderName}</div>
-                                                                <div style={{ opacity: 0.9, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{msg.replyTo.content}</div>
+                                                                <div style={{ opacity: 0.9, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{decodeHTMLEntities(msg.replyTo.content)}</div>
                                                             </div>
                                                         )}
                                                         {/* Attachments — skip ALL when stickerUrl is set (sticker rendered separately) */}
@@ -3226,7 +3347,7 @@ export default function InboxPage() {
                                                 const visitorMsgs = messages.filter(m => m.sender?.type === 'visitor' && !m.isDeleted);
                                                 return visitorMsgs.length > 0 ? visitorMsgs[visitorMsgs.length - 1].content : undefined;
                                             })()}
-                                            onInsertReply={(text) => setInputText(text)}
+                                            onInsertReply={(text) => { setInputValue(text); chatInputRef.current?.focus(); }}
                                         />
                                         {/* ═══ Sticker Picker Popup ═══ */}
                                         {showStickerPicker && (
@@ -3236,6 +3357,7 @@ export default function InboxPage() {
                                                     // Send sticker as text message directly
                                                     if (!selectedConvId || !workspaceId || sending) return;
                                                     setSending(true);
+                                                    isAtBottomRef.current = true;
                                                     const tempMsg: Message = {
                                                         _id: 'tmp_' + Date.now(),
                                                         conversationId: selectedConvId,
@@ -3363,7 +3485,7 @@ export default function InboxPage() {
                                                                                                 .replace(/\{\{date\}\}/g, now.toLocaleDateString('vi-VN'))
                                                                                                 .replace(/\{\{time\}\}/g, now.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }))
                                                                                                 .replace(/\{\{channel\}\}/g, channel);
-                                                                                            setInputText(prev => prev + filled);
+                                                                                            setInputValue(getInputValue() + filled);
                                                                                             setShowMacroPopover(false);
                                                                                             setMacroSearchText('');
                                                                                             httpClient.post(`/macros/workspace/${workspaceId}/${m._id}/use`).catch(() => {});
@@ -3422,7 +3544,7 @@ export default function InboxPage() {
                                             <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
                                                 {/* Macro shortcut suggestions dropdown */}
                                                 {showMacroSuggestions && (() => {
-                                                    const slashMatch = inputText.match(/\/([\w]*)$/);
+                                                    const slashMatch = getInputValue().match(/\/([\w]*)$/);
                                                     const slashQuery = slashMatch ? slashMatch[1].toLowerCase() : '';
                                                     const suggestions = macros.filter(m => m.shortcut && m.shortcut.toLowerCase().startsWith('/' + slashQuery));
                                                     if (suggestions.length === 0) return null;
@@ -3450,8 +3572,8 @@ export default function InboxPage() {
                                                                             .replace(/\{\{date\}\}/g, now.toLocaleDateString('vi-VN'))
                                                                             .replace(/\{\{time\}\}/g, now.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }))
                                                                             .replace(/\{\{channel\}\}/g, channel);
-                                                                        const newText = inputText.replace(/\/[\w]*$/, filled);
-                                                                        setInputText(newText);
+                                                                        const newText = getInputValue().replace(/\/[\w]*$/, filled);
+                                                                        setInputValue(newText);
                                                                         setShowMacroSuggestions(false);
                                                                         httpClient.post(`/macros/workspace/${workspaceId}/${m._id}/use`).catch(() => {});
                                                                         chatInputRef.current?.focus();
@@ -3489,10 +3611,12 @@ export default function InboxPage() {
                                                     }}
                                                     placeholder="Nhập tin nhắn..."
                                                     rows={1}
-                                                    value={inputText}
+                                                    defaultValue=""
                                                     onChange={(e) => {
                                                         const val = e.target.value;
-                                                        setInputText(val);
+                                                        const hadText = hasInputText;
+                                                        const hasText = val.trim().length > 0;
+                                                        if (hadText !== hasText) setHasInputText(hasText);
                                                         handleTyping();
                                                         e.target.style.height = 'auto';
                                                         e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
@@ -3506,7 +3630,7 @@ export default function InboxPage() {
                                                     }}
                                                     onKeyDown={(e) => {
                                                         if (showMacroSuggestions) {
-                                                            const slashMatch = inputText.match(/\/([\w]*)$/);
+                                                            const slashMatch = getInputValue().match(/\/([\w]*)$/);
                                                             const slashQuery = slashMatch ? slashMatch[1].toLowerCase() : '';
                                                             const suggestions = macros.filter(m => m.shortcut && m.shortcut.toLowerCase().startsWith('/' + slashQuery));
                                                             if (suggestions.length > 0) {
@@ -3528,8 +3652,8 @@ export default function InboxPage() {
                                                                             .replace(/\{\{date\}\}/g, now.toLocaleDateString('vi-VN'))
                                                                             .replace(/\{\{time\}\}/g, now.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }))
                                                                             .replace(/\{\{channel\}\}/g, channel);
-                                                                        const newText = inputText.replace(/\/[\w]*$/, filled);
-                                                                        setInputText(newText);
+                                                                        const newText = getInputValue().replace(/\/[\w]*$/, filled);
+                                                                        setInputValue(newText);
                                                                         setShowMacroSuggestions(false);
                                                                         httpClient.post(`/macros/workspace/${workspaceId}/${m._id}/use`).catch(() => {});
                                                                     }
@@ -3543,8 +3667,9 @@ export default function InboxPage() {
                                                             const target = e.target as HTMLTextAreaElement;
                                                             const start = target.selectionStart;
                                                             const end = target.selectionEnd;
-                                                            const newValue = inputText.substring(0, start) + '\n' + inputText.substring(end);
-                                                            setInputText(newValue);
+                                                        const curVal = getInputValue();
+                                                        const newValue = curVal.substring(0, start) + '\n' + curVal.substring(end);
+                                                        setInputValue(newValue);
                                                             setTimeout(() => {
                                                                 target.selectionStart = target.selectionEnd = start + 1;
                                                                 target.style.height = 'auto';
@@ -3579,16 +3704,16 @@ export default function InboxPage() {
                                             {/* Send button — integrated pill */}
                                             <button
                                                 onClick={handleSend}
-                                                disabled={sending || !inputText.trim()}
+                                                disabled={sending}
                                                 style={{
                                                     width: 34, height: 34, borderRadius: 18,
-                                                    background: inputText.trim() ? '#6366f1' : '#e5e7eb',
-                                                    border: 'none', cursor: inputText.trim() ? 'pointer' : 'default',
+                                                    background: hasInputText ? '#6366f1' : '#e5e7eb',
+                                                    border: 'none', cursor: hasInputText ? 'pointer' : 'default',
                                                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                                                     transition: 'all 0.2s', flexShrink: 0,
                                                 }}
                                             >
-                                                <Send size={16} color={inputText.trim() ? '#fff' : '#9ca3af'} style={{ marginLeft: 1 }} />
+                                                <Send size={16} color={hasInputText ? '#fff' : '#9ca3af'} style={{ marginLeft: 1 }} />
                                             </button>
                                         </div>
                                     </div>
@@ -3645,7 +3770,22 @@ export default function InboxPage() {
                                             : c
                                     ));
                                     if (data.leadStage !== undefined) {
-                                        message.success(data.leadStage ? `Đã cập nhật giai đoạn: ${data.leadStage}` : 'Đã xóa giai đoạn');
+                                        const stageLabels: Record<string, { label: string; icon: string }> = {
+                                            intake: { label: 'Tiếp nhận', icon: '📥' },
+                                            qualified: { label: 'Đạt chuẩn', icon: '✅' },
+                                            potential: { label: 'Khách tiềm năng', icon: '🔥' },
+                                            purchased: { label: 'Đã mua hàng', icon: '🛒' },
+                                            skipped: { label: 'Bỏ qua', icon: '⏭️' },
+                                        };
+                                        if (data.leadStage) {
+                                            const stage = stageLabels[data.leadStage] || { label: data.leadStage, icon: '📋' };
+                                            message.success({
+                                                content: `${stage.icon} Đã đánh dấu: ${stage.label}`,
+                                                duration: 3,
+                                            });
+                                        } else {
+                                            message.info('Đã xóa giai đoạn khách hàng');
+                                        }
                                     }
                                     if (data.isStarred !== undefined) {
                                         message.success(data.isStarred ? '⭐ Đã đánh dấu quan trọng' : 'Đã bỏ đánh dấu quan trọng');

@@ -148,7 +148,9 @@ export default function CampaignsPage() {
                 httpClient.get(`/workspaces/${workspaceId}/campaigns`),
                 httpClient.get(`/workspaces/${workspaceId}/campaigns/stats`),
             ]);
-            setCampaigns(campRes.data?.data?.items || []);
+            const rawCampaigns = campRes.data?.data?.items || [];
+            // Normalize: Prisma returns `id`, frontend uses `_id`
+            setCampaigns(rawCampaigns.map((c: any) => ({ ...c, _id: c._id || c.id })));
             setStats(statsRes.data?.data || null);
         } catch { /* silent */ }
         finally { setLoading(false); }
