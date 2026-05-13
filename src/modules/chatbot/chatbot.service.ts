@@ -202,8 +202,9 @@ export const chatbotService = {
         const bot = activeBots[0]; // Use the first matching bot
 
         // 2. Try to match a scenario (exact/keyword/regex — instant response)
-        if (bot.scenarios && bot.scenarios.length > 0) {
-            const sorted = [...bot.scenarios].sort((a, b) => (b.priority || 0) - (a.priority || 0));
+        const scenarios = (bot.scenarios || []) as any[];
+        if (scenarios.length > 0) {
+            const sorted = [...scenarios].sort((a: any, b: any) => (b.priority || 0) - (a.priority || 0));
             for (const scenario of sorted) {
                 if (matchScenario(message, scenario.trigger, scenario.triggerType)) {
                     await chatbotRepo.incrementStats(bot.id, 'totalReplies');
@@ -211,7 +212,7 @@ export const chatbotService = {
                         response: scenario.response,
                         botId: bot.id,
                         botName: bot.name,
-                        quickReplies: bot.quickReplies,
+                        quickReplies: bot.quickReplies as any,
                     };
                 }
             }
@@ -246,7 +247,7 @@ export const chatbotService = {
                     response: aiResponse,
                     botId: bot.id,
                     botName: bot.name,
-                    quickReplies: bot.quickReplies,
+                    quickReplies: bot.quickReplies as any,
                 };
             }
         } catch (err) {
@@ -264,7 +265,7 @@ export const chatbotService = {
                     response,
                     botId: bot.id,
                     botName: bot.name,
-                    quickReplies: bot.quickReplies,
+                    quickReplies: bot.quickReplies as any,
                 };
             }
         } catch (err) {
@@ -277,7 +278,7 @@ export const chatbotService = {
                 response: bot.customGreeting,
                 botId: bot.id,
                 botName: bot.name,
-                quickReplies: bot.quickReplies,
+                quickReplies: bot.quickReplies as any,
             };
         }
 

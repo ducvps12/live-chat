@@ -111,7 +111,7 @@ export const authController = {
             success: true, 
             data: { 
                 user: { 
-                    id: user._id, 
+                    id: user.id, 
                     email: user.email, 
                     name: user.name, 
                     role: user.role, 

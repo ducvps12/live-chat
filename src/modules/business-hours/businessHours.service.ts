@@ -47,7 +47,7 @@ class BusinessHoursService {
 
         const now = new Date();
         const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        const holidays = (config.holidays as IHoliday[]) || [];
+        const holidays = (config.holidays as unknown as IHoliday[]) || [];
         const isHoliday = holidays.some(h => {
             const hDate = new Date(h.date);
             return hDate.getFullYear() === today.getFullYear() &&
@@ -57,7 +57,7 @@ class BusinessHoursService {
         if (isHoliday) return false;
 
         const dayOfWeek = now.getDay();
-        const schedule = (config.schedule as IDaySchedule[]) || [];
+        const schedule = (config.schedule as unknown as IDaySchedule[]) || [];
         const daySchedule = schedule.find(s => s.day === dayOfWeek);
         if (!daySchedule || !daySchedule.isActive) return false;
 

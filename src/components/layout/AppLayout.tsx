@@ -27,9 +27,9 @@ export default function AppLayout({ children, hideHeader = false, headerTitle, h
     const [collapsed, setCollapsed] = useState(() => {
         if (typeof window !== 'undefined') {
             const saved = localStorage.getItem('sidebar-collapsed');
-            return saved === null ? true : saved === 'true';
+            return saved === null ? false : saved === 'true';
         }
-        return true;
+        return false;
     });
     const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
     const handleToggleCollapse = () => {

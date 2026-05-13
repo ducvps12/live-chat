@@ -17,7 +17,7 @@ import { httpClient } from '../../lib/http/client';
 import { useGetMe } from '../../domains/auth/auth.hooks';
 
 /* ─── Types ─── */
-type PanelTab = 'dashboard' | 'revenue' | 'invoices' | 'users' | 'workspaces' | 'bank' | 'system' | 'cron' | 'settings';
+type PanelTab = 'dashboard' | 'revenue' | 'invoices' | 'users' | 'workspaces' | 'bank' | 'system' | 'cron' | 'settings' | 'traffic';
 
 interface DashboardStats {
     totalRevenue: number;
@@ -72,6 +72,7 @@ export default function AdminPanelPage() {
     const [userModalLoading, setUserModalLoading] = useState(false);
     const [userDetail, setUserDetail] = useState<any>(null);
     const [userDetailLoading, setUserDetailLoading] = useState(false);
+    const [trafficData, setTrafficData] = useState<any>(null);
 
     const openUserModal = async (user: any) => {
         setSelectedUser(user);
@@ -127,6 +128,21 @@ export default function AdminPanelPage() {
         }
     }, [meLoading, user, fetchDashboard, router]);
 
+    useEffect(() => {
+        let interval: NodeJS.Timeout;
+        if (tab === 'traffic') {
+            const fetchMetrics = async () => {
+                try {
+                    const res = await httpClient.get('/admin/system-metrics');
+                    if (res.data?.success) setTrafficData(res.data.data);
+                } catch { /* silent */ }
+            };
+            fetchMetrics();
+            interval = setInterval(fetchMetrics, 3000);
+        }
+        return () => clearInterval(interval);
+    }, [tab]);
+
     if (meLoading || !user) {
         return <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Spin size="large" /></div>;
     }
@@ -140,6 +156,7 @@ export default function AdminPanelPage() {
         { key: 'workspaces', icon: Layers, label: 'Workspaces' },
         { key: 'bank', icon: Landmark, label: 'Auto Bank', section: 'TÀI CHÍNH' },
         { key: 'system', icon: Server, label: 'Hệ thống', section: 'KỸ THUẬT' },
+        { key: 'traffic', icon: Activity, label: 'Traffic', section: 'GIÁM SÁT' },
         { key: 'cron', icon: Timer, label: 'Cron Link' },
         { key: 'settings', icon: Settings, label: 'Cài đặt' },
     ];
@@ -1009,6 +1026,84 @@ export default function AdminPanelPage() {
                                             ))}
                                         </div>
                                     </PanelCard>
+                                </div>
+                            )}
+                            {/* ═══ Traffic Tab ═══ */}
+                            {tab === 'traffic' && (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+                                    {/* Overview Metrics */}
+                                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
+                                        <StatCard icon={Cpu} color={COLORS.primary} bg={COLORS.primaryLight} label="CPU Usage" value={`${trafficData?.cpu?.usagePercent || 0}%`} />
+                                        <StatCard icon={HardDrive} color={COLORS.warning} bg={COLORS.warningLight} label="RAM Usage" value={`${trafficData?.memory?.usedPercent || 0}%`} />
+                                        <StatCard icon={Database} color={COLORS.info} bg={COLORS.infoLight} label="Disk Usage" value={`${trafficData?.disk?.usedPercent || 0}%`} />
+                                        <StatCard icon={Globe} color={COLORS.success} bg={COLORS.successLight} label="Connections" value={fmtNum(trafficData?.network?.connections || 0)} />
+                                    </div>
+
+                                    {/* Detailed Stats */}
+                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+                                        <PanelCard title="System Performance" subtitle="Real-time Node.js process & system stats">
+                                            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                                                <div>
+                                                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
+                                                        <span style={{ color: '#64748b', fontWeight: 600 }}>CPU ({trafficData?.cpu?.cores || 0} Cores)</span>
+                                                        <span style={{ fontWeight: 700, color: COLORS.primary }}>{trafficData?.cpu?.usagePercent || 0}%</span>
+                                                    </div>
+                                                    <div style={{ height: 8, borderRadius: 4, background: '#f1f5f9', overflow: 'hidden' }}>
+                                                        <div style={{ height: '100%', background: COLORS.primary, width: `${trafficData?.cpu?.usagePercent || 0}%`, transition: 'width 0.5s' }} />
+                                                    </div>
+                                                    <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 4 }}>{trafficData?.cpu?.model || 'Unknown CPU'}</div>
+                                                </div>
+                                                
+                                                <div>
+                                                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
+                                                        <span style={{ color: '#64748b', fontWeight: 600 }}>RAM Usage</span>
+                                                        <span style={{ fontWeight: 700, color: COLORS.warning }}>{Math.round((trafficData?.memory?.used || 0) / 1024 / 1024 / 1024 * 10) / 10}GB / {Math.round((trafficData?.memory?.total || 0) / 1024 / 1024 / 1024 * 10) / 10}GB</span>
+                                                    </div>
+                                                    <div style={{ height: 8, borderRadius: 4, background: '#f1f5f9', overflow: 'hidden' }}>
+                                                        <div style={{ height: '100%', background: COLORS.warning, width: `${trafficData?.memory?.usedPercent || 0}%`, transition: 'width 0.5s' }} />
+                                                    </div>
+                                                </div>
+
+                                                <div>
+                                                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
+                                                        <span style={{ color: '#64748b', fontWeight: 600 }}>Disk Storage</span>
+                                                        <span style={{ fontWeight: 700, color: COLORS.info }}>{Math.round((trafficData?.disk?.used || 0) / 1024 / 1024 / 1024)}GB / {Math.round((trafficData?.disk?.total || 0) / 1024 / 1024 / 1024)}GB</span>
+                                                    </div>
+                                                    <div style={{ height: 8, borderRadius: 4, background: '#f1f5f9', overflow: 'hidden' }}>
+                                                        <div style={{ height: '100%', background: COLORS.info, width: `${trafficData?.disk?.usedPercent || 0}%`, transition: 'width 0.5s' }} />
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </PanelCard>
+
+                                        <PanelCard title="Network Traffic" subtitle="Live bandwidth monitoring">
+                                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 200, flexDirection: 'column', gap: 24 }}>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: 16, width: '100%', padding: '0 20px' }}>
+                                                    <div style={{ width: 48, height: 48, borderRadius: 12, background: 'rgba(16, 185, 129, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                                        <ArrowDownLeft size={24} color={COLORS.success} />
+                                                    </div>
+                                                    <div style={{ flex: 1 }}>
+                                                        <div style={{ fontSize: 12, color: '#64748b', fontWeight: 600, textTransform: 'uppercase' }}>Downstream (RX)</div>
+                                                        <div style={{ fontSize: 24, fontWeight: 800, color: COLORS.success }}>
+                                                            {((trafficData?.network?.rxSec || 0) / 1024).toFixed(2)} <span style={{ fontSize: 14 }}>KB/s</span>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: 16, width: '100%', padding: '0 20px' }}>
+                                                    <div style={{ width: 48, height: 48, borderRadius: 12, background: 'rgba(239, 68, 68, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                                        <ArrowUpRight size={24} color={COLORS.danger} />
+                                                    </div>
+                                                    <div style={{ flex: 1 }}>
+                                                        <div style={{ fontSize: 12, color: '#64748b', fontWeight: 600, textTransform: 'uppercase' }}>Upstream (TX)</div>
+                                                        <div style={{ fontSize: 24, fontWeight: 800, color: COLORS.danger }}>
+                                                            {((trafficData?.network?.txSec || 0) / 1024).toFixed(2)} <span style={{ fontSize: 14 }}>KB/s</span>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </PanelCard>
+                                    </div>
                                 </div>
                             )}
                         </>

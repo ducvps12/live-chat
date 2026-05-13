@@ -406,6 +406,7 @@ model ExternalSession {
   controlLockedAt  DateTime?
   viewers          Json      @default("[]") // string[] of userIds
   browserProfileId String
+  proxyConfig      String?  @db.Text
   metadataAccountName String?
   metadataAvatarUrl  String?  @db.Text
   createdAt        DateTime  @default(now())

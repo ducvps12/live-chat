@@ -529,7 +529,7 @@ export function initSocketGateway(server: http.Server): Server {
                 // Broadcast viewer list + control state
                 const session = await externalSessionRepo.findById(sessionId);
                 remoteNs.to(room).emit('viewers:updated', session?.viewers || []);
-                remoteNs.to(room).emit('control:changed', { userId: session?.controlledBy?.toString() || null });
+                remoteNs.to(room).emit('control:changed', { userId: session?.controlledById?.toString() || null });
                 socket.emit('session:status', { status: session?.status });
 
                 // Start screencast — send base64 data URL instead of raw Buffer
@@ -566,7 +566,7 @@ export function initSocketGateway(server: http.Server): Server {
         socket.on('input:mouse', async (p: any) => {
             try {
                 const session = await externalSessionRepo.findById(p.sessionId);
-                if (!session || session.controlledBy?.toString() !== data.id) return;
+                if (!session || session.controlledById?.toString() !== data.id) return;
                 const inst = browserPool.get(p.sessionId);
                 if (!inst) return;
                 await dispatchMouse(inst.cdpSession, p.type, p.x, p.y, p.button || 'left', p.clickCount || 1);
@@ -577,7 +577,7 @@ export function initSocketGateway(server: http.Server): Server {
         socket.on('input:keyboard', async (p: any) => {
             try {
                 const session = await externalSessionRepo.findById(p.sessionId);
-                if (!session || session.controlledBy?.toString() !== data.id) return;
+                if (!session || session.controlledById?.toString() !== data.id) return;
                 const inst = browserPool.get(p.sessionId);
                 if (!inst) return;
                 await dispatchKeyboard(inst.cdpSession, p.type, p.key, p.code || '', p.text || '');
@@ -588,7 +588,7 @@ export function initSocketGateway(server: http.Server): Server {
         socket.on('input:scroll', async (p: any) => {
             try {
                 const session = await externalSessionRepo.findById(p.sessionId);
-                if (!session || session.controlledBy?.toString() !== data.id) return;
+                if (!session || session.controlledById?.toString() !== data.id) return;
                 const inst = browserPool.get(p.sessionId);
                 if (!inst) return;
                 await dispatchScroll(inst.cdpSession, p.x, p.y, p.deltaX, p.deltaY);
@@ -612,7 +612,7 @@ export function initSocketGateway(server: http.Server): Server {
         socket.on('control:release', async ({ sessionId }: { sessionId: string }) => {
             try {
                 const session = await externalSessionRepo.findById(sessionId);
-                if (session?.controlledBy?.toString() !== data.id) return;
+                if (session?.controlledById?.toString() !== data.id) return;
                 await externalSessionRepo.setController(sessionId, null);
                 await externalSessionRepo.logAudit({
                     sessionId, workspaceId: data.workspaceId || '', userId: data.id, action: 'control_released',
@@ -1226,7 +1226,7 @@ export function initSocketGateway(server: http.Server): Server {
                 activeScreencasts.delete(socket.id);
                 await externalSessionRepo.removeViewer(sessionId, data.id);
                 const session = await externalSessionRepo.findById(sessionId);
-                if (session?.controlledBy?.toString() === data.id) {
+                if (session?.controlledById?.toString() === data.id) {
                     await externalSessionRepo.setController(sessionId, null);
                     remoteNs.to(`remote:${sessionId}`).emit('control:changed', { userId: null, name: null });
                 }

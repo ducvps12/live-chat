@@ -12,6 +12,7 @@ export const externalSessionRepo = {
         status?: string;
         createdById: string;
         browserProfileId: string;
+        proxyConfig?: string;
     }) => {
         return prisma.externalSession.create({ data: data as any });
     },

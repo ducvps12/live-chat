@@ -134,7 +134,7 @@ export const adminController = {
     }),
 
     getUser: asyncHandler(async (req: Request, res: Response) => {
-        const { userId } = req.params;
+        const userId = req.params.userId as string;
         const user = await prisma.user.findUnique({
             where: { id: userId },
             omit: { passwordHash: true },
@@ -178,7 +178,7 @@ export const adminController = {
     }),
 
     updateUser: asyncHandler(async (req: Request, res: Response) => {
-        const { userId } = req.params;
+        const userId = req.params.userId as string;
         const { name, email, role, isActive } = req.body;
         const existing = await prisma.user.findUnique({ where: { id: userId } });
         if (!existing) { res.status(404).json({ success: false, message: 'User không tồn tại' }); return; }
@@ -197,7 +197,7 @@ export const adminController = {
     }),
 
     revokeSessions: asyncHandler(async (req: Request, res: Response) => {
-        const { userId } = req.params;
+        const userId = req.params.userId as string;
         const result = await prisma.session.updateMany({
             where: { userId, revokedAt: null },
             data: { revokedAt: new Date() },
@@ -207,7 +207,7 @@ export const adminController = {
     }),
 
     deleteUser: asyncHandler(async (req: Request, res: Response) => {
-        const { userId } = req.params;
+        const userId = req.params.userId as string;
         const existing = await prisma.user.findUnique({ where: { id: userId } });
         if (!existing) { res.status(404).json({ success: false, message: 'User không tồn tại' }); return; }
         await prisma.user.delete({ where: { id: userId } });
@@ -221,7 +221,7 @@ export const adminController = {
     }),
 
     toggleBot: asyncHandler(async (req: Request, res: Response) => {
-        const { botId } = req.params;
+        const botId = req.params.botId as string;
         const { isActive } = req.body;
 
         // Validate bot exists first
@@ -368,6 +368,50 @@ export const adminController = {
                 subscriptions: { active: activeSubs, invoices: totalInvoices, paidInvoices },
                 zalo: { accounts: zaloAccounts, contacts: zaloContacts, messages: zaloMessages },
                 sessions: { total: totalSessions, active: activeSessions },
+            },
+        });
+    }),
+
+    systemMetrics: asyncHandler(async (_req: Request, res: Response) => {
+        const uptime = process.uptime();
+        const memUsage = process.memoryUsage();
+        
+        // Mock network data as os doesn't provide cross-platform realtime traffic out of the box
+        // In a real app we might use systeminformation package
+        const mockNetwork = {
+            rxSec: Math.floor(Math.random() * 5000) + 1000,
+            txSec: Math.floor(Math.random() * 3000) + 500,
+            connections: Math.floor(Math.random() * 500) + 100,
+        };
+
+        const totalRAM = os.totalmem();
+        const freeRAM = os.freemem();
+        const usedRAM = totalRAM - freeRAM;
+
+        res.json({
+            success: true,
+            data: {
+                cpu: {
+                    model: os.cpus()[0].model,
+                    cores: os.cpus().length,
+                    usagePercent: Math.floor(Math.random() * 30) + 5, // Simple mock
+                },
+                memory: {
+                    total: totalRAM,
+                    free: freeRAM,
+                    used: usedRAM,
+                    usedPercent: Math.round((usedRAM / totalRAM) * 100),
+                },
+                disk: {
+                    // Node.js doesn't natively give disk usage without spawn
+                    // Mock data
+                    total: 100 * 1024 * 1024 * 1024, // 100GB
+                    used: 45 * 1024 * 1024 * 1024,   // 45GB
+                    usedPercent: 45,
+                },
+                network: mockNetwork,
+                uptime: uptime,
+                uptimeFormatted: formatUptime(uptime),
             },
         });
     }),

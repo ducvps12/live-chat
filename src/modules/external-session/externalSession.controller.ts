@@ -5,11 +5,12 @@ import { externalSessionService } from './externalSession.service';
 export const externalSessionController = {
     // POST /:workspaceId/sessions
     create: asyncHandler(async (req: Request, res: Response) => {
-        const { label } = req.body;
+        const { label, proxyConfig } = req.body;
         const session = await externalSessionService.createSession(
             req.params.workspaceId as string,
             (req as any).user.id,
-            label || 'Zalo cá nhân'
+            label || 'Zalo cá nhân',
+            proxyConfig
         );
         res.status(201).json({ success: true, data: session });
     }),

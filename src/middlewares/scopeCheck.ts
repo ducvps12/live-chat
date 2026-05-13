@@ -6,7 +6,8 @@ export const scopeCheck = async (req: Request, _res: Response, next: NextFunctio
     try {
         const user = (req as any).user;
         if (!user) return next(new AppError('Chưa xác thực', 401, 'UNAUTHORIZED'));
-        const { workspaceId, conversationId } = req.params;
+        const workspaceId = req.params.workspaceId as string;
+        const conversationId = req.params.conversationId as string;
         if (!workspaceId) return next();
         if (user.role === 'admin') { (req as any).workspaceRole = 'admin'; return next(); }
 

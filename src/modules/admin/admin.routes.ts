@@ -23,6 +23,7 @@ router.get('/ai/health', adminController.aiHealth);
 router.get('/messages/recent', adminController.recentMessages);
 router.get('/collections', adminController.collections);
 router.get('/deep-stats', adminController.deepStats);
+router.get('/system-metrics', adminController.systemMetrics);
 
 // ── ACB Bank — NemarkChat Revenue (separate from MB Bank Auto Bank) ──
 router.get('/acb-transactions', async (_req: Request, res: Response) => {

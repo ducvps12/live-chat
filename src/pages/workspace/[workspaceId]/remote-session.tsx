@@ -266,6 +266,7 @@ export default function ZaloPersonalPage() {
     const [loading, setLoading] = useState(false);
     const [createModalOpen, setCreateModalOpen] = useState(false);
     const [newLabel, setNewLabel] = useState('Zalo cá nhân');
+    const [newProxyConfig, setNewProxyConfig] = useState('');
 
     // ── Conversation state ──
     const [conversations, setConversations] = useState<ZaloConversation[]>([]);
@@ -993,10 +994,11 @@ export default function ZaloPersonalPage() {
     const createAccount = async () => {
         try {
             setLoading(true);
-            await httpClient.post(`/external-sessions/${workspaceId}/sessions`, { label: newLabel });
+            await httpClient.post(`/external-sessions/${workspaceId}/sessions`, { label: newLabel, proxyConfig: newProxyConfig });
             message.success('Đã tạo tài khoản Zalo mới');
             setCreateModalOpen(false);
             setNewLabel('Zalo cá nhân');
+            setNewProxyConfig('');
             await fetchAccounts();
         } catch (err: any) {
             message.error(err.response?.data?.message || 'Không thể tạo tài khoản');
@@ -3310,6 +3312,13 @@ export default function ZaloPersonalPage() {
                         placeholder="VD: Zalo Anh Minh, Zalo Shop ABC..."
                         value={newLabel}
                         onChange={e => setNewLabel(e.target.value)}
+                        style={{ borderRadius: 8, marginBottom: 12 }}
+                    />
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#555', marginBottom: 6 }}>Proxy (Tùy chọn)</div>
+                    <Input
+                        placeholder="VD: 180.149.35.6:10257:user:pass"
+                        value={newProxyConfig}
+                        onChange={e => setNewProxyConfig(e.target.value)}
                         style={{ borderRadius: 8 }}
                     />
                 </div>

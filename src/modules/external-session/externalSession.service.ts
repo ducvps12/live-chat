@@ -7,7 +7,7 @@ export const externalSessionService = {
     /**
      * Create a new remote browser session.
      */
-    createSession: async (workspaceId: string, userId: string, label: string) => {
+    createSession: async (workspaceId: string, userId: string, label: string, proxyConfig?: string) => {
         // Check pool capacity
         if (browserPool.size >= browserPool.maxSize) {
             throw new AppError(
@@ -26,20 +26,21 @@ export const externalSessionService = {
             status: 'pending_login',
             createdBy: userId as any,
             browserProfileId,
+            proxyConfig,
         });
 
         // Launch browser
         try {
-            await browserPool.create(session._id.toString());
+            await browserPool.create(session.id.toString(), proxyConfig);
         } catch (err: any) {
             // Cleanup DB if browser launch fails
-            await externalSessionRepo.updateStatus(session._id.toString(), 'disconnected');
+            await externalSessionRepo.updateStatus(session.id.toString(), 'disconnected');
             throw new AppError('Không thể khởi chạy trình duyệt: ' + err.message, 500, 'BROWSER_LAUNCH_FAILED');
         }
 
         // Audit log
         await externalSessionRepo.logAudit({
-            sessionId: session._id.toString(),
+            sessionId: session.id.toString(),
             workspaceId,
             userId,
             action: 'session_created',
@@ -102,7 +103,7 @@ export const externalSessionService = {
         if (!session) throw new AppError('Phiên không tồn tại', 404, 'SESSION_NOT_FOUND');
 
         // Only current controller or admin can release
-        if (session.controlledBy?.toString() !== userId) {
+        if (session.controlledById?.toString() !== userId) {
             throw new AppError('Bạn không phải người đang điều khiển', 403, 'NOT_CONTROLLER');
         }
 

@@ -26,7 +26,7 @@ class BrowserPool {
      * Launch a new browser instance for a session.
      * Reuses profile dir if exists (cookie persistence across reconnects).
      */
-    async create(sessionId: string): Promise<BrowserInstance> {
+    async create(sessionId: string, proxyConfig?: string): Promise<BrowserInstance> {
         if (this.instances.size >= env.BROWSER_POOL_MAX) {
             throw new Error(`Browser pool full (max ${env.BROWSER_POOL_MAX})`);
         }
@@ -41,25 +41,45 @@ class BrowserPool {
 
         console.log(`[BrowserPool] Launching browser for session ${sessionId}...`);
 
+        const puppeteerArgs = [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-gpu',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--disable-background-networking',
+            '--disable-extensions',
+            '--window-size=1280,800',
+        ];
+
+        let proxyUser = '';
+        let proxyPass = '';
+        if (proxyConfig) {
+            // expected format: IP:PORT:USER:PASS or IP:PORT
+            const parts = proxyConfig.trim().split(':');
+            if (parts.length >= 2) {
+                puppeteerArgs.push(`--proxy-server=http://${parts[0]}:${parts[1]}`);
+            }
+            if (parts.length >= 4) {
+                proxyUser = parts[2];
+                proxyPass = parts[3];
+            }
+        }
+
         const browser = await puppeteer.launch({
             headless: env.BROWSER_HEADLESS,
             userDataDir: profileDir,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-gpu',
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--no-first-run',
-                '--no-zygote',
-                '--disable-background-networking',
-                '--disable-extensions',
-                '--window-size=1280,800',
-            ],
+            args: puppeteerArgs,
             defaultViewport: { width: 1280, height: 800 },
         });
 
         const page = (await browser.pages())[0] || await browser.newPage();
+
+        if (proxyUser && proxyPass) {
+            await page.authenticate({ username: proxyUser, password: proxyPass });
+        }
 
         // Block unnecessary resources to reduce memory
         await page.setRequestInterception(true);
