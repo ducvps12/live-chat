@@ -1,5 +1,6 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Spin } from 'antd';
+import { useRouter } from 'next/router';
 import Link from 'next/link';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
@@ -95,7 +96,8 @@ const buildChartData = (open: number, closed: number, period: Period): ChartRow[
 };
 
 const WorkspaceDashboard: React.FC<Props> = ({ workspaceId }) => {
-    const { data: wsData, isLoading: workspaceLoading } = useWorkspace(workspaceId);
+    const router = useRouter();
+    const { data: wsData, isLoading: workspaceLoading, error: workspaceError } = useWorkspace(workspaceId);
     const {
         data: statsData,
         isLoading: dashboardLoading,
@@ -112,10 +114,32 @@ const WorkspaceDashboard: React.FC<Props> = ({ workspaceId }) => {
         [openCount, closedCount, period]
     );
 
+    // If the workspace itself isn't found (deleted, wrong ID after migration, etc.),
+    // bounce back to the workspace list instead of leaving the user staring at a spinner.
+    const workspaceMissing = (workspaceError as any)?.response?.status === 404
+        || (error as any)?.response?.status === 404;
+
+    useEffect(() => {
+        if (workspaceMissing) {
+            const timer = setTimeout(() => router.replace('/workspace'), 1200);
+            return () => clearTimeout(timer);
+        }
+    }, [workspaceMissing, router]);
+
     if (workspaceLoading || dashboardLoading) {
         return (
             <div className="flex min-h-[70vh] items-center justify-center">
                 <Spin size="large" />
+            </div>
+        );
+    }
+
+    if (workspaceMissing) {
+        return (
+            <div className="flex min-h-[56vh] flex-col items-center justify-center gap-3 text-slate-500">
+                <AlertTriangle size={28} className="text-amber-400" />
+                <p className="m-0 text-sm">Workspace không tồn tại hoặc đã bị xóa.</p>
+                <p className="m-0 text-xs text-slate-400">Đang chuyển về danh sách workspace…</p>
             </div>
         );
     }
@@ -125,6 +149,18 @@ const WorkspaceDashboard: React.FC<Props> = ({ workspaceId }) => {
             <div className="flex min-h-[56vh] flex-col items-center justify-center gap-3 text-slate-500">
                 <AlertTriangle size={28} className="text-rose-400" />
                 <p className="m-0 text-sm">Không thể tải dữ liệu. Vui lòng thử lại.</p>
+                <button
+                    onClick={() => router.reload()}
+                    className="rounded-xl border border-slate-200 bg-white px-4 py-1.5 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
+                >
+                    Tải lại
+                </button>
+                <Link
+                    href="/workspace"
+                    className="text-xs font-medium text-indigo-600 hover:text-indigo-700"
+                >
+                    ← Quay lại danh sách workspace
+                </Link>
             </div>
         );
     }

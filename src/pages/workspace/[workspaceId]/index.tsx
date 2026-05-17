@@ -11,12 +11,16 @@ export default function WorkspaceDashboardPage() {
     const [ready, setReady] = useState(false);
 
     useEffect(() => {
-        const t = localStorage.getItem('nemark_token');
+        const t = localStorage.getItem('HuyMe_token');
+        if (!t) {
+            router.replace('/auth/login');
+            return;
+        }
         setReady(true);
-        if (!t) router.replace('/auth/login');
     }, [router]);
 
-    if (!ready || !workspaceId) {
+    // Wait for the dynamic route to hydrate so workspaceId is defined.
+    if (!router.isReady || !ready || !workspaceId || Array.isArray(workspaceId)) {
         return (
             <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f0f2f5' }}>
                 <Spin size="large" />
@@ -26,9 +30,9 @@ export default function WorkspaceDashboardPage() {
 
     return (
         <AppLayout headerTitle="Tổng quan Workspace">
-            <Head><title>Tổng quan Workspace | NemarkChat</title></Head>
+            <Head><title>Tổng quan Workspace | HuyMeChat</title></Head>
             <main className="w-full h-full p-6">
-                <WorkspaceDashboard workspaceId={workspaceId as string} />
+                <WorkspaceDashboard workspaceId={workspaceId} />
             </main>
         </AppLayout>
     );
