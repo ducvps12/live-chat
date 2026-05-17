@@ -1,13 +1,8 @@
-import axios from 'axios';
 import prisma from '../../infra/prisma';
 import { ConversationModel } from '../conversation/repos/conversation.model';
 import { MessageModel } from '../conversation/repos/message.model';
 import mongoose from 'mongoose';
-
-// ── AI API configuration ──
-const AI_API_URL = process.env.AI_API_URL || 'https://rk674rm.9router.com/v1';
-const AI_API_KEY = process.env.AI_API_KEY || 'sk-9aab752cd2d2aaf7-shwqj4-1ec380e6';
-const AI_MODEL = process.env.AI_MODEL || 'gpt-5';
+import { aiClient } from '../../lib/ai/aiClient';
 
 // ── Analysis result interface ──
 export interface AIAnalysisResult {
@@ -76,41 +71,28 @@ Quy tắc:
  * Call AI API to analyze a conversation
  */
 async function callAIAnalysis(conversationText: string): Promise<AIAnalysisResult | null> {
+    console.log(`[LeadAI] Calling AI analysis (${conversationText.length} chars)...`);
+
+    const reply = await aiClient.chat({
+        messages: [
+            { role: 'system', content: buildAnalysisPrompt() },
+            { role: 'user', content: `Phân tích cuộc hội thoại sau:\n\n${conversationText}` },
+        ],
+        max_tokens: 800,
+        temperature: 0.3,
+        top_p: 0.9,
+        timeoutMs: 60_000,
+        label: 'lead-analysis',
+    });
+
+    if (!reply) return null;
+
+    let jsonStr = reply.trim();
+    if (jsonStr.startsWith('```')) {
+        jsonStr = jsonStr.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+    }
+
     try {
-        console.log(`[LeadAI] Calling AI analysis (${conversationText.length} chars)...`);
-
-        const response = await axios.post(
-            `${AI_API_URL}/chat/completions`,
-            {
-                model: AI_MODEL,
-                messages: [
-                    { role: 'system', content: buildAnalysisPrompt() },
-                    { role: 'user', content: `Phân tích cuộc hội thoại sau:\n\n${conversationText}` },
-                ],
-                max_tokens: 800,
-                temperature: 0.3,
-                top_p: 0.9,
-            },
-            {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${AI_API_KEY}`,
-                },
-                timeout: 60000,
-            }
-        );
-
-        const reply = response.data?.choices?.[0]?.message?.content;
-        if (!reply) {
-            console.warn('[LeadAI] ⚠️ Empty response from AI');
-            return null;
-        }
-
-        let jsonStr = reply.trim();
-        if (jsonStr.startsWith('```')) {
-            jsonStr = jsonStr.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
-        }
-        
         const parsed = JSON.parse(jsonStr) as AIAnalysisResult;
         console.log(`[LeadAI] ✅ Analysis complete:`, {
             name: parsed.name, phone: parsed.phone, email: parsed.email,
@@ -118,11 +100,7 @@ async function callAIAnalysis(conversationText: string): Promise<AIAnalysisResul
         });
         return parsed;
     } catch (err: any) {
-        if (err instanceof SyntaxError) {
-            console.error('[LeadAI] ❌ Failed to parse AI response as JSON:', err.message);
-        } else {
-            console.error('[LeadAI] ❌ AI call failed:', err?.response?.status, err?.response?.data || err.message);
-        }
+        console.error('[LeadAI] ❌ Failed to parse AI response as JSON:', err.message);
         return null;
     }
 }

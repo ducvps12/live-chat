@@ -1,12 +1,7 @@
 import { chatbotRepo } from './repos/chatbot.repo';
 import { AppError } from '../../middlewares/errorHandler';
 import { knowledgeService } from '../knowledge/knowledge.service';
-import axios from 'axios';
-
-// ── AI API configuration ──
-const AI_API_URL = process.env.AI_API_URL || 'http://163.61.111.226:8318/v1';
-const AI_API_KEY = process.env.AI_API_KEY || 'friend-key-alpha';
-const AI_MODEL = process.env.AI_MODEL || 'gpt-5';
+import { aiClient } from '../../lib/ai/aiClient';
 
 /**
  * Normalize Vietnamese text for matching
@@ -95,52 +90,31 @@ async function callAI(
     conversationHistory?: Array<{ role: string; content: string }>,
     modelOverride?: string
 ): Promise<string | null> {
-    const model = modelOverride || AI_MODEL;
-    try {
-        const messages: Array<{ role: string; content: string }> = [
-            { role: 'system', content: systemPrompt },
-        ];
+    const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+        { role: 'system', content: systemPrompt },
+    ];
 
-        // Add recent conversation history for context (last 6 messages max)
-        if (conversationHistory && conversationHistory.length > 0) {
-            const recent = conversationHistory.slice(-6);
-            messages.push(...recent);
+    // Add recent conversation history for context (last 6 messages max)
+    if (conversationHistory && conversationHistory.length > 0) {
+        const recent = conversationHistory.slice(-6);
+        for (const m of recent) {
+            const role = m.role === 'assistant' || m.role === 'user' || m.role === 'system'
+                ? m.role
+                : 'user';
+            messages.push({ role, content: m.content });
         }
-
-        messages.push({ role: 'user', content: userMessage });
-
-        console.log(`[AI] Calling ${AI_API_URL}/chat/completions with model ${model}...`);
-
-        const response = await axios.post(
-            `${AI_API_URL}/chat/completions`,
-            {
-                model,
-                messages,
-                max_tokens: 500,
-                temperature: 0.7,
-                top_p: 0.9,
-            },
-            {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${AI_API_KEY}`,
-                },
-                timeout: 30000, // 30s timeout
-            }
-        );
-
-        const reply = response.data?.choices?.[0]?.message?.content;
-        if (reply) {
-            console.log(`[AI] ✅ Got response (${reply.length} chars)`);
-            return reply.trim();
-        }
-
-        console.warn('[AI] ⚠️ Empty response from API');
-        return null;
-    } catch (err: any) {
-        console.error('[AI] ❌ API call failed:', err?.response?.status, err?.response?.data || err.message);
-        return null;
     }
+
+    messages.push({ role: 'user', content: userMessage });
+
+    return aiClient.chat({
+        model: modelOverride,
+        messages,
+        max_tokens: 500,
+        temperature: 0.7,
+        top_p: 0.9,
+        label: 'chatbot',
+    });
 }
 
 export const chatbotService = {

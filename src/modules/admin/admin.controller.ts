@@ -2,10 +2,8 @@ import { Request, Response } from 'express';
 import asyncHandler from 'express-async-handler';
 import prisma from '../../infra/prisma';
 import os from 'os';
-import axios from 'axios';
-
-const AI_API_URL = process.env.AI_API_URL || 'http://163.61.111.226:8318/v1';
-const AI_API_KEY = process.env.AI_API_KEY || 'friend-key-alpha';
+import { trafficMonitor } from '../../infra/trafficMonitor';
+import { aiClient } from '../../lib/ai/aiClient';
 
 export const adminController = {
     overview: asyncHandler(async (_req: Request, res: Response) => {
@@ -71,7 +69,7 @@ export const adminController = {
                     freeRAM: Math.round(os.freemem() / 1024 / 1024 / 1024),
                 },
                 database: { name: 'MySQL (Prisma)', collections: 0, dataSize: 0, storageSize: 0, indexes: 0 },
-                ai: { apiUrl: AI_API_URL, model: process.env.AI_MODEL || 'gpt-5' },
+                ai: { apiUrl: aiClient.baseUrl, model: aiClient.defaultModel },
             },
         });
     }),
@@ -240,31 +238,19 @@ export const adminController = {
     }),
 
     aiHealth: asyncHandler(async (_req: Request, res: Response) => {
-        try {
-            const start = Date.now();
-            const response = await axios.get(`${AI_API_URL}/models`, {
-                headers: { 'Authorization': `Bearer ${AI_API_KEY}` },
-                timeout: 10000,
-            });
-            const latency = Date.now() - start;
-            const models = response.data?.data || [];
-            res.json({
-                success: true,
-                data: {
-                    status: 'online', latency,
-                    models: models.map((m: any) => ({ id: m.id, owned_by: m.owned_by })),
-                    modelCount: models.length,
-                },
-            });
-        } catch (err: any) {
-            res.json({
-                success: true,
-                data: {
-                    status: 'offline', error: err?.response?.status || err.message,
-                    latency: -1, models: [], modelCount: 0,
-                },
-            });
-        }
+        const result = await aiClient.listModels();
+        res.json({
+            success: true,
+            data: {
+                status: result.status,
+                latency: result.latencyMs,
+                models: result.models.map((m) => ({ id: m.id, owned_by: m.owned_by })),
+                modelCount: result.models.length,
+                baseUrl: aiClient.baseUrl,
+                defaultModel: aiClient.defaultModel,
+                ...(result.error ? { error: result.error } : {}),
+            },
+        });
     }),
 
     recentMessages: asyncHandler(async (_req: Request, res: Response) => {
@@ -375,43 +361,52 @@ export const adminController = {
     systemMetrics: asyncHandler(async (_req: Request, res: Response) => {
         const uptime = process.uptime();
         const memUsage = process.memoryUsage();
-        
-        // Mock network data as os doesn't provide cross-platform realtime traffic out of the box
-        // In a real app we might use systeminformation package
-        const mockNetwork = {
-            rxSec: Math.floor(Math.random() * 5000) + 1000,
-            txSec: Math.floor(Math.random() * 3000) + 500,
-            connections: Math.floor(Math.random() * 500) + 100,
+
+        // Real network/traffic data from in-memory monitor
+        const tStats = trafficMonitor.getStats();
+        const realNetwork = {
+            rxSec: tStats.current.rxSec,
+            txSec: tStats.current.txSec,
+            connections: tStats.current.connections,
+            rps: tStats.current.rps,
+            activeIps: tStats.current.activeIps,
         };
 
         const totalRAM = os.totalmem();
         const freeRAM = os.freemem();
         const usedRAM = totalRAM - freeRAM;
 
+        // CPU usage: rough proxy via load average / cores (Linux only); fallback to small value
+        const load1 = (os.loadavg && os.loadavg()[0]) || 0;
+        const cpuPct = Math.min(100, Math.round((load1 / Math.max(os.cpus().length, 1)) * 100));
+
         res.json({
             success: true,
             data: {
                 cpu: {
-                    model: os.cpus()[0].model,
+                    model: os.cpus()[0]?.model || 'unknown',
                     cores: os.cpus().length,
-                    usagePercent: Math.floor(Math.random() * 30) + 5, // Simple mock
+                    usagePercent: cpuPct || 1,
+                    load1,
                 },
                 memory: {
                     total: totalRAM,
                     free: freeRAM,
                     used: usedRAM,
                     usedPercent: Math.round((usedRAM / totalRAM) * 100),
+                    heapUsedMB: Math.round(memUsage.heapUsed / 1024 / 1024),
+                    heapTotalMB: Math.round(memUsage.heapTotal / 1024 / 1024),
                 },
                 disk: {
-                    // Node.js doesn't natively give disk usage without spawn
-                    // Mock data
-                    total: 100 * 1024 * 1024 * 1024, // 100GB
-                    used: 45 * 1024 * 1024 * 1024,   // 45GB
+                    // Node.js doesn't natively give disk usage without spawn — kept as estimate
+                    total: 100 * 1024 * 1024 * 1024,
+                    used: 45 * 1024 * 1024 * 1024,
                     usedPercent: 45,
                 },
-                network: mockNetwork,
+                network: realNetwork,
                 uptime: uptime,
                 uptimeFormatted: formatUptime(uptime),
+                ddos: tStats.ddos,
             },
         });
     }),

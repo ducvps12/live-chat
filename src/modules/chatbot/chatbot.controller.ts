@@ -1,10 +1,7 @@
 import { Request, Response } from 'express';
 import asyncHandler from 'express-async-handler';
 import { chatbotService } from './chatbot.service';
-import axios from 'axios';
-
-const AI_API_URL = process.env.AI_API_URL || 'http://163.61.111.226:8318/v1';
-const AI_API_KEY = process.env.AI_API_KEY || 'friend-key-alpha';
+import { aiClient } from '../../lib/ai/aiClient';
 
 export const chatbotController = {
     list: asyncHandler(async (req: Request, res: Response) => {
@@ -60,24 +57,15 @@ export const chatbotController = {
 
     // List available AI models from the custom API
     listModels: asyncHandler(async (_req: Request, res: Response) => {
-        try {
-            const response = await axios.get(`${AI_API_URL}/models`, {
-                headers: { 'Authorization': `Bearer ${AI_API_KEY}` },
-                timeout: 10000,
-            });
-            const models = (response.data?.data || []).map((m: any) => ({
-                id: m.id,
-                name: m.id,
-                owned_by: m.owned_by || 'custom',
-            }));
-            res.json({ success: true, data: models });
-        } catch (err: any) {
-            console.error('[AI] Failed to list models:', err?.response?.status, err.message);
-            // Return default model as fallback
-            res.json({
-                success: true,
-                data: [{ id: process.env.AI_MODEL || 'gpt-5', name: process.env.AI_MODEL || 'gpt-5', owned_by: 'custom' }],
-            });
+        const result = await aiClient.listModels();
+        if (result.status === 'online' && result.models.length > 0) {
+            res.json({ success: true, data: result.models });
+            return;
         }
+        // Fallback: surface the configured default model so the UI is never empty
+        res.json({
+            success: true,
+            data: [{ id: aiClient.defaultModel, name: aiClient.defaultModel, owned_by: 'fallback' }],
+        });
     }),
 };

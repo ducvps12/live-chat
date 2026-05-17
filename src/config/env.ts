@@ -1,11 +1,11 @@
-import dotenv from 'dotenv';
+﻿ import dotenv from 'dotenv';
 dotenv.config();
 
 export const env = {
     PORT: process.env.SERVER_PORT || 4010,
     NODE_ENV: process.env.NODE_ENV || 'development',
-    MONGO_URI: process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/nemark_dev',
-    JWT_SECRET: process.env.JWT_SECRET || 'nemark-super-secret-key',
+    MONGO_URI: process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/HuyMe_dev',
+    JWT_SECRET: process.env.JWT_SECRET || 'HuyMe-super-secret-key',
     JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '7d',
 
     // Browser Pool (Remote Session)
@@ -18,7 +18,7 @@ export const env = {
     ACB_ACCOUNT_NUMBER: process.env.ACB_ACCOUNT_NUMBER || '24488671',
     ACB_API_TOKEN: process.env.ACB_API_TOKEN || 'ec4f8aeb9d87bc0ffa48f709365313d1',
     ACB_API_URL: process.env.ACB_API_URL || 'https://api.sieuthicode.net/historyapiacb',
-    ACB_ACCOUNT_NAME: process.env.ACB_ACCOUNT_NAME || 'NEMARK DIGITAL',
+    ACB_ACCOUNT_NAME: process.env.ACB_ACCOUNT_NAME || 'HuyMe Digital',
 
     // Google OAuth
     GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || '',
@@ -30,4 +30,15 @@ export const env = {
 
     // Frontend URL
     FRONTEND_URL: process.env.FRONTEND_URL || 'http://localhost:3010',
+
+    // ───────── AI / LLM (OpenAI-compatible endpoint) ─────────
+    // Default targets a locally-running 9Router / CLIProxyAPI (OpenCode Free provider),
+    // which exposes a no-auth OpenAI-compatible API at /v1.
+    // To use OpenAI/Anthropic/Gemini/OpenRouter, override these in .env.
+    AI_API_URL: process.env.AI_API_URL || 'http://localhost:8317/v1',
+    AI_API_KEY: process.env.AI_API_KEY || '',
+    AI_MODEL: process.env.AI_MODEL || 'oc/minimax-m2.5-free',
+    // Comma-separated fallback chain used when the primary model fails (429, 5xx, empty).
+    AI_MODEL_FALLBACK: process.env.AI_MODEL_FALLBACK || 'oc/qwen3.6-plus-free,oc/deepseek-v4-flash-free',
+    AI_REQUEST_TIMEOUT_MS: Number(process.env.AI_REQUEST_TIMEOUT_MS) || 30_000,
 };
