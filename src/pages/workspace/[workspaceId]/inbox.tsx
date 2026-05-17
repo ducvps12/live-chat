@@ -4,7 +4,8 @@ import { useEffect, useState, useRef, useCallback, useMemo, Fragment } from 'rea
 import { Input, Badge, Spin, Empty, Tag, Button, message, Tooltip, Popover, Select, DatePicker, Form, Modal, Checkbox, Progress, Dropdown, ColorPicker } from 'antd';
 import {
     Search, Send, Paperclip, ArrowLeft, X as XIcon, Smile,
-    MessageSquare, Clock, User, Image as ImageIcon, RotateCw, Filter, Check, CheckCheck, UserCheck, UserX, Users, Zap, Reply, Edit2, Trash2, Globe, Forward, Bookmark, Plus, Settings, ChevronDown, Copy, Megaphone, MoreHorizontal
+    MessageSquare, Clock, User, Image as ImageIcon, RotateCw, Filter, Check, CheckCheck, UserCheck, UserX, Users, Zap, Reply, Edit2, Trash2, Globe, Forward, Bookmark, Plus, Settings, ChevronDown, Copy, Megaphone, MoreHorizontal,
+    Facebook as FacebookIcon, MessageCircle, Layers
 } from 'lucide-react';
 import { useGetMe } from '../../../domains/auth/auth.hooks';
 import { httpClient } from '../../../lib/http/client';
@@ -17,6 +18,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useTotalUnreadCount, conversationKeys, useAddInternalNote } from '../../../domains/conversation';
 import AppLayout from '../../../components/layout/AppLayout';
 import StickerPicker from '../../../features/inbox/components/StickerPicker';
+import SmartAvatar from '../../../components/common/SmartAvatar';
 
 const { RangePicker } = DatePicker;
 
@@ -352,9 +354,9 @@ export default function InboxPage() {
 
     useEffect(() => {
         if (totalUnreadCount > 0) {
-            document.title = `(${totalUnreadCount}) Inbox | NemarkChat`;
+            document.title = `(${totalUnreadCount}) Inbox | HuyMeChat`;
         } else {
-            document.title = `Inbox | NemarkChat`;
+            document.title = `Inbox | HuyMeChat`;
         }
     }, [totalUnreadCount]);
 
@@ -614,12 +616,23 @@ export default function InboxPage() {
             .then(res => setFbPages(res.data?.data?.pages || []))
             .catch(() => {});
         // Fetch Zalo accounts for account filter
-        httpClient.get(`/workspaces/${workspaceId}/zalo/status`)
+        const fetchZaloStatus = () => httpClient.get(`/workspaces/${workspaceId}/zalo/status`)
             .then(res => {
                 const accounts = res.data?.data?.accounts || [];
                 setZaloAccounts(accounts.map((a: any) => ({ accountId: a.accountId, name: a.name || 'Zalo', isOnline: a.isOnline })));
             })
             .catch(() => {});
+        fetchZaloStatus();
+        // Re-poll every 30s to catch disconnects in near-real-time
+        const zaloPollInterval = setInterval(fetchZaloStatus, 30_000);
+
+        // Re-poll Facebook pages too
+        const fetchFbStatus = () => httpClient.get(`/workspaces/${workspaceId}/facebook/pages`)
+            .then(res => setFbPages(res.data?.data?.pages || []))
+            .catch(() => {});
+        const fbPollInterval = setInterval(fetchFbStatus, 30_000);
+
+        return () => { clearInterval(zaloPollInterval); clearInterval(fbPollInterval); };
     }, [workspaceId]);
 
     // ── Debounced message content search ──
@@ -841,7 +854,7 @@ export default function InboxPage() {
     useEffect(() => {
         if (!workspaceId || !me) return;
 
-        const token = localStorage.getItem('nemark_token');
+        const token = localStorage.getItem('HuyMe_token');
         if (!token) return;
 
         const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4010';
@@ -1218,6 +1231,47 @@ export default function InboxPage() {
     const handleSend = async () => {
         const currentText = getInputValue();
         if (!currentText.trim() || !selectedConvId || !workspaceId || sending) return;
+
+        // ── Guard: prevent sending when channel account is disconnected ──
+        const ch = (selectedConv as any)?.channel;
+        if (ch === 'zalo') {
+            const acctId = (selectedConv as any)?.metadata?.accountId;
+            const onlineAccounts = zaloAccounts.filter(a => a.isOnline);
+            if (zaloAccounts.length > 0 && onlineAccounts.length === 0) {
+                message.error('Không có tài khoản Zalo nào đang kết nối. Vui lòng kết nối lại.');
+                return;
+            }
+            if (acctId) {
+                const acct = zaloAccounts.find(a => a.accountId === acctId);
+                if (!acct) {
+                    message.error('Tài khoản Zalo của hội thoại này không còn tồn tại. Vui lòng kết nối lại.');
+                    return;
+                }
+                if (!acct.isOnline) {
+                    message.error(`Tài khoản Zalo "${acct.name || ''}" đã mất kết nối. Vui lòng kết nối lại.`);
+                    return;
+                }
+            }
+        } else if (ch === 'facebook') {
+            const pageId = (selectedConv as any)?.metadata?.pageId;
+            const onlinePages = fbPages.filter(p => p.status === 'active');
+            if (fbPages.length > 0 && onlinePages.length === 0) {
+                message.error('Không có Fanpage Facebook nào đang kết nối.');
+                return;
+            }
+            if (pageId) {
+                const page = fbPages.find(p => p.pageId === pageId);
+                if (!page) {
+                    message.error('Fanpage của hội thoại này không còn tồn tại trong workspace.');
+                    return;
+                }
+                if (page.status !== 'active') {
+                    message.error(`Fanpage "${page.pageName || ''}" đã mất kết nối. Vui lòng kết nối lại.`);
+                    return;
+                }
+            }
+        }
+
         const text = currentText.trim();
         setInputValue('');
         const replyContext = replyingTo ? {
@@ -1722,9 +1776,9 @@ export default function InboxPage() {
                     onChange={setFilterChannel}
                     options={[
                         { label: 'Tất cả', value: 'all' },
-                        { label: '🌐 Live Chat (Widget)', value: 'widget' },
-                        { label: '💬 Zalo', value: 'zalo' },
-                        { label: '📘 Facebook', value: 'facebook' },
+                        { label: 'Live Chat (Widget)', value: 'widget' },
+                        { label: 'Zalo', value: 'zalo' },
+                        { label: 'Facebook', value: 'facebook' },
                     ]}
                 />
             </Form.Item>
@@ -1791,7 +1845,7 @@ export default function InboxPage() {
     return (
         <AppLayout hideHeader={true}>
             <Head>
-                <title>Inbox | NemarkChat</title>
+                <title>Inbox | HuyMeChat</title>
             </Head>
 
             <style>{`
@@ -1932,21 +1986,26 @@ export default function InboxPage() {
                             </div>
                             {/* ── Channel source tabs ── */}
                             <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                                {[
-                                    { key: 'all', label: 'Tất cả', icon: '📋' },
-                                    { key: 'widget', label: 'Website', icon: '🌐' },
-                                    { key: 'zalo', label: 'Zalo', icon: '💬' },
-                                    { key: 'facebook', label: 'Facebook', icon: '📘' },
-                                ].map((ch) => (
-                                    <Tag
-                                        key={ch.key}
-                                        color={filterChannel === ch.key ? '#1877F2' : undefined}
-                                        onClick={() => setFilterChannel(ch.key)}
-                                        style={{ cursor: 'pointer', borderRadius: 12, padding: '2px 10px', margin: 0, fontSize: 12 }}
-                                    >
-                                        {ch.icon} {ch.label}
-                                    </Tag>
-                                ))}
+                                {([
+                                    { key: 'all', label: 'Tất cả', Icon: Layers },
+                                    { key: 'widget', label: 'Website', Icon: Globe },
+                                    { key: 'zalo', label: 'Zalo', Icon: MessageCircle },
+                                    { key: 'facebook', label: 'Facebook', Icon: FacebookIcon },
+                                ] as const).map((ch) => {
+                                    const active = filterChannel === ch.key;
+                                    const IconCmp = ch.Icon;
+                                    return (
+                                        <Tag
+                                            key={ch.key}
+                                            color={active ? '#1877F2' : undefined}
+                                            onClick={() => setFilterChannel(ch.key)}
+                                            style={{ cursor: 'pointer', borderRadius: 12, padding: '2px 10px', margin: 0, fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                                        >
+                                            <IconCmp size={12} />
+                                            {ch.label}
+                                        </Tag>
+                                    );
+                                })}
                             </div>
                             {/* Fanpage sub-filter (visible when channel=facebook) */}
                             {filterChannel === 'facebook' && fbPages.length > 0 && (
@@ -1957,7 +2016,7 @@ export default function InboxPage() {
                                     style={{ minWidth: 140, fontSize: 11 }}
                                     popupMatchSelectWidth={false}
                                     options={[
-                                        { label: '📘 Tất cả Fanpage', value: 'all' },
+                                        { label: 'Tất cả Fanpage', value: 'all' },
                                         ...fbPages.filter(p => p.status === 'active').map(p => ({
                                             label: p.pageName,
                                             value: p.pageId,
@@ -1973,11 +2032,27 @@ export default function InboxPage() {
                                     onChange={(v) => setFilterZaloAccountId(v)}
                                     style={{ minWidth: 160, fontSize: 11 }}
                                     popupMatchSelectWidth={false}
+                                    optionRender={(opt: any) => {
+                                        const data = opt.data || opt;
+                                        const isOnline: boolean | undefined = data.isOnline;
+                                        return (
+                                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                                                {typeof isOnline === 'boolean' && (
+                                                    <span style={{
+                                                        display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+                                                        background: isOnline ? '#10b981' : '#cbd5e1',
+                                                    }} />
+                                                )}
+                                                {data.label}
+                                            </span>
+                                        );
+                                    }}
                                     options={[
-                                        { label: '💬 Tất cả Zalo', value: 'all' },
+                                        { label: 'Tất cả tài khoản Zalo', value: 'all' },
                                         ...zaloAccounts.map((acc, idx) => ({
-                                            label: `${acc.isOnline ? '🟢' : '🔴'} ${acc.name || `Zalo ${idx + 1}`}`,
+                                            label: acc.name || `Zalo ${idx + 1}`,
                                             value: acc.accountId,
+                                            isOnline: acc.isOnline,
                                         })),
                                     ]}
                                 />
@@ -2230,23 +2305,14 @@ export default function InboxPage() {
                                     }}
                                 >
                                     <div style={{ ...styles.convAvatar, cursor: 'pointer' }} onClick={(e) => { e.stopPropagation(); setProfileModalConv(conv); }}>
-                                        {conv.visitorInfo?.avatar ? (
-                                            <img
-                                                src={conv.visitorInfo.avatar}
-                                                alt=""
-                                                style={{ width: 42, height: 42, borderRadius: 14, objectFit: 'cover' }}
-                                                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; (e.target as HTMLImageElement).nextElementSibling && ((e.target as HTMLImageElement).nextElementSibling as HTMLElement).style.removeProperty('display'); }}
-                                            />
-                                        ) : null}
-                                        <span style={{
-                                            display: conv.visitorInfo?.avatar ? 'none' : 'flex',
-                                            width: 42, height: 42, borderRadius: 14,
-                                            alignItems: 'center', justifyContent: 'center',
-                                            background: `hsl(${(visitorName(conv).charCodeAt(0) * 37) % 360}, 55%, 55%)`,
-                                            color: '#fff', fontWeight: 700, fontSize: 16,
-                                        }}>
-                                            {visitorName(conv).charAt(0).toUpperCase()}
-                                        </span>
+                                        <SmartAvatar
+                                            src={conv.visitorInfo?.avatar}
+                                            name={visitorName(conv)}
+                                            size={42}
+                                            rounded={14}
+                                            online={visitorOnlineMap[conv.visitorId || ''] || null}
+                                            showStatus
+                                        />
                                     </div>
                                     <div style={{ flex: 1, minWidth: 0 }}>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -2545,41 +2611,15 @@ export default function InboxPage() {
                                         className="mobile-back-btn"
                                         style={{ padding: 4, height: 32, width: 32, borderRadius: 10 }}
                                     />
-                                    <div style={{ position: 'relative', flexShrink: 0 }}>
-                                        <div
-                                            style={{
-                                                width: 36, height: 36, borderRadius: 12,
-                                                background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
-                                                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                                cursor: 'pointer', overflow: 'hidden',
-                                            }}
-                                            onClick={() => setProfileModalConv(selectedConv)}
-                                        >
-                                            {selectedConv.visitorInfo?.avatar ? (
-                                                <img
-                                                    src={selectedConv.visitorInfo.avatar}
-                                                    alt=""
-                                                    style={{ width: 36, height: 36, borderRadius: 12, objectFit: 'cover' }}
-                                                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; (e.target as HTMLImageElement).nextElementSibling && ((e.target as HTMLImageElement).nextElementSibling as HTMLElement).style.removeProperty('display'); }}
-                                                />
-                                            ) : null}
-                                            <span style={{
-                                                display: selectedConv.visitorInfo?.avatar ? 'none' : 'flex',
-                                                width: 36, height: 36, borderRadius: 12,
-                                                alignItems: 'center', justifyContent: 'center',
-                                                color: '#fff', fontWeight: 600, fontSize: 14, letterSpacing: 0.3,
-                                            }}>
-                                                {visitorName(selectedConv).charAt(0).toUpperCase()}
-                                            </span>
-                                        </div>
-                                        <span style={{
-                                            position: 'absolute', bottom: -1, right: -1,
-                                            width: 10, height: 10, borderRadius: '50%',
-                                            border: '2px solid #fff',
-                                            background: visitorOnlineMap[selectedConv?.visitorId || ''] === 'online' ? '#22c55e'
-                                                : visitorOnlineMap[selectedConv?.visitorId || ''] === 'idle' ? '#eab308'
-                                                    : '#d1d5db',
-                                        }} />
+                                    <div style={{ position: 'relative', flexShrink: 0, cursor: 'pointer' }} onClick={() => setProfileModalConv(selectedConv)}>
+                                        <SmartAvatar
+                                            src={selectedConv.visitorInfo?.avatar}
+                                            name={visitorName(selectedConv)}
+                                            size={36}
+                                            rounded={12}
+                                            online={visitorOnlineMap[selectedConv?.visitorId || ''] || null}
+                                            showStatus
+                                        />
                                     </div>
                                     <div style={{ minWidth: 0 }}>
                                         <div style={{ fontWeight: 600, fontSize: 14, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -2996,12 +3036,14 @@ export default function InboxPage() {
                                                         const avatar = selectedConv?.visitorInfo?.avatar;
                                                         const senderName = msg.sender?.name || visitorName(selectedConv!);
                                                         if (!isConsecutive) {
-                                                            return avatar ? (
-                                                                <img src={avatar} alt="" style={{ width: 30, height: 30, borderRadius: 10, objectFit: 'cover' as const, flexShrink: 0, marginTop: 2 }} onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
-                                                            ) : (
-                                                                <div style={{ width: 30, height: 30, borderRadius: 10, background: `hsl(${(senderName.charCodeAt(0) * 37) % 360}, 55%, 55%)`, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontWeight: 600, fontSize: 12, flexShrink: 0, marginTop: 2 }}>
-                                                                    {senderName.charAt(0).toUpperCase()}
-                                                                </div>
+                                                            return (
+                                                                <SmartAvatar
+                                                                    src={avatar}
+                                                                    name={senderName}
+                                                                    size={30}
+                                                                    rounded={10}
+                                                                    style={{ marginTop: 2 }}
+                                                                />
                                                             );
                                                         }
                                                         return <div style={{ width: 30, flexShrink: 0 }} />;
@@ -3333,6 +3375,119 @@ export default function InboxPage() {
                                         </div>
                                     )}
                                     {/* iMessage-style input bar */}
+                                    {(() => {
+                                        // ── Channel-connection guard ──
+                                        const ch = (selectedConv as any)?.channel;
+                                        let channelStatus: { connected: boolean; reason?: string; accountLabel?: string; settingsTab?: string } = { connected: true };
+                                        if (ch === 'zalo') {
+                                            const acctId = (selectedConv as any)?.metadata?.accountId;
+                                            const onlineAccounts = zaloAccounts.filter(a => a.isOnline);
+                                            const offlineAccounts = zaloAccounts.filter(a => !a.isOnline);
+
+                                            // Case 1: workspace has 0 online Zalo accounts at all
+                                            if (zaloAccounts.length > 0 && onlineAccounts.length === 0) {
+                                                channelStatus = {
+                                                    connected: false,
+                                                    reason: 'Tất cả tài khoản Zalo của workspace đang offline (đăng xuất hoặc hết phiên).',
+                                                    accountLabel: offlineAccounts.map(a => a.name).join(', ') || 'Zalo',
+                                                    settingsTab: 'zalo',
+                                                };
+                                            }
+                                            // Case 2: conv was bound to a specific account
+                                            else if (acctId) {
+                                                const acct = zaloAccounts.find(a => a.accountId === acctId);
+                                                if (!acct) {
+                                                    // accountId references an account that no longer exists in DB
+                                                    channelStatus = {
+                                                        connected: false,
+                                                        reason: 'Tài khoản Zalo đã từng nhận tin này không còn tồn tại (đã bị xoá hoặc đăng xuất hoàn toàn).',
+                                                        accountLabel: (selectedConv as any)?.metadata?.pageName || 'Zalo',
+                                                        settingsTab: 'zalo',
+                                                    };
+                                                } else if (!acct.isOnline) {
+                                                    channelStatus = {
+                                                        connected: false,
+                                                        reason: 'Tài khoản Zalo đã mất kết nối (đăng xuất hoặc hết phiên).',
+                                                        accountLabel: acct.name || 'Zalo',
+                                                        settingsTab: 'zalo',
+                                                    };
+                                                }
+                                            }
+                                        } else if (ch === 'facebook') {
+                                            const pageId = (selectedConv as any)?.metadata?.pageId;
+                                            const onlinePages = fbPages.filter(p => p.status === 'active');
+                                            if (fbPages.length > 0 && onlinePages.length === 0) {
+                                                channelStatus = {
+                                                    connected: false,
+                                                    reason: 'Không có Fanpage Facebook nào đang kết nối.',
+                                                    accountLabel: 'Facebook',
+                                                    settingsTab: 'facebook',
+                                                };
+                                            } else if (pageId) {
+                                                const page = fbPages.find(p => p.pageId === pageId);
+                                                if (!page) {
+                                                    channelStatus = {
+                                                        connected: false,
+                                                        reason: 'Fanpage đã từng nhận tin này không còn tồn tại trong workspace.',
+                                                        accountLabel: 'Facebook',
+                                                        settingsTab: 'facebook',
+                                                    };
+                                                } else if (page.status !== 'active') {
+                                                    channelStatus = {
+                                                        connected: false,
+                                                        reason: 'Fanpage Facebook đã mất kết nối.',
+                                                        accountLabel: page.pageName || 'Facebook',
+                                                        settingsTab: 'facebook',
+                                                    };
+                                                }
+                                            }
+                                        }
+
+                                        if (!channelStatus.connected) {
+                                            return (
+                                                <div style={{
+                                                    padding: '14px 16px',
+                                                    background: 'linear-gradient(180deg, #fef2f2 0%, #fff 100%)',
+                                                    borderTop: '1px solid #fecaca',
+                                                    flexShrink: 0,
+                                                }}>
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                                                        <div style={{
+                                                            width: 36, height: 36, borderRadius: '50%',
+                                                            background: '#fee2e2',
+                                                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                                            flexShrink: 0,
+                                                        }}>
+                                                            <UserX size={18} color="#dc2626" />
+                                                        </div>
+                                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                                            <div style={{ fontSize: 13, fontWeight: 700, color: '#991b1b', marginBottom: 2 }}>
+                                                                {channelStatus.accountLabel} chưa kết nối
+                                                            </div>
+                                                            <div style={{ fontSize: 12, color: '#7f1d1d', lineHeight: 1.45 }}>
+                                                                {channelStatus.reason} Bạn cần kết nối lại để tiếp tục trả lời tin nhắn.
+                                                            </div>
+                                                        </div>
+                                                        <button
+                                                            onClick={() => router.push(`/workspace/${workspaceId}/settings?tab=${channelStatus.settingsTab}`)}
+                                                            style={{
+                                                                display: 'flex', alignItems: 'center', gap: 6,
+                                                                padding: '8px 16px', borderRadius: 999,
+                                                                background: '#dc2626', color: '#fff',
+                                                                border: 'none', cursor: 'pointer',
+                                                                fontWeight: 600, fontSize: 13,
+                                                                boxShadow: '0 2px 6px rgba(220,38,38,0.25)',
+                                                                flexShrink: 0,
+                                                            }}
+                                                        >
+                                                            <RotateCw size={14} /> Kết nối lại
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            );
+                                        }
+
+                                        return (
                                     <div style={{
                                         padding: '10px 12px',
                                         background: '#fff',
@@ -3717,6 +3872,8 @@ export default function InboxPage() {
                                             </button>
                                         </div>
                                     </div>
+                                        );
+                                    })()}
                                 </div>
                             )}
                         </>
@@ -3968,7 +4125,9 @@ export default function InboxPage() {
                         const filtered = convList.filter(c => !forwardSearch || visitorName(c).toLowerCase().includes(forwardSearch.toLowerCase()));
                         if (filtered.length === 0) return <Empty description="Kh\u00f4ng t\u00ecm th\u1ea5y h\u1ed9i tho\u1ea1i n\u00e0o" style={{ padding: 30 }} />;
                         return filtered.map(conv => {
-                            const channelIcon = (conv as any).channel === 'zalo' ? '\ud83d\udc99' : (conv as any).channel === 'facebook' ? '\ud83d\udcd8' : '\ud83c\udf10';
+                            const channel = (conv as any).channel;
+                            const ChannelIcon = channel === 'zalo' ? MessageCircle : channel === 'facebook' ? FacebookIcon : Globe;
+                            const channelColor = channel === 'zalo' ? '#0068ff' : channel === 'facebook' ? '#1877F2' : '#10b981';
                             const name = visitorName(conv);
                             const avatar = conv.visitorInfo?.avatar;
                             return (
@@ -4003,8 +4162,9 @@ export default function InboxPage() {
                                         </div>
                                     )}
                                     <div style={{ flex: 1 }}>
-                                        <div style={{ fontSize: 13.5, fontWeight: 500, color: '#1f2937' }}>
-                                            {channelIcon} {name}
+                                        <div style={{ fontSize: 13.5, fontWeight: 500, color: '#1f2937', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                                            <ChannelIcon size={12} color={channelColor} />
+                                            {name}
                                         </div>
                                         {conv.lastMessagePreview && (
                                             <div style={{ fontSize: 11.5, color: '#9ca3af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 280 }}>
@@ -4432,27 +4592,27 @@ const styles: Record<string, React.CSSProperties> = {
     },
     msgRow: {
         display: 'flex',
-        marginBottom: 10,
+        marginBottom: 8,
     },
     msgBubble: {
-        padding: '12px 16px',
-        borderRadius: 18,
+        padding: '9px 14px',
+        borderRadius: 14,
         fontSize: 14,
-        lineHeight: 1.55,
+        lineHeight: 1.5,
         wordBreak: 'break-word' as const,
     },
     msgAgent: {
-        background: 'var(--gradient-primary, #6366f1)',
+        background: '#2563eb',
         color: '#fff',
-        borderBottomRightRadius: 6,
-        boxShadow: '0 2px 8px rgba(99, 102, 241, 0.2)',
+        borderBottomRightRadius: 4,
+        boxShadow: '0 1px 2px rgba(15, 23, 42, 0.08)',
     },
     msgVisitor: {
         background: 'var(--color-bg, #fff)',
         border: '1px solid var(--color-border, #e2e8f0)',
         color: 'var(--color-text, #1e293b)',
-        borderBottomLeftRadius: 6,
-        boxShadow: '0 1px 3px rgba(0,0,0,0.03)',
+        borderBottomLeftRadius: 4,
+        boxShadow: '0 1px 2px rgba(15, 23, 42, 0.04)',
     },
     systemMsg: {
         textAlign: 'center' as const,
