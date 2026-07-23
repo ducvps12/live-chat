@@ -24,6 +24,11 @@ services:
     restart: unless-stopped
     env_file:
       - .env.production
+    environment:
+      # Nginx and the container healthcheck both target port 4020.
+      # Keep the API listener explicit so a missing SERVER_PORT in the
+      # untracked production env file cannot make the container unhealthy.
+      SERVER_PORT: "4020"
     ports:
       - "3020:3020"
       - "4020:4020"
