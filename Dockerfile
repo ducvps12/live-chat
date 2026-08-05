@@ -16,8 +16,14 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
+# Generate Prisma Client explicitly because dependencies are installed with
+# lifecycle scripts disabled in the dependency stage.
+RUN DATABASE_URL="mysql://root:root@localhost:3306/livechatnemark" npx prisma generate
+
 # Build Next.js (production)
 RUN npm run build
+RUN test -s .next/BUILD_ID \
+    && find .next/static -type f -name '*.js' -print -quit | grep -q .
 
 # ─────────────────────────────────────
 # Stage 3: Production runner
@@ -52,9 +58,14 @@ COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/next.config.ts ./next.config.ts
 COPY --from=builder /app/tsconfig.json ./tsconfig.json
+COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/prisma.config.ts ./prisma.config.ts
+RUN DATABASE_URL="mysql://root:root@localhost:3306/livechatnemark" npx prisma generate
 
 # Copy backend source (runs via tsx at runtime)
 COPY --from=builder /app/src ./src
+COPY --from=builder /app/scripts/smoke-static-assets.ts ./scripts/smoke-static-assets.ts
+COPY --from=builder /app/scripts/smoke-public-assets.mjs ./scripts/smoke-public-assets.mjs
 
 # Create directories for persistent data
 RUN mkdir -p /app/data/browser-profiles /app/data/zalo-sessions /app/public/uploads

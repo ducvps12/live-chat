@@ -3,7 +3,7 @@ import Joi from 'joi';
 const preChatFieldSchema = Joi.object({
     key: Joi.string().required(),
     label: Joi.string().required(),
-    type: Joi.string().valid('text', 'email', 'tel', 'textarea', 'select'),
+    type: Joi.string().valid('text', 'email', 'tel', 'textarea', 'select', 'checkbox'),
     required: Joi.boolean(),
     enabled: Joi.boolean(),
     placeholder: Joi.string().allow(''),
@@ -23,12 +23,45 @@ const configSchema = Joi.object({
     language: Joi.string(),
     avatarUrl: Joi.string().uri().allow(''),
     showBranding: Joi.boolean(),
+    brandingMode: Joi.string().valid('nemark', 'custom', 'hidden'),
+    brandingName: Joi.string().trim().allow('').max(80),
+    brandingUrl: Joi.string().uri({ scheme: ['http', 'https'] }).allow('').max(500),
+    themePreset: Joi.string().valid('modern', 'minimal', 'glass', 'compact'),
+    customCss: Joi.string().allow('').max(12000),
     offlineMessage: Joi.string(),
     autoReply: Joi.string().allow(''),
+    headerAvatar: Joi.string().uri().allow(''),
+    profileDisplay: Joi.string().valid('company', 'agent'),
+    showTypingIndicator: Joi.boolean(),
+    requestRating: Joi.boolean(),
+    autoOpen: Joi.object({
+        mode: Joi.string().valid('none', 'immediate', '20s', '5min', 'custom'),
+        customSeconds: Joi.number().min(0).max(86400),
+    }),
+    greetingPopup: Joi.object({
+        enabled: Joi.boolean(),
+        message: Joi.string().allow('').max(500),
+        ctaText: Joi.string().allow('').max(100),
+        delay: Joi.number().min(0).max(86400),
+    }),
+    urlRules: Joi.object({
+        domains: Joi.array().items(Joi.object({
+            type: Joi.string().valid('include', 'exclude').required(),
+            value: Joi.string().trim().min(1).max(500).required(),
+        })),
+        paths: Joi.array().items(Joi.object({
+            type: Joi.string().valid('include', 'exclude').required(),
+            value: Joi.string().trim().min(1).max(500).required(),
+        })),
+    }),
     preChatForm: Joi.object({
         enabled: Joi.boolean(),
         title: Joi.string().allow(''),
         fields: Joi.array().items(preChatFieldSchema),
+        marketingConsent: Joi.object({
+            enabled: Joi.boolean(),
+            text: Joi.string().allow('').max(1000),
+        }),
     }),
 });
 
@@ -60,6 +93,10 @@ export const workspaceValidate = {
     addMember: Joi.object({
         email: Joi.string().email().required(),
         role: Joi.string().valid('admin', 'agent', 'member').default('member'),
+    }),
+
+    updateMemberRole: Joi.object({
+        role: Joi.string().valid('admin', 'agent', 'member').required(),
     }),
 };
 

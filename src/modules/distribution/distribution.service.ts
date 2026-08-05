@@ -101,7 +101,7 @@ class DistributionService {
     }
 
     private matchesConditions(rule: DistributionRule, data: any): boolean {
-        const conditions = (rule.conditions as IRuleCondition[]) || [];
+        const conditions = (Array.isArray(rule.conditions) ? rule.conditions : []) as unknown as IRuleCondition[];
         const results = conditions.map(cond => this.evaluateCondition(cond, data));
         return rule.conditionLogic === 'any'
             ? results.some(r => r)

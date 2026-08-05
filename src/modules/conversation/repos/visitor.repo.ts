@@ -63,7 +63,12 @@ export const visitorRepo = {
         workspaceId: string,
         options?: { page?: number; limit?: number; search?: string }
     ): Promise<{ items: Visitor[]; total: number }> {
-        const where: any = { workspaceId };
+        // Zalo identities are managed by ZaloContact and would otherwise be
+        // counted twice on the multi-channel customer screen.
+        const where: any = {
+            workspaceId,
+            NOT: { visitorId: { startsWith: 'zalo_' } },
+        };
         if (options?.search) {
             where.OR = [
                 { name: { contains: options.search } },

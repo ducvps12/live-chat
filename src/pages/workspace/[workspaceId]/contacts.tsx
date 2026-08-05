@@ -1,6 +1,6 @@
 import Head from 'next/head';
 import { useRouter } from 'next/router';
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import {
     Input, Table, Tag, Button, Drawer, message, Select,
     Tooltip, Empty, Badge, Spin,
@@ -32,6 +32,8 @@ interface Contact {
     lastMessagePreview?: string;
     visitorId?: string;
     zaloUserId?: string;
+    attributes?: Record<string, any>;
+    metadata?: Record<string, any>;
 }
 
 interface ZaloFriend {
@@ -65,6 +67,31 @@ function getAvatarGradient(name: string, channel: string) {
     return `linear-gradient(135deg, hsl(${hue}, 65%, 55%), hsl(${(hue + 30) % 360}, 55%, 60%))`;
 }
 
+const CUSTOMER_TRACKING_FIELDS = new Set(['primaryIssue', 'customerGoal', 'nextAction', 'issuePriority']);
+
+type TrackingFilter = 'all' | 'high' | 'missingIssue' | 'missingNextAction' | 'ready';
+
+function getContactTracking(contact: Contact): Record<string, any> {
+    return contact.channel === 'zalo' ? (contact.metadata || {}) : (contact.attributes || {});
+}
+
+function normalizeIssuePriority(value: unknown): '' | 'high' | 'medium' | 'low' {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (!normalized) return '';
+    if (['high', 'cao', 'urgent', 'khẩn', 'khan'].includes(normalized)) return 'high';
+    if (['medium', 'trung bình', 'trung binh', 'normal'].includes(normalized)) return 'medium';
+    if (['low', 'thấp', 'thap'].includes(normalized)) return 'low';
+    return '';
+}
+
+function issuePriorityLabel(value: unknown): string {
+    const priority = normalizeIssuePriority(value);
+    if (priority === 'high') return 'Cao';
+    if (priority === 'medium') return 'Trung bình';
+    if (priority === 'low') return 'Thấp';
+    return String(value || 'Chưa đặt');
+}
+
 export default function ContactsPage() {
     const router = useRouter();
     const { workspaceId } = router.query as { workspaceId: string };
@@ -90,6 +117,31 @@ export default function ContactsPage() {
     const [friendSearch, setFriendSearch] = useState('');
 
     const [stats, setStats] = useState({ total: 0, widget: 0, zalo: 0, friends: 0 });
+    const [trackingFilter, setTrackingFilter] = useState<TrackingFilter>('all');
+
+    const pageInsights = useMemo(() => contacts.reduce((result, contact) => {
+        const tracking = getContactTracking(contact);
+        const hasIssue = Boolean(String(tracking.primaryIssue || '').trim());
+        const hasGoal = Boolean(String(tracking.customerGoal || '').trim());
+        const hasNextAction = Boolean(String(tracking.nextAction || '').trim());
+        if (normalizeIssuePriority(tracking.issuePriority) === 'high') result.high += 1;
+        if (!hasIssue) result.missingIssue += 1;
+        if (hasIssue && !hasNextAction) result.missingNextAction += 1;
+        if (hasIssue && hasGoal && hasNextAction) result.ready += 1;
+        return result;
+    }, { high: 0, missingIssue: 0, missingNextAction: 0, ready: 0 }), [contacts]);
+
+    const filteredContacts = useMemo(() => contacts.filter(contact => {
+        if (trackingFilter === 'all') return true;
+        const tracking = getContactTracking(contact);
+        const hasIssue = Boolean(String(tracking.primaryIssue || '').trim());
+        const hasGoal = Boolean(String(tracking.customerGoal || '').trim());
+        const hasNextAction = Boolean(String(tracking.nextAction || '').trim());
+        if (trackingFilter === 'high') return normalizeIssuePriority(tracking.issuePriority) === 'high';
+        if (trackingFilter === 'missingIssue') return !hasIssue;
+        if (trackingFilter === 'missingNextAction') return hasIssue && !hasNextAction;
+        return hasIssue && hasGoal && hasNextAction;
+    }), [contacts, trackingFilter]);
 
     // ── Fetch contacts ──
     const fetchContacts = useCallback(async () => {
@@ -117,6 +169,7 @@ export default function ContactsPage() {
                     firstSeen: v.firstSeenAt || v.createdAt,
                     lastSeen: v.lastSeenAt || v.updatedAt,
                     visitorId: v.visitorId,
+                    attributes: v.attributes || {},
                 }));
             }
 
@@ -139,6 +192,7 @@ export default function ContactsPage() {
                         lastSeen: c.lastMessageAt || c.updatedAt,
                         lastMessagePreview: c.lastMessagePreview,
                         zaloUserId: c.zaloUserId,
+                        metadata: c.metadata || {},
                     }));
                 } catch {
                     console.warn('Zalo contacts not available');
@@ -158,18 +212,17 @@ export default function ContactsPage() {
                 const combined = [...filteredWidget, ...zaloContacts]
                     .sort((a, b) => new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime());
                 setContacts(combined);
-                setTotal(filteredWidget.length + zTotal);
+                setTotal(wTotal + zTotal);
             } else if (activeTab === 'widget') {
                 const filteredWidget = widgetContacts.filter(v => !v.visitorId?.startsWith('zalo_'));
                 setContacts(filteredWidget);
-                setTotal(filteredWidget.length);
+                setTotal(wTotal);
             } else {
                 setContacts(zaloContacts);
                 setTotal(zTotal);
             }
 
-            const actualWidgetCount = (widgetContacts || []).filter(v => !v.visitorId?.startsWith('zalo_')).length;
-            setStats(prev => ({ ...prev, total: actualWidgetCount + zTotal, widget: actualWidgetCount, zalo: zTotal }));
+            setStats(prev => ({ ...prev, total: wTotal + zTotal, widget: wTotal, zalo: zTotal }));
         } catch (err) {
             console.error('[Contacts] Fetch error:', err);
             message.error('Lỗi tải danh sách liên hệ');
@@ -200,6 +253,17 @@ export default function ContactsPage() {
 
     useEffect(() => { fetchContacts(); }, [fetchContacts]);
     useEffect(() => { fetchFriends(); }, [fetchFriends]);
+    useEffect(() => {
+        if (!workspaceId) return;
+        let cancelled = false;
+        httpClient.get(`/workspaces/${workspaceId}/zalo/friends`, {
+            params: { page: 1, limit: 1 },
+        }).then((res) => {
+            if (cancelled) return;
+            setStats(prev => ({ ...prev, friends: res.data?.data?.total || 0 }));
+        }).catch(() => { /* Zalo may not be connected yet */ });
+        return () => { cancelled = true; };
+    }, [workspaceId]);
 
     const handleChatWithFriend = (friend: ZaloFriend) => {
         router.push(`/workspace/${workspaceId}/inbox?zaloThread=${friend.threadId}&zaloName=${encodeURIComponent(friend.displayName)}`);
@@ -247,13 +311,21 @@ export default function ContactsPage() {
 
     const handleUpdateContact = async (contact: Contact, field: string, value: string) => {
         try {
+            const isTrackingField = CUSTOMER_TRACKING_FIELDS.has(field);
+            const storedValue = field === 'issuePriority'
+                ? (normalizeIssuePriority(value) || '')
+                : value;
             if (contact.channel === 'widget' && contact.visitorId) {
-                await httpClient.patch(`/conversations/workspace/${workspaceId}/visitors/${contact.visitorId}`, { [field]: value });
+                await httpClient.patch(
+                    `/conversations/workspace/${workspaceId}/visitors/${contact.visitorId}`,
+                    isTrackingField ? { attributes: { [field]: storedValue } } : { [field]: storedValue },
+                );
             } else if (contact.channel === 'zalo' && contact.zaloUserId) {
                 const payload: any = {};
-                if (field === 'name') payload.displayName = value;
-                else if (field === 'phone') payload.phoneNumber = value;
-                else payload[field] = value;
+                if (isTrackingField) payload.metadata = { ...(contact.metadata || {}), [field]: storedValue };
+                else if (field === 'name') payload.displayName = storedValue;
+                else if (field === 'phone') payload.phoneNumber = storedValue;
+                else payload[field] = storedValue;
                 await httpClient.patch(`/workspaces/${workspaceId}/zalo/contacts/${contact.zaloUserId}`, payload);
             }
             message.success('Đã cập nhật');
@@ -261,7 +333,14 @@ export default function ContactsPage() {
             setEditValue('');
             fetchContacts();
             if (selectedContact?._id === contact._id) {
-                setSelectedContact({ ...contact, [field]: value } as Contact);
+                setSelectedContact(isTrackingField
+                    ? {
+                        ...contact,
+                        ...(contact.channel === 'zalo'
+                            ? { metadata: { ...(contact.metadata || {}), [field]: storedValue } }
+                            : { attributes: { ...(contact.attributes || {}), [field]: storedValue } }),
+                    }
+                    : { ...contact, [field]: storedValue } as Contact);
             }
         } catch {
             message.error('Lỗi cập nhật');
@@ -427,7 +506,7 @@ export default function ContactsPage() {
 
     return (
         <AppLayout>
-            <Head><title>Người dùng | NemarkChat</title></Head>
+            <Head><title>Khách hàng 360 | NemarkChat</title></Head>
 
             <div style={{ padding: '24px 28px 64px', maxWidth: 1280, margin: '0 auto' }}>
 
@@ -445,10 +524,10 @@ export default function ContactsPage() {
                             </div>
                             <div>
                                 <h1 style={{ fontSize: 22, fontWeight: 800, color: '#0f172a', margin: 0, letterSpacing: -0.5 }}>
-                                    Quản lý người dùng
+                                    Khách hàng 360
                                 </h1>
                                 <p style={{ color: '#94a3b8', fontSize: 13, margin: 0 }}>
-                                    Danh sách tất cả khách hàng đã liên hệ qua Widget và Zalo
+                                    Hồ sơ hợp nhất, vấn đề ưu tiên và bước chăm sóc tiếp theo của từng khách
                                 </p>
                             </div>
                         </div>
@@ -472,7 +551,7 @@ export default function ContactsPage() {
                 </div>
 
                 {/* ═══ Stats Cards ═══ */}
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, marginBottom: 24 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 14, marginBottom: 18 }}>
                     {[
                         { label: 'Tổng liên hệ', value: stats.total, icon: <Users size={18} />, color: '#6366f1', gradient: 'linear-gradient(135deg, #6366f1, #818cf8)', light: '#eef2ff' },
                         { label: 'Widget Chat', value: stats.widget, icon: <Globe size={18} />, color: '#8b5cf6', gradient: 'linear-gradient(135deg, #8b5cf6, #a78bfa)', light: '#f5f3ff' },
@@ -526,6 +605,64 @@ export default function ContactsPage() {
                 </div>
 
                 {/* ═══ Main Card ═══ */}
+                {activeTab !== 'friends' && (
+                    <section style={{ marginBottom: 24 }} aria-labelledby="customer-action-queue-title">
+                        <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
+                            <div>
+                                <h2 id="customer-action-queue-title" style={{ margin: 0, color: '#0f172a', fontSize: 15, fontWeight: 800 }}>
+                                    Hàng đợi chăm sóc
+                                </h2>
+                                <p style={{ margin: '3px 0 0', color: '#94a3b8', fontSize: 11.5 }}>
+                                    Chỉ số hành động trên {contacts.length} khách đang hiển thị ở trang này.
+                                </p>
+                            </div>
+                            {trackingFilter !== 'all' && (
+                                <button
+                                    type="button"
+                                    onClick={() => setTrackingFilter('all')}
+                                    style={{ border: 0, background: 'transparent', color: '#6366f1', fontSize: 11.5, fontWeight: 750, cursor: 'pointer' }}
+                                >
+                                    Xóa bộ lọc
+                                </button>
+                            )}
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 10 }}>
+                            {([
+                                { key: 'high', label: 'Ưu tiên cao', value: pageInsights.high, note: 'Cần phản hồi trước', icon: <Zap size={16} />, color: '#dc2626', bg: '#fef2f2' },
+                                { key: 'missingIssue', label: 'Chưa rõ vấn đề', value: pageInsights.missingIssue, note: 'Cần xác định nhu cầu', icon: <Search size={16} />, color: '#d97706', bg: '#fffbeb' },
+                                { key: 'missingNextAction', label: 'Thiếu bước tiếp', value: pageInsights.missingNextAction, note: 'Đã có vấn đề, chưa có việc', icon: <Calendar size={16} />, color: '#7c3aed', bg: '#f5f3ff' },
+                                { key: 'ready', label: 'Hồ sơ sẵn sàng', value: pageInsights.ready, note: 'Đủ vấn đề, mục tiêu, hành động', icon: <UserCheck size={16} />, color: '#059669', bg: '#ecfdf5' },
+                            ] as const).map(item => {
+                                const isActive = trackingFilter === item.key;
+                                return (
+                                    <button
+                                        type="button"
+                                        key={item.key}
+                                        onClick={() => setTrackingFilter(isActive ? 'all' : item.key)}
+                                        aria-pressed={isActive}
+                                        style={{
+                                            display: 'grid', gridTemplateColumns: '36px minmax(0, 1fr) auto', alignItems: 'center', gap: 10,
+                                            minHeight: 72, padding: '12px 13px', borderRadius: 13, textAlign: 'left', cursor: 'pointer',
+                                            background: isActive ? item.bg : '#fff',
+                                            border: `1.5px solid ${isActive ? item.color : '#e8ecf0'}`,
+                                            boxShadow: isActive ? `0 8px 20px ${item.color}18` : 'none',
+                                        }}
+                                    >
+                                        <span style={{ width: 36, height: 36, borderRadius: 10, display: 'grid', placeItems: 'center', color: item.color, background: item.bg }}>
+                                            {item.icon}
+                                        </span>
+                                        <span style={{ minWidth: 0 }}>
+                                            <span style={{ display: 'block', color: '#334155', fontSize: 12, fontWeight: 800 }}>{item.label}</span>
+                                            <span style={{ display: 'block', marginTop: 2, color: '#94a3b8', fontSize: 10.5, lineHeight: 1.3 }}>{item.note}</span>
+                                        </span>
+                                        <strong style={{ color: item.color, fontSize: 21 }}>{item.value}</strong>
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    </section>
+                )}
+
                 <div style={{
                     background: 'white',
                     borderRadius: 16,
@@ -536,6 +673,7 @@ export default function ContactsPage() {
                     {/* ── Toolbar ── */}
                     <div style={{
                         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                        flexWrap: 'wrap', gap: 10,
                         padding: '14px 20px',
                         borderBottom: '1px solid #f1f5f9',
                     }}>
@@ -546,7 +684,7 @@ export default function ContactsPage() {
                                 return (
                                     <button
                                         key={tab.key}
-                                        onClick={() => { setActiveTab(tab.key); setPage(1); setSearchText(''); setFriendSearch(''); }}
+                                        onClick={() => { setActiveTab(tab.key); setPage(1); setSearchText(''); setFriendSearch(''); setTrackingFilter('all'); }}
                                         style={{
                                             padding: '7px 14px', border: 'none', cursor: 'pointer',
                                             borderRadius: 8, fontSize: 12.5, fontWeight: 600,
@@ -573,14 +711,30 @@ export default function ContactsPage() {
                         </div>
 
                         {/* Search */}
-                        <div style={{ position: 'relative' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                            {activeTab !== 'friends' && (
+                                <Select
+                                    value={trackingFilter}
+                                    onChange={setTrackingFilter}
+                                    style={{ width: 178 }}
+                                    suffixIcon={<Filter size={14} />}
+                                    options={[
+                                        { value: 'all', label: 'Tất cả hồ sơ' },
+                                        { value: 'high', label: `Ưu tiên cao (${pageInsights.high})` },
+                                        { value: 'missingIssue', label: `Chưa rõ vấn đề (${pageInsights.missingIssue})` },
+                                        { value: 'missingNextAction', label: `Thiếu bước tiếp (${pageInsights.missingNextAction})` },
+                                        { value: 'ready', label: `Hồ sơ sẵn sàng (${pageInsights.ready})` },
+                                    ]}
+                                />
+                            )}
+                            <div style={{ position: 'relative' }}>
                             <Search size={14} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: '#94a3b8', pointerEvents: 'none', zIndex: 1 }} />
                             <input
                                 value={activeTab === 'friends' ? friendSearch : searchText}
                                 onChange={e => activeTab === 'friends' ? setFriendSearch(e.target.value) : (() => { setSearchText(e.target.value); setPage(1); })()}
                                 placeholder={activeTab === 'friends' ? 'Tìm bạn bè Zalo...' : 'Tìm theo tên, email, SĐT...'}
                                 style={{
-                                    width: 260, height: 38, paddingLeft: 36, paddingRight: 12,
+                                    width: 260, maxWidth: '70vw', height: 38, paddingLeft: 36, paddingRight: 12,
                                     borderRadius: 10, border: '1.5px solid #e2e8f0',
                                     fontSize: 12.5, outline: 'none', transition: 'all 0.2s',
                                     background: '#fafbfc',
@@ -588,6 +742,7 @@ export default function ContactsPage() {
                                 onFocus={e => { e.target.style.borderColor = '#818cf8'; e.target.style.background = 'white'; e.target.style.boxShadow = '0 0 0 3px rgba(99,102,241,0.08)'; }}
                                 onBlur={e => { e.target.style.borderColor = '#e2e8f0'; e.target.style.background = '#fafbfc'; e.target.style.boxShadow = 'none'; }}
                             />
+                            </div>
                         </div>
                     </div>
 
@@ -707,10 +862,16 @@ export default function ContactsPage() {
                     ) : (
                         /* ═══ Contacts Table ═══ */
                         <Table
-                            dataSource={contacts}
+                            dataSource={filteredContacts}
                             columns={columns}
                             rowKey="_id"
                             loading={loading}
+                            title={trackingFilter === 'all' ? undefined : () => (
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, color: '#64748b', fontSize: 11.5 }}>
+                                    <span>Đang hiển thị {filteredContacts.length}/{contacts.length} khách trên trang theo bộ lọc chăm sóc.</span>
+                                    <button type="button" onClick={() => setTrackingFilter('all')} style={{ border: 0, background: 'transparent', color: '#6366f1', fontWeight: 750, cursor: 'pointer' }}>Xóa lọc</button>
+                                </div>
+                            )}
                             pagination={{
                                 current: page,
                                 pageSize,
@@ -904,6 +1065,87 @@ export default function ContactsPage() {
                                     </div>
                                 </div>
                             ))}
+                        </div>
+
+                        {/* ── Customer Success tracking ── */}
+                        <div style={{ padding: '18px 24px', background: '#fff', borderBottom: '1px solid #f1f5f9' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 14 }}>
+                                <div>
+                                    <div style={{ fontSize: 11, fontWeight: 700, color: '#6366f1', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                                        Theo dõi CSKH
+                                    </div>
+                                    <div style={{ marginTop: 3, fontSize: 12, color: '#94a3b8' }}>
+                                        Hồ sơ riêng để đội ngũ nắm đúng việc cần giải quyết.
+                                    </div>
+                                </div>
+                                <div style={{ width: 34, height: 34, borderRadius: 10, background: '#eef2ff', color: '#6366f1', display: 'grid', placeItems: 'center' }}>
+                                    <TrendingUp size={16} />
+                                </div>
+                            </div>
+                            <div style={{ display: 'grid', gap: 9 }}>
+                                {[
+                                    { key: 'primaryIssue', label: 'Vấn đề tiên quyết', placeholder: 'Ví dụ: cần chốt cấu hình VPS' },
+                                    { key: 'customerGoal', label: 'Mục tiêu khách hàng', placeholder: 'Kết quả khách đang muốn đạt được' },
+                                    { key: 'nextAction', label: 'Bước tiếp theo', placeholder: 'Việc đội ngũ cần làm tiếp' },
+                                    { key: 'issuePriority', label: 'Mức ưu tiên', placeholder: 'Cao / Trung bình / Thấp' },
+                                ].map((field) => {
+                                    const tracking = selectedContact.channel === 'zalo'
+                                        ? (selectedContact.metadata || {})
+                                        : (selectedContact.attributes || {});
+                                    const fieldValue = String(tracking[field.key] || '');
+                                    const isEditingTracking = editingField === field.key;
+                                    return (
+                                        <div key={field.key} style={{ border: '1px solid #eef2f7', borderRadius: 12, padding: '10px 12px', background: '#fafbff' }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                                                <span style={{ fontSize: 10.5, color: '#64748b', fontWeight: 700 }}>{field.label}</span>
+                                                {!isEditingTracking && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => { setEditingField(field.key); setEditValue(fieldValue); }}
+                                                        style={{ border: 0, background: 'transparent', color: '#94a3b8', cursor: 'pointer', display: 'grid', placeItems: 'center', padding: 2 }}
+                                                        aria-label={`Chỉnh sửa ${field.label}`}
+                                                    >
+                                                        <Edit2 size={12} />
+                                                    </button>
+                                                )}
+                                            </div>
+                                            {isEditingTracking ? (
+                                                <div style={{ display: 'flex', gap: 6, marginTop: 7 }}>
+                                                    {field.key === 'issuePriority' ? (
+                                                        <Select
+                                                            value={normalizeIssuePriority(editValue) || undefined}
+                                                            onChange={setEditValue}
+                                                            autoFocus
+                                                            placeholder="Chọn mức ưu tiên"
+                                                            style={{ flex: 1, minWidth: 0 }}
+                                                            options={[
+                                                                { value: 'high', label: 'Cao · cần xử lý trước' },
+                                                                { value: 'medium', label: 'Trung bình' },
+                                                                { value: 'low', label: 'Thấp' },
+                                                            ]}
+                                                        />
+                                                    ) : (
+                                                        <input
+                                                            value={editValue}
+                                                            onChange={(event) => setEditValue(event.target.value)}
+                                                            onKeyDown={(event) => { if (event.key === 'Enter') handleUpdateContact(selectedContact, field.key, editValue); }}
+                                                            autoFocus
+                                                            placeholder={field.placeholder}
+                                                            style={{ flex: 1, minWidth: 0, height: 34, borderRadius: 8, border: '1.5px solid #a5b4fc', padding: '0 10px', outline: 'none', fontSize: 12 }}
+                                                        />
+                                                    )}
+                                                    <button type="button" onClick={() => handleUpdateContact(selectedContact, field.key, editValue)} style={{ border: 0, borderRadius: 8, background: '#6366f1', color: '#fff', padding: '0 10px', fontWeight: 700, cursor: 'pointer' }}>Lưu</button>
+                                                    <button type="button" onClick={() => setEditingField(null)} style={{ border: 0, borderRadius: 8, background: '#eef2f7', color: '#64748b', padding: '0 9px', cursor: 'pointer' }}>Huỷ</button>
+                                                </div>
+                                            ) : (
+                                                <div style={{ marginTop: 4, color: fieldValue ? '#0f172a' : '#94a3b8', fontSize: 12.5, lineHeight: 1.45, fontWeight: fieldValue ? 600 : 400 }}>
+                                                    {field.key === 'issuePriority' ? issuePriorityLabel(fieldValue) : (fieldValue || field.placeholder)}
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
                         </div>
 
                         {/* ── Timeline ── */}

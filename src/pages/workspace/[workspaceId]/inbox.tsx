@@ -4,7 +4,7 @@ import { useEffect, useState, useRef, useCallback, useMemo, Fragment } from 'rea
 import { Input, Badge, Spin, Empty, Tag, Button, message, Tooltip, Popover, Select, DatePicker, Form, Modal, Checkbox, Progress, Dropdown, ColorPicker } from 'antd';
 import {
     Search, Send, Paperclip, ArrowLeft, X as XIcon, Smile,
-    MessageSquare, Clock, User, Image as ImageIcon, RotateCw, Filter, Check, CheckCheck, UserCheck, UserX, Users, Zap, Reply, Edit2, Trash2, Globe, Forward, Bookmark, Plus, Settings, ChevronDown, Copy, Megaphone, MoreHorizontal
+    MessageSquare, Clock, User, Image as ImageIcon, RotateCw, Filter, Check, CheckCheck, UserCheck, UserX, Users, Zap, Reply, Edit2, Trash2, Globe, Forward, Bookmark, Plus, Settings, ChevronDown, Copy, Megaphone, MoreHorizontal, BookOpen
 } from 'lucide-react';
 import { useGetMe } from '../../../domains/auth/auth.hooks';
 import { httpClient } from '../../../lib/http/client';
@@ -122,6 +122,18 @@ function getAssignedName(conv: Conversation): string | undefined {
     if (!conv.assignedTo) return undefined;
     if (typeof conv.assignedTo === 'object' && conv.assignedTo.name) return conv.assignedTo.name;
     return undefined;
+}
+
+function getFacebookPageName(
+    conv: Conversation,
+    pages: Array<{ pageId: string; pageName: string }>,
+): string | undefined {
+    if ((conv as any).channel !== 'facebook') return undefined;
+    const metadata = (conv.metadata || {}) as Record<string, unknown>;
+    const metadataPageName = typeof metadata.pageName === 'string' ? metadata.pageName.trim() : '';
+    if (metadataPageName) return metadataPageName;
+    const pageId = typeof metadata.pageId === 'string' ? metadata.pageId : '';
+    return pages.find((page) => page.pageId === pageId)?.pageName;
 }
 
 // ── URL detection & rendering ──
@@ -347,8 +359,6 @@ export default function InboxPage() {
     const queryClient = useQueryClient();
     const { data: unreadCounts } = useTotalUnreadCount(workspaceId, !!workspaceId && !!meData);
     const totalUnreadCount = unreadCounts?.totalUnread || 0;
-    const inboxUnreadCount = unreadCounts?.inboxUnread || 0;
-    const zaloUnreadCount = unreadCounts?.zaloUnread || 0;
 
     useEffect(() => {
         if (totalUnreadCount > 0) {
@@ -391,8 +401,57 @@ export default function InboxPage() {
     const [fbPages, setFbPages] = useState<Array<{ id: string; pageId: string; pageName: string; pageAvatar: string; status: string }>>([]);
     const [filterZaloAccountId, setFilterZaloAccountId] = useState<string>('all');
     const [zaloAccounts, setZaloAccounts] = useState<Array<{ accountId: string; name: string; isOnline: boolean }>>([]);
+    const [socketStatus, setSocketStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
+    const [lastRealtimeEvent, setLastRealtimeEvent] = useState('Đang khởi tạo realtime');
+    const [aiRuntimeMeta, setAiRuntimeMeta] = useState<{ enabled: boolean; provider?: string; model?: string; baseUrl?: string }>({ enabled: false });
+
+    const handleChannelFilterChange = useCallback((channel: string) => {
+        setFilterChannel(channel);
+
+        const nextQuery = { ...router.query };
+        if (channel === 'all') delete nextQuery.channel;
+        else nextQuery.channel = channel;
+
+        void router.replace(
+            { pathname: router.pathname, query: nextQuery },
+            undefined,
+            { shallow: true, scroll: false }
+        );
+    }, [router]);
+
+    useEffect(() => {
+        const channel = router.query.channel;
+        const validChannel = channel === 'zalo' || channel === 'facebook' || channel === 'widget' || channel === 'email';
+        setFilterChannel(validChannel ? channel : 'all');
+    }, [router.query.channel]);
+
+    useEffect(() => {
+        if (!workspaceId) return;
+        let alive = true;
+        httpClient.get(`/workspaces/${workspaceId}/ai-runtime`)
+            .then((res) => {
+                if (!alive) return;
+                const runtime = res.data?.data || {};
+                setAiRuntimeMeta({
+                    enabled: Boolean(runtime.enabled && runtime.provider !== 'disabled'),
+                    provider: runtime.provider,
+                    model: runtime.model,
+                    baseUrl: runtime.baseUrl,
+                });
+            })
+            .catch(() => {
+                if (alive) setAiRuntimeMeta({ enabled: false });
+            });
+        return () => { alive = false; };
+    }, [workspaceId]);
 
     const [typingVisitor, setTypingVisitor] = useState<string | null>(null);
+    const [aiTyping, setAiTyping] = useState<{
+        conversationId: string;
+        typingId: string;
+        label: string;
+        senderName: string;
+    } | null>(null);
     const [msgPage, setMsgPage] = useState(1);
     const [hasMoreMsgs, setHasMoreMsgs] = useState(true);
     const [loadingOlder, setLoadingOlder] = useState(false);
@@ -454,6 +513,7 @@ export default function InboxPage() {
     const fileInputRef = useRef<HTMLInputElement>(null);
     const socketRef = useRef<Socket | null>(null);
     const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const aiTypingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const selectedConvIdRef = useRef<string | null>(null);
     const convListRef = useRef<HTMLDivElement>(null);
     const messagesRef = useRef<Message[]>([]);
@@ -750,6 +810,7 @@ export default function InboxPage() {
     }, [selectedConvId, workspaceId, msgPage, hasMoreMsgs, loadingOlder]);
 
     useEffect(() => {
+        setAiTyping(prev => prev?.conversationId === selectedConvId ? prev : null);
         if (selectedConvId) {
             const jumpToMsgId = router.query.messageId as string;
             fetchMessages(selectedConvId, jumpToMsgId);
@@ -819,10 +880,10 @@ export default function InboxPage() {
 
     // Always scroll on typing indicator (lightweight)
     useEffect(() => {
-        if (typingVisitor && isAtBottomRef.current) {
+        if ((typingVisitor || aiTyping) && isAtBottomRef.current) {
             messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
         }
-    }, [typingVisitor]);
+    }, [typingVisitor, aiTyping]);
 
     // Scroll to bottom when switching conversations
     useEffect(() => {
@@ -842,10 +903,20 @@ export default function InboxPage() {
         if (!workspaceId || !me) return;
 
         const token = localStorage.getItem('nemark_token');
-        if (!token) return;
+        if (!token) {
+            window.setTimeout(() => {
+                setSocketStatus('disconnected');
+                setLastRealtimeEvent('Thiếu token đăng nhập');
+            }, 0);
+            return;
+        }
 
         const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4010';
         const baseUrl = apiUrl.replace(/\/api$/, '');
+        window.setTimeout(() => {
+            setSocketStatus('connecting');
+            setLastRealtimeEvent('Đang kết nối socket');
+        }, 0);
 
         const socket = io(`${baseUrl}/agent`, {
             auth: { token },
@@ -859,9 +930,14 @@ export default function InboxPage() {
         });
 
         socketRef.current = socket;
+        const markRealtimeEvent = (label: string) => {
+            setLastRealtimeEvent(`${label} · ${new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}`);
+        };
 
         socket.on('connect', () => {
             console.log('[Inbox] Socket connected:', socket.id);
+            setSocketStatus('connected');
+            setLastRealtimeEvent(`Đã kết nối · ${new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}`);
             // Join all open conversation rooms
             conversations.forEach((c) => {
                 socket.emit('join:conversation', { conversationId: c._id });
@@ -900,6 +976,11 @@ export default function InboxPage() {
             }
         });
 
+        socket.on('disconnect', () => {
+            setSocketStatus('disconnected');
+            setLastRealtimeEvent(`Mất kết nối · ${new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}`);
+        });
+
         // ── Heartbeat (30s) to keep agent online ──
         const heartbeatInterval = setInterval(() => {
             socket.emit('heartbeat');
@@ -921,6 +1002,7 @@ export default function InboxPage() {
         socket.on('conversation:new', (data: { conversation: Conversation }) => {
             const nc = normalizeConv(data.conversation);
             if ((nc as any).workspaceId?.toString() !== workspaceId && nc.workspaceId !== workspaceId) return;
+            markRealtimeEvent('Hội thoại mới');
             setConversations((prev) => {
                 const exists = prev.find((c) => c._id === nc._id);
                 if (exists) return prev;
@@ -932,8 +1014,26 @@ export default function InboxPage() {
         });
 
         // ── Conversation updated (new message) ──
-        socket.on('conversation:updated', (data: { conversationId: string; lastMessage: any }) => {
+        socket.on('conversation:updated', (data: { conversationId: string; lastMessage?: any; metadata?: Record<string, any>; unreadCount?: number }) => {
             const lm = data.lastMessage;
+            if (!lm) {
+                // Read receipts and AI-mode changes are metadata-only updates.
+                // Keep the current preview, timestamp and list position intact.
+                setConversations((prev) => prev.map((conversation) => (
+                    conversation._id === data.conversationId
+                        ? {
+                            ...conversation,
+                            metadata: data.metadata
+                                ? { ...conversation.metadata, ...data.metadata }
+                                : conversation.metadata,
+                            unreadCount: typeof data.unreadCount === 'number'
+                                ? data.unreadCount
+                                : conversation.unreadCount,
+                        }
+                        : conversation
+                )));
+                return;
+            }
             const rawContent = lm?.content ? decodeHTMLEntities(lm.content) : '';
             const preview = rawContent
                 ? (lm.sender?.type === 'visitor' ? '' : `${lm.sender?.name || 'Agent'}: `) +
@@ -943,6 +1043,7 @@ export default function InboxPage() {
                         : '';
 
             const isFromVisitor = lm?.sender?.type === 'visitor';
+            markRealtimeEvent(isFromVisitor ? 'Tin nhắn mới' : 'Hội thoại cập nhật');
             const isWindowFocused = !document.hidden;
             const isTargetSelected = data.conversationId === selectedConvIdRef.current;
 
@@ -973,6 +1074,9 @@ export default function InboxPage() {
                 // Create updated conversation object
                 const updated = {
                     ...prev[idx],
+                    metadata: data.metadata
+                        ? { ...prev[idx].metadata, ...data.metadata }
+                        : prev[idx].metadata,
                     lastMessageAt: lm?.createdAt || new Date().toISOString(),
                     lastMessagePreview: preview,
                     unreadCount: (isFromVisitor && (!isTargetSelected || !isWindowFocused))
@@ -995,6 +1099,7 @@ export default function InboxPage() {
 
         // ── Conversation closed ──
         socket.on('conversation:closed', (data: { conversationId: string }) => {
+            markRealtimeEvent('Đã đóng hội thoại');
             setConversations((prev) =>
                 prev.map((c) => c._id === data.conversationId ? { ...c, status: 'closed' } : c)
             );
@@ -1002,6 +1107,7 @@ export default function InboxPage() {
 
         // ── Conversation reopened ──
         socket.on('conversation:reopened', (data: { conversationId: string }) => {
+            markRealtimeEvent('Mở lại hội thoại');
             setConversations((prev) =>
                 prev.map((c) => c._id === data.conversationId ? { ...c, status: 'open' } : c)
             );
@@ -1009,6 +1115,7 @@ export default function InboxPage() {
 
         // ── Conversation assigned/unassigned ──
         socket.on('conversation:assigned', (data: { conversationId: string; assignedTo: { id: string; name: string } | null }) => {
+            markRealtimeEvent(data.assignedTo ? 'Đã phân công agent' : 'Bỏ phân công agent');
             setConversations((prev) =>
                 prev.map((c) => c._id === data.conversationId
                     ? { ...c, assignedTo: data.assignedTo ? { _id: data.assignedTo.id, name: data.assignedTo.name } : undefined }
@@ -1019,6 +1126,7 @@ export default function InboxPage() {
 
         // ── Conversation status changed (pending) ──
         socket.on('conversation:statusChanged', (data: { conversationId: string; status: string }) => {
+            markRealtimeEvent('Đổi trạng thái hội thoại');
             setConversations((prev) =>
                 prev.map((c) => c._id === data.conversationId ? { ...c, status: data.status as Conversation['status'] } : c)
             );
@@ -1026,6 +1134,7 @@ export default function InboxPage() {
 
         // ── Priority changed ──
         socket.on('conversation:priorityChanged', (data: { conversationId: string; priority: string; slaDeadline: string | null }) => {
+            markRealtimeEvent('Đổi ưu tiên SLA');
             setConversations((prev) =>
                 prev.map((c) => c._id === data.conversationId
                     ? { ...c, priority: data.priority as Conversation['priority'], slaDeadline: data.slaDeadline || undefined }
@@ -1058,6 +1167,7 @@ export default function InboxPage() {
 
         // ── Tags changed ──
         socket.on('conversation:tagsChanged', (data: { conversationId: string; tags: string[] }) => {
+            markRealtimeEvent('Cập nhật tag');
             setConversations((prev) =>
                 prev.map((c) => c._id === data.conversationId ? { ...c, tags: data.tags } : c)
             );
@@ -1065,6 +1175,7 @@ export default function InboxPage() {
 
         // ── Internal note ──
         socket.on('note:new', (data: { conversationId: string; note: Message }) => {
+            markRealtimeEvent('Ghi chú nội bộ mới');
             if (data.conversationId === selectedConvIdRef.current) {
                 const nn = normalizeMsg(data.note);
                 setMessages((prev) => {
@@ -1077,6 +1188,14 @@ export default function InboxPage() {
         // ── New message in active conversation ──
         socket.on('message:new', (rawMsg: Message) => {
             const msg = normalizeMsg(rawMsg);
+            if (
+                msg.conversationId === selectedConvIdRef.current
+                && msg.sender?.type === 'agent'
+                && String(msg.sender?.id || '').startsWith('bot_')
+            ) {
+                setAiTyping(null);
+                if (aiTypingTimeoutRef.current) clearTimeout(aiTypingTimeoutRef.current);
+            }
             // Emit received for visitor messages
             if (msg.sender?.type === 'visitor') {
                 socket.emit('message:delivered', {
@@ -1091,6 +1210,7 @@ export default function InboxPage() {
             // Only add to messages list if it belongs to the currently viewed conversation
             if (msg.conversationId !== selectedConvIdRef.current) return;
 
+            markRealtimeEvent(msg.sender?.type === 'visitor' ? 'Tin nhắn khách đang xem' : 'Tin nhắn agent');
             setMessages((prev) => {
                 if (prev.find((m) => m._id === msg._id)) return prev; // dedup
                 return [...prev, msg];
@@ -1132,8 +1252,8 @@ export default function InboxPage() {
                 const targetTime = new Date(prev[targetIdx].createdAt).getTime();
 
                 return prev.map((m) => {
-                    const isOppositeSender = (data.participantType === 'visitor' && m.sender.type === 'agent') ||
-                                             (data.participantType === 'agent' && m.sender.type === 'visitor');
+                    const isOppositeSender = (data.participantType === 'visitor' && m.sender?.type === 'agent') ||
+                                             (data.participantType === 'agent' && m.sender?.type === 'visitor');
                     if (isOppositeSender && new Date(m.createdAt).getTime() <= targetTime && m.status !== 'read') {
                         return { ...m, status: 'read' as any };
                     }
@@ -1143,7 +1263,31 @@ export default function InboxPage() {
         });
 
         // ── Typing indicators ──
-        socket.on('typing:start', (data: { conversationId: string; sender: any }) => {
+        socket.on('typing:start', (data: {
+            conversationId: string;
+            sender: any;
+            source?: string;
+            label?: string;
+            typingId?: string;
+        }) => {
+            if (
+                data.source === 'auto-reply'
+                && data.conversationId === selectedConvIdRef.current
+            ) {
+                setAiTyping({
+                    conversationId: data.conversationId,
+                    typingId: typeof data.typingId === 'string' ? data.typingId : 'auto-reply',
+                    label: typeof data.label === 'string' && data.label.trim()
+                        ? data.label.trim().slice(0, 40)
+                        : 'Đang soạn…',
+                    senderName: typeof data.sender?.name === 'string' && data.sender.name.trim()
+                        ? data.sender.name.trim().slice(0, 80)
+                        : 'Trợ lý',
+                });
+                if (aiTypingTimeoutRef.current) clearTimeout(aiTypingTimeoutRef.current);
+                aiTypingTimeoutRef.current = setTimeout(() => setAiTyping(null), 15_000);
+                return;
+            }
             if (data.sender?.type === 'visitor') {
                 setTypingVisitor(data.sender.id);
                 // Auto-clear after 3s
@@ -1152,7 +1296,26 @@ export default function InboxPage() {
             }
         });
 
-        socket.on('typing:stop', (data: { sender: any }) => {
+        socket.on('typing:stop', (data: {
+            conversationId?: string;
+            sender: any;
+            source?: string;
+            typingId?: string;
+        }) => {
+            if (
+                data.source === 'auto-reply'
+                && (!data.conversationId || data.conversationId === selectedConvIdRef.current)
+            ) {
+                setAiTyping(current => (
+                    !current
+                    || !data.typingId
+                    || current.typingId === data.typingId
+                        ? null
+                        : current
+                ));
+                if (aiTypingTimeoutRef.current) clearTimeout(aiTypingTimeoutRef.current);
+                return;
+            }
             if (data.sender?.type === 'visitor') setTypingVisitor(null);
         });
         // ── Reaction events from Zalo ──
@@ -1199,6 +1362,7 @@ export default function InboxPage() {
         return () => {
             document.removeEventListener('visibilitychange', handleVisibilityChange);
             clearInterval(heartbeatInterval);
+            if (aiTypingTimeoutRef.current) clearTimeout(aiTypingTimeoutRef.current);
             socket.disconnect();
             socketRef.current = null;
         };
@@ -1242,6 +1406,23 @@ export default function InboxPage() {
             replyTo: replyContext,
         };
         setMessages((prev) => [...prev, tempMsg]);
+        const takeoverAt = new Date().toISOString();
+        setConversations((prev) => prev.map((conv) => conv._id === selectedConvId
+            ? {
+                ...conv,
+                metadata: {
+                    ...conv.metadata,
+                    humanTakeover: true,
+                    aiPaused: true,
+                    autoReplyEnabled: false,
+                    autoReplyDisabled: true,
+                    aiMode: 'manual',
+                    lastHumanReplyAt: takeoverAt,
+                    lastHumanAgentId: me?.user?.id || '',
+                    lastHumanAgentName: me?.user?.name || 'Agent',
+                },
+            }
+            : conv));
 
         try {
             const clientMessageId = crypto.randomUUID();
@@ -1554,8 +1735,9 @@ export default function InboxPage() {
 
     // ── Reset all messages ──
     const handleResetAllMessages = () => {
+        let deleteConversations = false;
         Modal.confirm({
-            title: 'Xóa toàn bộ tin nhắn?',
+            title: 'Dọn dữ liệu Inbox?',
             content: (
                 <div>
                     <p style={{ marginBottom: 8 }}>
@@ -1568,19 +1750,35 @@ export default function InboxPage() {
                     <p style={{ color: '#666', fontSize: 13 }}>
                         ✔ Thông tin khách hàng (visitor profiles) sẽ được giữ nguyên.
                     </p>
+                    <div style={{ marginTop: 14, padding: '12px 14px', border: '1px solid #fecaca', borderRadius: 10, background: '#fff7f7' }}>
+                        <Checkbox onChange={event => { deleteConversations = event.target.checked; }}>
+                            <strong>Xóa luôn toàn bộ cuộc hội thoại khỏi Inbox</strong>
+                        </Checkbox>
+                        <div style={{ marginTop: 6, paddingLeft: 24, color: '#b42318', fontSize: 12, lineHeight: 1.5 }}>
+                            Khi chọn, danh sách hội thoại cũng bị xóa vĩnh viễn. Hồ sơ khách hàng và đơn hàng vẫn được giữ.
+                        </div>
+                    </div>
                 </div>
             ),
-            okText: 'Xóa tất cả',
+            okText: 'Xác nhận xóa',
             okType: 'danger',
             cancelText: 'Hủy',
             onOk: async () => {
                 try {
-                    const res = await httpClient.delete(`/conversations/workspace/${workspaceId}/reset-messages`);
+                    const res = await httpClient.delete(
+                        `/conversations/workspace/${workspaceId}/reset-messages`,
+                        { params: { deleteConversations } },
+                    );
                     const d = res.data?.data || {};
-                    message.success(`Đã xóa ${d.deletedMessages || 0} tin nhắn, ${d.deletedZaloMessages || 0} tin Zalo`);
+                    message.success(deleteConversations
+                        ? `Đã xóa ${d.deletedConversations || 0} cuộc hội thoại và toàn bộ tin nhắn liên quan`
+                        : `Đã xóa ${d.deletedMessages || 0} tin nhắn, ${d.deletedZaloMessages || 0} tin Zalo`);
                     setMessages([]);
                     setSelectedConvId(null);
-                    setConversations(prev => prev.map(c => ({ ...c, lastMessage: undefined, unreadCount: 0 })));
+                    setConversations(prev => deleteConversations
+                        ? []
+                        : prev.map(c => ({ ...c, lastMessage: undefined, unreadCount: 0 })));
+                    void queryClient.invalidateQueries({ queryKey: conversationKeys.all });
                 } catch (err: any) {
                     message.error(err.response?.data?.message || 'Xóa thất bại');
                 }
@@ -1658,7 +1856,78 @@ export default function InboxPage() {
         return filtered;
     }, [conversations, filterStatus, filterLabel, filterZaloAccountId, searchQuery, searchResultIds]);
 
+    const inboxSummary = useMemo(() => {
+        return {
+            total: filteredConvs.length,
+            unread: filteredConvs.reduce((sum, conv) => sum + (conv.unreadCount || 0), 0),
+            open: filteredConvs.filter((conv) => conv.status === 'open').length,
+        };
+    }, [filteredConvs]);
+
+    const socketStatusMeta = {
+        connected: { label: 'Realtime', color: '#12b76a', background: '#ecfdf5' },
+        connecting: { label: 'Đang nối', color: '#f79009', background: '#fffbeb' },
+        disconnected: { label: 'Mất kết nối', color: '#ef4444', background: '#fef2f2' },
+    }[socketStatus];
+
     const selectedConv = conversations.find((c) => c._id === selectedConvId);
+    const selectedConversationMetadata = (selectedConv?.metadata || {}) as Record<string, any>;
+    const selectedConversationAiMode = String(selectedConversationMetadata.aiMode || '').toLowerCase();
+    const isConversationAssigned = Boolean(selectedConv?.assignedTo);
+    const selectedConversationAssigneeName = selectedConv ? getAssignedName(selectedConv) : undefined;
+    const isConversationAiPaused = isConversationAssigned
+        || selectedConversationMetadata.autoReplyEnabled === false
+        || selectedConversationMetadata.humanTakeover === true
+        || selectedConversationMetadata.aiPaused === true
+        || selectedConversationMetadata.autoReplyDisabled === true
+        || ['human', 'agent', 'manual', 'paused', 'disabled', 'off'].includes(selectedConversationAiMode);
+    const isAiComposing = Boolean(
+        aiTyping
+        && aiTyping.conversationId === selectedConvId
+        && !isConversationAiPaused,
+    );
+    const handleToggleConversationAI = async () => {
+        if (!selectedConv || !workspaceId || !aiRuntimeMeta.enabled) return;
+        const shouldEnable = isConversationAiPaused;
+        try {
+            const res = await httpClient.patch(
+                `/conversations/workspace/${workspaceId}/${selectedConv._id}/metadata`,
+                { autoReplyEnabled: shouldEnable },
+            );
+            if (shouldEnable && isConversationAssigned) {
+                await httpClient.patch(`/conversations/workspace/${workspaceId}/${selectedConv._id}/unassign`);
+            }
+            const serverMetadata = res.data?.data?.metadata;
+            const localMetadata = shouldEnable
+                ? {
+                    autoReplyEnabled: true,
+                    humanTakeover: false,
+                    aiPaused: false,
+                    botPaused: false,
+                    autoReplyDisabled: false,
+                    aiMode: 'auto',
+                }
+                : {
+                    autoReplyEnabled: false,
+                    humanTakeover: true,
+                    aiPaused: true,
+                    autoReplyDisabled: true,
+                    aiMode: 'manual',
+                };
+            setConversations((prev) => prev.map((conv) => conv._id === selectedConv._id
+                ? {
+                    ...conv,
+                    ...(shouldEnable && isConversationAssigned ? { assignedTo: undefined } : {}),
+                    metadata: serverMetadata || { ...conv.metadata, ...localMetadata },
+                }
+                : conv));
+            message.success(shouldEnable
+                ? (isConversationAssigned ? 'Đã bỏ phân công và trả hội thoại về cho AI' : 'Đã bật lại AI cho khách hàng này')
+                : 'Agent đã tiếp quản, AI sẽ tạm dừng');
+        } catch {
+            message.error('Chưa cập nhật được trạng thái AI');
+        }
+    };
 
     // ── Context menu handlers ──
     const handleCtxPin = async (convId: string) => {
@@ -1719,7 +1988,7 @@ export default function InboxPage() {
             <Form.Item label="Kênh" style={{ marginBottom: 12 }}>
                 <Select
                     value={filterChannel}
-                    onChange={setFilterChannel}
+                    onChange={handleChannelFilterChange}
                     options={[
                         { label: 'Tất cả', value: 'all' },
                         { label: '🌐 Live Chat (Widget)', value: 'widget' },
@@ -1803,14 +2072,25 @@ export default function InboxPage() {
                     .inbox-sidebar.conv-selected { display: none !important; }
                     .inbox-chat-panel:not(.conv-selected) { display: none !important; }
                 }
+                @keyframes ai-composing-pulse {
+                    0%, 60%, 100% { opacity: .35; transform: translateY(0); }
+                    30% { opacity: 1; transform: translateY(-2px); }
+                }
+                .ai-composing-dot {
+                    width: 5px;
+                    height: 5px;
+                    border-radius: 999px;
+                    background: #6366f1;
+                    animation: ai-composing-pulse 1.15s infinite ease-in-out;
+                }
             `}</style>
-            <div style={styles.container}>
+            <div style={styles.container} className="inbox-workbench">
                 {/* ── Sidebar: Conversation List ── */}
                 <div style={styles.sidebar}
                     className={`inbox-sidebar${selectedConvId ? ' conv-selected' : ''}`}
                 >
                     {/* Header */}
-                    <div style={styles.sidebarHeader}>
+                    <div style={styles.sidebarHeader} className="inbox-sidebar-header">
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                             <Button
                                 type="text"
@@ -1820,84 +2100,73 @@ export default function InboxPage() {
                             />
                             <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, display: 'flex', alignItems: 'center' }}>
                                 <MessageSquare size={20} style={{ marginRight: 6 }} />
-                                Inbox
-                                <Badge count={inboxUnreadCount} style={{ marginLeft: 8 }} />
+                                Inbox CSKH
+                                <Badge count={totalUnreadCount} style={{ marginLeft: 8 }} />
                             </h2>
                         </div>
+                        <Tooltip title="Xóa dữ liệu tin nhắn thử nghiệm" placement="bottom">
+                            <button
+                                onClick={handleResetAllMessages}
+                                aria-label="Xóa dữ liệu tin nhắn thử nghiệm"
+                                style={{
+                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                    width: 30, height: 30, borderRadius: 6,
+                                    border: '1px solid #e2e8f0', cursor: 'pointer',
+                                    background: '#fff', color: '#94a3b8',
+                                    transition: 'all 0.15s',
+                                }}
+                                onMouseEnter={e => { e.currentTarget.style.background = '#fff1f2'; e.currentTarget.style.color = '#e11d48'; e.currentTarget.style.borderColor = '#fecdd3'; }}
+                                onMouseLeave={e => { e.currentTarget.style.background = '#fff'; e.currentTarget.style.color = '#94a3b8'; e.currentTarget.style.borderColor = '#e2e8f0'; }}
+                            >
+                                <Trash2 size={13} />
+                            </button>
+                        </Tooltip>
+                    </div>
+
+                    <div style={{ padding: '10px 20px 0', background: 'var(--color-bg, #fff)' }}>
                         <div style={{
-                            display: 'flex', alignItems: 'center', gap: 6,
-                            background: '#f1f5f9', borderRadius: 10, padding: 3,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            gap: 8,
+                            padding: '9px 10px',
+                            borderRadius: 12,
+                            border: '1px solid #e5e7eb',
+                            background: socketStatusMeta.background,
+                            minWidth: 0,
                         }}>
-                            {/* Zalo channel pill */}
-                            <button
-                                onClick={() => router.push(`/workspace/${workspaceId}/remote-session`)}
-                                style={{
-                                    display: 'flex', alignItems: 'center', gap: 5,
-                                    padding: '5px 12px', borderRadius: 8,
-                                    border: 'none', cursor: 'pointer',
-                                    background: '#0068ff',
-                                    color: '#fff',
-                                    fontSize: 12, fontWeight: 600,
-                                    transition: 'all 0.2s ease',
-                                    whiteSpace: 'nowrap',
-                                }}
-                                onMouseEnter={e => e.currentTarget.style.opacity = '0.85'}
-                                onMouseLeave={e => e.currentTarget.style.opacity = '1'}
-                            >
-                                <svg width="14" height="14" viewBox="0 0 48 48" fill="none"><path d="M24 4C12.95 4 4 12.95 4 24s8.95 20 20 20 20-8.95 20-20S35.05 4 24 4z" fill="currentColor" opacity=".2"/><path d="M24 8c-8.84 0-16 7.16-16 16 0 5.02 2.32 9.5 5.94 12.44V42l5.22-2.87c1.49.41 3.07.63 4.7.63h.14c8.84 0 16-7.16 16-16S32.84 8 24 8z" fill="currentColor"/></svg>
-                                Zalo
-                                {zaloUnreadCount > 0 && (
-                                    <span style={{
-                                        background: '#fff', color: '#0068ff',
-                                        fontSize: 10, fontWeight: 700,
-                                        padding: '1px 6px', borderRadius: 10,
-                                        lineHeight: '16px', minWidth: 18, textAlign: 'center',
-                                    }}>
-                                        {zaloUnreadCount > 99 ? '99+' : zaloUnreadCount}
-                                    </span>
-                                )}
-                            </button>
-                            {/* Facebook channel pill */}
-                            <button
-                                onClick={() => setFilterChannel(filterChannel === 'facebook' ? 'all' : 'facebook')}
-                                style={{
-                                    display: 'flex', alignItems: 'center', gap: 5,
-                                    padding: '5px 12px', borderRadius: 8,
-                                    border: 'none', cursor: 'pointer',
-                                    background: filterChannel === 'facebook' ? '#1877F2' : 'transparent',
-                                    color: filterChannel === 'facebook' ? '#fff' : '#64748b',
-                                    fontSize: 12, fontWeight: 600,
-                                    transition: 'all 0.2s ease',
-                                    whiteSpace: 'nowrap',
-                                }}
-                                onMouseEnter={e => { if (filterChannel !== 'facebook') e.currentTarget.style.background = '#e2e8f0'; }}
-                                onMouseLeave={e => { if (filterChannel !== 'facebook') e.currentTarget.style.background = 'transparent'; }}
-                            >
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/></svg>
-                                FB
-                            </button>
-                            {/* Reset messages btn — very small, icon only */}
-                            <Tooltip title="Xóa hết tin nhắn" placement="bottom">
-                                <button
-                                    onClick={handleResetAllMessages}
-                                    style={{
-                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                        width: 28, height: 28, borderRadius: 8,
-                                        border: 'none', cursor: 'pointer',
-                                        background: 'transparent', color: '#94a3b8',
-                                        transition: 'all 0.15s',
-                                    }}
-                                    onMouseEnter={e => { e.currentTarget.style.background = '#fee2e2'; e.currentTarget.style.color = '#ef4444'; }}
-                                    onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = '#94a3b8'; }}
-                                >
-                                    <Trash2 size={13} />
-                                </button>
+                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 7, color: socketStatusMeta.color, fontSize: 12, fontWeight: 800, whiteSpace: 'nowrap' }}>
+                                <span style={{ width: 7, height: 7, borderRadius: 999, background: socketStatusMeta.color, boxShadow: `0 0 0 3px ${socketStatusMeta.color}1f` }} />
+                                <Zap size={13} />
+                                {socketStatusMeta.label}
+                            </div>
+                            <Tooltip title={lastRealtimeEvent}>
+                                <div style={{ color: '#64748b', fontSize: 11, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+                                    {lastRealtimeEvent}
+                                </div>
                             </Tooltip>
+                        </div>
+
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6, marginTop: 8 }}>
+                            {[
+                                { label: 'Đang lọc', value: inboxSummary.total },
+                                { label: 'Chưa đọc', value: inboxSummary.unread },
+                                { label: 'Đang mở', value: inboxSummary.open },
+                            ].map((item) => (
+                                <div key={item.label} style={{ border: '1px solid #edf2f7', borderRadius: 10, padding: '8px 7px', background: '#f8fafc', minWidth: 0 }}>
+                                    <div style={{ fontSize: 10, color: '#94a3b8', fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                        {item.label}
+                                    </div>
+                                    <div style={{ marginTop: 4, fontSize: 17, lineHeight: 1, color: '#0f172a', fontWeight: 900 }}>
+                                        {item.value}
+                                    </div>
+                                </div>
+                            ))}
                         </div>
                     </div>
 
                     {/* Search + filter */}
-                    <div style={styles.searchArea}>
+                    <div style={styles.searchArea} className="inbox-search-area">
                         <div style={{ display: 'flex', gap: 8, flexDirection: 'column' }}>
                             <Input
                                 prefix={<Search size={14} color="#999" />}
@@ -1909,7 +2178,7 @@ export default function InboxPage() {
                             />
                             <Select
                                 mode="tags"
-                                placeholder={<span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Globe size={14} color="#999" /> Lọc theo Domain</span>}
+                                placeholder="Lọc theo domain"
                                 value={filterDomain}
                                 onChange={setFilterDomain}
                                 style={{ width: '100%' }}
@@ -1917,39 +2186,80 @@ export default function InboxPage() {
                                 options={domainOptions}
                             />
                         </div>
-                        <div style={{ display: 'flex', gap: 4, marginTop: 8, alignItems: 'center', justifyContent: 'space-between' }}>
-                            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 9, marginTop: 10 }}>
+                            <div>
+                                <div style={{ marginBottom: 5, fontSize: 10, lineHeight: 1, color: '#94a3b8', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em' }}>
+                                    Trạng thái
+                                </div>
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 5 }}>
                                 {(['all', 'open', 'pending', 'closed'] as const).map((s) => (
-                                    <Tag
+                                    <button
+                                        type="button"
                                         key={s}
-                                        color={filterStatus === s ? '#6366f1' : undefined}
                                         onClick={() => setFilterStatus(s)}
-                                        style={{ cursor: 'pointer', borderRadius: 12, padding: '2px 12px', margin: 0 }}
+                                        aria-pressed={filterStatus === s}
+                                        style={{
+                                            minWidth: 0,
+                                            height: 29,
+                                            padding: '0 4px',
+                                            borderRadius: 8,
+                                            border: `1px solid ${filterStatus === s ? '#c7d2fe' : '#e2e8f0'}`,
+                                            background: filterStatus === s ? '#eef2ff' : '#fff',
+                                            color: filterStatus === s ? '#4f46e5' : '#475569',
+                                            fontSize: 11,
+                                            fontWeight: filterStatus === s ? 700 : 500,
+                                            cursor: 'pointer',
+                                            whiteSpace: 'nowrap',
+                                        }}
                                     >
                                         {s === 'all' ? 'Tất cả' : s === 'open' ? 'Đang mở' : s === 'pending' ? 'Chờ xử lý' : 'Đã đóng'}
-                                    </Tag>
+                                    </button>
                                 ))}
+                                </div>
                             </div>
-                            {/* ── Channel source tabs ── */}
-                            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                            <div>
+                                <div style={{ marginBottom: 5, fontSize: 10, lineHeight: 1, color: '#94a3b8', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em' }}>
+                                    Kênh
+                                </div>
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 5 }}>
                                 {[
-                                    { key: 'all', label: 'Tất cả', icon: '📋' },
-                                    { key: 'widget', label: 'Website', icon: '🌐' },
-                                    { key: 'zalo', label: 'Zalo', icon: '💬' },
-                                    { key: 'facebook', label: 'Facebook', icon: '📘' },
+                                    { key: 'all', label: 'Mọi kênh', color: '#64748b' },
+                                    { key: 'widget', label: 'Website', color: '#0ea5e9' },
+                                    { key: 'zalo', label: 'Zalo', color: '#2563eb' },
+                                    { key: 'facebook', label: 'Facebook', color: '#1877f2' },
                                 ].map((ch) => (
-                                    <Tag
+                                    <button
+                                        type="button"
                                         key={ch.key}
-                                        color={filterChannel === ch.key ? '#1877F2' : undefined}
-                                        onClick={() => setFilterChannel(ch.key)}
-                                        style={{ cursor: 'pointer', borderRadius: 12, padding: '2px 10px', margin: 0, fontSize: 12 }}
+                                        onClick={() => handleChannelFilterChange(ch.key)}
+                                        aria-pressed={filterChannel === ch.key}
+                                        style={{
+                                            minWidth: 0,
+                                            height: 29,
+                                            padding: '0 5px',
+                                            borderRadius: 8,
+                                            border: `1px solid ${filterChannel === ch.key ? '#bfdbfe' : '#e2e8f0'}`,
+                                            background: filterChannel === ch.key ? '#eff6ff' : '#fff',
+                                            color: filterChannel === ch.key ? '#1d4ed8' : '#475569',
+                                            fontSize: 11,
+                                            fontWeight: filterChannel === ch.key ? 700 : 500,
+                                            cursor: 'pointer',
+                                            whiteSpace: 'nowrap',
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            gap: 5,
+                                        }}
                                     >
-                                        {ch.icon} {ch.label}
-                                    </Tag>
+                                        <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: '50%', background: ch.color, flexShrink: 0 }} />
+                                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{ch.label}</span>
+                                    </button>
                                 ))}
+                                </div>
                             </div>
-                            {/* Fanpage sub-filter (visible when channel=facebook) */}
-                            {filterChannel === 'facebook' && fbPages.length > 0 && (
+                            {(filterChannel === 'facebook' && fbPages.length > 0) || ((filterChannel === 'zalo' || filterChannel === 'all') && zaloAccounts.length > 1) ? (
+                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                                {filterChannel === 'facebook' && fbPages.length > 0 && (
                                 <Select
                                     size="small"
                                     value={filterPageId}
@@ -1957,16 +2267,15 @@ export default function InboxPage() {
                                     style={{ minWidth: 140, fontSize: 11 }}
                                     popupMatchSelectWidth={false}
                                     options={[
-                                        { label: '📘 Tất cả Fanpage', value: 'all' },
+                                        { label: 'Tất cả Fanpage', value: 'all' },
                                         ...fbPages.filter(p => p.status === 'active').map(p => ({
                                             label: p.pageName,
                                             value: p.pageId,
                                         })),
                                     ]}
                                 />
-                            )}
-                            {/* Zalo account sub-filter (visible when channel=zalo or all, and multiple accounts exist) */}
-                            {(filterChannel === 'zalo' || filterChannel === 'all') && zaloAccounts.length > 1 && (
+                                )}
+                                {(filterChannel === 'zalo' || filterChannel === 'all') && zaloAccounts.length > 1 && (
                                 <Select
                                     size="small"
                                     value={filterZaloAccountId}
@@ -1974,28 +2283,30 @@ export default function InboxPage() {
                                     style={{ minWidth: 160, fontSize: 11 }}
                                     popupMatchSelectWidth={false}
                                     options={[
-                                        { label: '💬 Tất cả Zalo', value: 'all' },
+                                        { label: 'Tất cả tài khoản Zalo', value: 'all' },
                                         ...zaloAccounts.map((acc, idx) => ({
-                                            label: `${acc.isOnline ? '🟢' : '🔴'} ${acc.name || `Zalo ${idx + 1}`}`,
+                                            label: `${acc.isOnline ? 'Đang hoạt động' : 'Mất kết nối'} · ${acc.name || `Zalo ${idx + 1}`}`,
                                             value: acc.accountId,
                                         })),
                                     ]}
                                 />
-                            )}
-                            {/* Page size selector */}
+                                )}
+                            </div>
+                            ) : null}
+                            <div style={{ display: 'flex', gap: 6, alignItems: 'center', justifyContent: 'space-between' }}>
                             <Select
                                 size="small"
                                 value={convPerPage}
                                 onChange={(v) => setConvPerPage(v)}
-                                style={{ width: 90, fontSize: 11 }}
+                                style={{ width: 104, fontSize: 11 }}
                                 options={[
-                                    { label: '50/trang', value: 50 },
-                                    { label: '100/trang', value: 100 },
-                                    { label: '500/trang', value: 500 },
-                                    { label: '1000/trang', value: 1000 },
+                                    { label: '50 / trang', value: 50 },
+                                    { label: '100 / trang', value: 100 },
+                                    { label: '500 / trang', value: 500 },
+                                    { label: '1000 / trang', value: 1000 },
                                 ]}
                             />
-                            <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                                 {/* Label filter dropdown */}
                                 <Popover
                                     trigger="click"
@@ -2038,26 +2349,29 @@ export default function InboxPage() {
                                         </div>
                                     }
                                 >
-                                    <Tooltip title="Phân loại">
-                                        <Button
-                                            type="text"
-                                            size="small"
-                                            icon={<Bookmark size={14} />}
-                                            style={{ color: filterLabel ? '#6366f1' : '#ccc' }}
-                                        />
-                                    </Tooltip>
+                                    <Button
+                                        size="small"
+                                        icon={<Bookmark size={13} />}
+                                        style={{ color: filterLabel ? '#4f46e5' : '#64748b', borderColor: filterLabel ? '#c7d2fe' : '#e2e8f0', borderRadius: 7 }}
+                                    >
+                                        Nhãn
+                                    </Button>
                                 </Popover>
                                 {searchingMessages && <Spin size="small" />}
                                 <Popover content={advancedFilterContent} title="Lọc nâng cao" trigger="click" placement="bottomRight">
                                     <Button
-                                        type="text"
                                         size="small"
-                                        icon={<Filter size={14} />}
+                                        icon={<Filter size={13} />}
                                         style={{
-                                            color: (filterAssignee !== 'all' || filterChannel !== 'all' || filterTags.length > 0 || filterDateFrom) ? '#6366f1' : '#ccc'
+                                            color: (filterAssignee !== 'all' || filterTags.length > 0 || filterDateFrom) ? '#4f46e5' : '#64748b',
+                                            borderColor: (filterAssignee !== 'all' || filterTags.length > 0 || filterDateFrom) ? '#c7d2fe' : '#e2e8f0',
+                                            borderRadius: 7,
                                         }}
-                                    />
+                                    >
+                                        Bộ lọc
+                                    </Button>
                                 </Popover>
+                            </div>
                             </div>
                         </div>
                     </div>
@@ -2195,7 +2509,7 @@ export default function InboxPage() {
                     </Modal>
 
                     {/* Conversation list */}
-                    <div ref={convListRef} style={styles.convList} onScroll={(e) => {
+                    <div ref={convListRef} style={styles.convList} className="inbox-conversation-list" onScroll={(e) => {
                         const el = e.currentTarget;
                         if (el.scrollTop + el.clientHeight >= el.scrollHeight - 80) {
                             loadMoreConversations();
@@ -2252,15 +2566,26 @@ export default function InboxPage() {
                                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                             <span style={styles.convName}>
                                                 {conv.isPinned && <span title="Đã ghim" style={{ marginRight: 4, fontSize: 11 }}>📌</span>}
-                                                {(conv as any).channel === 'facebook' && (
-                                                    <span style={{
-                                                        display: 'inline-flex', alignItems: 'center', gap: 2,
-                                                        fontSize: 9, fontWeight: 700, color: '#fff',
-                                                        background: '#1877F2', borderRadius: 4,
-                                                        padding: '1px 5px', marginRight: 5, lineHeight: '14px',
-                                                        verticalAlign: 'middle',
-                                                    }}>FB</span>
-                                                )}
+                                                {(conv as any).channel === 'facebook' && (() => {
+                                                    const pageName = getFacebookPageName(conv, fbPages);
+                                                    const shortPageName = pageName && pageName.length > 22
+                                                        ? `${pageName.slice(0, 22)}…`
+                                                        : pageName;
+                                                    return (
+                                                        <Tooltip title={pageName || 'Facebook'}>
+                                                            <span style={{
+                                                                display: 'inline-flex', alignItems: 'center', gap: 2,
+                                                                fontSize: 9, fontWeight: 700, color: '#fff',
+                                                                background: '#1877F2', borderRadius: 4,
+                                                                padding: '1px 5px', marginRight: 5, lineHeight: '14px',
+                                                                verticalAlign: 'middle', maxWidth: 150,
+                                                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                                            }}>
+                                                                {shortPageName ? `FB · ${shortPageName}` : 'FB'}
+                                                            </span>
+                                                        </Tooltip>
+                                                    );
+                                                })()}
                                                 {(conv as any).channel === 'zalo' && (() => {
                                                     const acctId = (conv as any).metadata?.accountId;
                                                     const acctInfo = acctId ? zaloAccounts.find(a => a.accountId === acctId) : null;
@@ -2536,7 +2861,7 @@ export default function InboxPage() {
                     {selectedConvId && selectedConv ? (
                         <>
                             {/* Chat header — clean minimal */}
-                            <div style={styles.chatHeader}>
+                            <div style={styles.chatHeader} className="inbox-chat-header">
                                 <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0, flex: 1 }}>
                                     <Button
                                         type="text"
@@ -2586,7 +2911,11 @@ export default function InboxPage() {
                                             {visitorName(selectedConv)}
                                         </div>
                                         <div style={{ fontSize: 11, color: '#9ca3af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                            {(selectedConv as any).channel === 'zalo' ? 'Zalo' : (selectedConv as any).channel === 'facebook' ? 'Facebook' : selectedConv.metadata?.domain || selectedConv.visitorInfo?.email || ''}
+                                            {(selectedConv as any).channel === 'zalo'
+                                                ? 'Zalo'
+                                                : (selectedConv as any).channel === 'facebook'
+                                                    ? `Facebook${getFacebookPageName(selectedConv, fbPages) ? ` · ${getFacebookPageName(selectedConv, fbPages)}` : ''}`
+                                                    : selectedConv.metadata?.domain || selectedConv.visitorInfo?.email || ''}
                                             {getAssignedName(selectedConv) && <> · <span style={{ color: '#6366f1' }}>{getAssignedName(selectedConv)}</span></>}
                                         </div>
                                     </div>
@@ -2790,8 +3119,86 @@ export default function InboxPage() {
                                 </div>
                             </div>
 
+                            <div style={{
+                                ...styles.aiCopilotBar,
+                                borderColor: !aiRuntimeMeta.enabled ? '#e2e8f0' : isConversationAiPaused ? '#fed7aa' : '#bbf7d0',
+                                background: !aiRuntimeMeta.enabled
+                                    ? '#f8fafc'
+                                    : isConversationAiPaused
+                                        ? 'linear-gradient(135deg, #fffbeb 0%, #fff7ed 55%, #fff 100%)'
+                                        : 'linear-gradient(135deg, #f0fdf4 0%, #eff6ff 55%, #f8fafc 100%)',
+                            }}>
+                                <div style={styles.aiCopilotLead}>
+                                    <div style={{
+                                        ...styles.aiCopilotIcon,
+                                        background: !aiRuntimeMeta.enabled
+                                            ? '#e5e7eb'
+                                            : isConversationAiPaused
+                                                ? 'linear-gradient(135deg, #f59e0b 0%, #f97316 100%)'
+                                                : 'linear-gradient(135deg, #22c55e 0%, #6366f1 100%)',
+                                        color: aiRuntimeMeta.enabled ? '#fff' : '#64748b',
+                                    }}>
+                                        <Zap size={15} />
+                                    </div>
+                                    <div style={{ minWidth: 0 }}>
+                                        <div style={styles.aiCopilotTitle}>
+                                            Nemark AI Copilot
+                                            <span style={{
+                                                ...styles.aiCopilotStatus,
+                                                background: !aiRuntimeMeta.enabled ? '#f1f5f9' : isConversationAiPaused ? '#fff7ed' : '#ecfdf5',
+                                                color: !aiRuntimeMeta.enabled ? '#64748b' : isConversationAiPaused ? '#c2410c' : '#059669',
+                                            }}>
+                                                {!aiRuntimeMeta.enabled
+                                                    ? 'Chưa bật'
+                                                    : isConversationAiPaused
+                                                        ? 'Agent tiếp quản'
+                                                        : isAiComposing
+                                                            ? 'Đang soạn phản hồi'
+                                                            : 'AI tự động đang bật'}
+                                            </span>
+                                        </div>
+                                        <div style={styles.aiCopilotText}>
+                                            {!aiRuntimeMeta.enabled
+                                                ? 'Bật AI tại Trung tâm AI để sử dụng auto-reply.'
+                                                : isConversationAssigned
+                                                    ? `AI đang dừng vì hội thoại được phân công cho ${selectedConversationAssigneeName || 'agent'}. Trả về AI sẽ bỏ phân công.`
+                                                    : isConversationAiPaused
+                                                        ? `AI không tự trả lời khách này${selectedConversationMetadata.lastHumanAgentName ? ` sau khi ${selectedConversationMetadata.lastHumanAgentName} tiếp quản` : ''}.`
+                                                        : isAiComposing
+                                                            ? `${aiTyping?.senderName || 'Trợ lý'} · ${aiTyping?.label || 'Đang soạn…'} · sẽ gửi sau nhịp phản hồi tự nhiên.`
+                                                            : `${aiRuntimeMeta.model || 'gpt-5'} · trả lời theo kho tri thức; agent nhắn thủ công sẽ tự tạm dừng AI.`}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div style={styles.aiCopilotActions}>
+                                    <span style={styles.aiCopilotChip}><BookOpen size={12} /> RAG</span>
+                                    <span style={styles.aiCopilotChip}><MessageSquare size={12} /> Kịch bản</span>
+                                    <button
+                                        onClick={handleToggleConversationAI}
+                                        disabled={!aiRuntimeMeta.enabled}
+                                        title={!aiRuntimeMeta.enabled ? 'Hãy bật AI trong Trung tâm AI trước' : undefined}
+                                        style={{
+                                            ...styles.aiCopilotButton,
+                                            borderColor: isConversationAiPaused ? '#bbf7d0' : '#fed7aa',
+                                            color: isConversationAiPaused ? '#047857' : '#b45309',
+                                            opacity: aiRuntimeMeta.enabled ? 1 : 0.55,
+                                            cursor: aiRuntimeMeta.enabled ? 'pointer' : 'not-allowed',
+                                        }}
+                                    >
+                                        {isConversationAiPaused ? <Zap size={13} /> : <UserCheck size={13} />}
+                                        {isConversationAssigned ? 'Trả về AI' : isConversationAiPaused ? 'Bật lại AI' : 'Agent tiếp quản'}
+                                    </button>
+                                    <button
+                                        onClick={() => router.push(`/workspace/${workspaceId}/chatbot`)}
+                                        style={styles.aiCopilotButton}
+                                    >
+                                        <Settings size={13} /> Cấu hình AI
+                                    </button>
+                                </div>
+                            </div>
+
                             {/* Messages */}
-                            <div ref={messagesContainerRef} onScroll={handleMessagesScroll} style={styles.messagesArea}>
+                            <div ref={messagesContainerRef} onScroll={handleMessagesScroll} style={styles.messagesArea} className="inbox-messages-area">
                                 {loadingMsgs ? (
                                     <div style={{ textAlign: 'center', padding: 60 }}><Spin /></div>
                                 ) : messages.length === 0 ? (
@@ -3260,6 +3667,36 @@ export default function InboxPage() {
                                         </div>
                                     </div>
                                 )}
+                                {isAiComposing && (
+                                    <div style={{ ...styles.msgRow, justifyContent: 'flex-end' }}>
+                                        <div
+                                            aria-live="polite"
+                                            aria-label={aiTyping?.label || 'Đang soạn phản hồi'}
+                                            style={{
+                                                ...styles.msgBubble,
+                                                display: 'inline-flex',
+                                                alignItems: 'center',
+                                                gap: 8,
+                                                border: '1px solid #c7d2fe',
+                                                background: '#eef2ff',
+                                                color: '#4f46e5',
+                                                fontSize: 12,
+                                                fontWeight: 700,
+                                            }}
+                                        >
+                                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                                                {[0, 1, 2].map(index => (
+                                                    <span
+                                                        key={index}
+                                                        className="ai-composing-dot"
+                                                        style={{ animationDelay: `${index * 0.16}s` }}
+                                                    />
+                                                ))}
+                                            </span>
+                                            {aiTyping?.label || 'Đang soạn…'}
+                                        </div>
+                                    </div>
+                                )}
                                 <div ref={messagesEndRef} />
                                 {/* Floating "New messages" button when scrolled up */}
                                 {newMsgCount > 0 && (
@@ -3333,7 +3770,7 @@ export default function InboxPage() {
                                         </div>
                                     )}
                                     {/* iMessage-style input bar */}
-                                    <div style={{
+                                    <div className="inbox-composer-shell" style={{
                                         padding: '10px 12px',
                                         background: '#fff',
                                         borderTop: '1px solid #f3f4f6',
@@ -3734,7 +4171,7 @@ export default function InboxPage() {
                 {/* Visitor Profile Sidebar */}
                 {selectedConvId && (
                     <div className="visitor-profile-sidebar" style={{
-                        width: 300,
+                        width: 340,
                         flexShrink: 0,
                         overflowY: 'auto',
                         background: '#fff',
@@ -3806,6 +4243,13 @@ export default function InboxPage() {
                 .inbox-chat-panel { display: flex !important; }
                 .mobile-back-btn { display: none !important; }
 
+                @media (min-width: 769px) {
+                    .inbox-sidebar {
+                        flex: 0 0 340px !important;
+                        min-width: 320px !important;
+                    }
+                }
+
                 .msg-row:hover .msg-actions {
                     opacity: 1 !important;
                 }
@@ -3818,15 +4262,51 @@ export default function InboxPage() {
                 }
 
                 @media (max-width: 768px) {
+                    .inbox-workbench {
+                        height: 100dvh !important;
+                        min-height: 100dvh !important;
+                        background: #f8fafc !important;
+                    }
                     .inbox-sidebar {
                         width: 100% !important;
+                        min-width: 100% !important;
+                        max-width: 100% !important;
                         border-right: none !important;
+                        height: 100dvh !important;
+                        background: #f8fafc !important;
                     }
                     .inbox-chat-panel {
                         width: 100% !important;
                         position: absolute !important;
                         inset: 0 !important;
                         z-index: 10 !important;
+                        height: 100dvh !important;
+                        border-radius: 0 !important;
+                    }
+                    .inbox-sidebar-header,
+                    .inbox-chat-header {
+                        padding: 10px 12px !important;
+                        min-height: 58px !important;
+                        background: rgba(255, 255, 255, 0.96) !important;
+                        backdrop-filter: blur(16px);
+                    }
+                    .inbox-search-area {
+                        padding: 10px 12px !important;
+                    }
+                    .inbox-conversation-list {
+                        padding: 0 8px 92px !important;
+                    }
+                    .inbox-messages-area {
+                        padding: 14px 12px 18px !important;
+                        background:
+                            radial-gradient(circle at 16px 16px, rgba(99, 102, 241, 0.06) 0 1px, transparent 1px),
+                            #f8fafc !important;
+                        background-size: 22px 22px !important;
+                    }
+                    .inbox-composer-shell {
+                        padding: 8px 10px max(12px, env(safe-area-inset-bottom)) !important;
+                        background: rgba(255, 255, 255, 0.96) !important;
+                        backdrop-filter: blur(16px);
                     }
                     .mobile-back-btn {
                         display: inline-flex !important;
@@ -4316,8 +4796,9 @@ const ctxMenuItemStyle: React.CSSProperties = {
 
 const styles: Record<string, React.CSSProperties> = {
     container: {
-        position: 'absolute',
-        inset: 0,
+        position: 'relative',
+        width: '100%',
+        height: '100vh',
         display: 'flex',
         background: 'var(--color-bg-muted, #f1f5f9)',
         overflow: 'hidden',
@@ -4325,7 +4806,9 @@ const styles: Record<string, React.CSSProperties> = {
     },
     // Sidebar
     sidebar: {
-        width: 300,
+        width: 340,
+        minWidth: 320,
+        maxWidth: 380,
         background: 'var(--color-bg, #fff)',
         borderRight: '1px solid var(--color-border, #e2e8f0)',
         display: 'flex',
@@ -4387,7 +4870,7 @@ const styles: Record<string, React.CSSProperties> = {
         overflow: 'hidden',
         textOverflow: 'ellipsis',
         whiteSpace: 'nowrap' as const,
-        maxWidth: 200,
+        maxWidth: 240,
     },
     // Chat panel
     chatPanel: {
@@ -4412,6 +4895,97 @@ const styles: Record<string, React.CSSProperties> = {
         zIndex: 2,
         flexShrink: 0,
         minHeight: 56,
+    },
+    aiCopilotBar: {
+        margin: '0 16px',
+        padding: '10px 12px',
+        border: '1px solid #dbeafe',
+        borderTop: 'none',
+        borderBottomLeftRadius: 14,
+        borderBottomRightRadius: 14,
+        background: 'linear-gradient(135deg, #f8fbff 0%, #eef6ff 55%, #f8fafc 100%)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 12,
+        flexWrap: 'wrap' as const,
+        flexShrink: 0,
+        boxShadow: '0 8px 22px rgba(37, 99, 235, 0.06)',
+    },
+    aiCopilotLead: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        minWidth: 260,
+        flex: 1,
+    },
+    aiCopilotIcon: {
+        width: 32,
+        height: 32,
+        borderRadius: 10,
+        display: 'grid',
+        placeItems: 'center',
+        flexShrink: 0,
+        boxShadow: '0 8px 18px rgba(99, 102, 241, 0.14)',
+    },
+    aiCopilotTitle: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        fontSize: 13,
+        fontWeight: 850,
+        color: '#0f172a',
+        lineHeight: 1.25,
+    },
+    aiCopilotStatus: {
+        padding: '2px 7px',
+        borderRadius: 999,
+        fontSize: 10,
+        fontWeight: 850,
+        whiteSpace: 'nowrap' as const,
+    },
+    aiCopilotText: {
+        marginTop: 2,
+        color: '#64748b',
+        fontSize: 12,
+        lineHeight: 1.35,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+    },
+    aiCopilotActions: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        flexWrap: 'wrap' as const,
+    },
+    aiCopilotChip: {
+        height: 28,
+        padding: '0 9px',
+        borderRadius: 999,
+        background: '#fff',
+        border: '1px solid #e2e8f0',
+        color: '#475569',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 5,
+        fontSize: 11,
+        fontWeight: 750,
+        whiteSpace: 'nowrap' as const,
+    },
+    aiCopilotButton: {
+        height: 30,
+        padding: '0 10px',
+        borderRadius: 10,
+        border: '1px solid #c7d2fe',
+        background: '#fff',
+        color: '#4f46e5',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        fontSize: 12,
+        fontWeight: 850,
+        cursor: 'pointer',
+        whiteSpace: 'nowrap' as const,
     },
     chatAvatar: {
         width: 38,

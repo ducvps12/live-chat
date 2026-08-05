@@ -23,7 +23,7 @@ export const PLAN_TIERS: PlanTier[] = [
         features: [
             'Live chat widget',
             '1 agent',
-            '30 ngày dùng thử',
+            '14 ngày dùng thử',
             'Lịch sử chat 30 ngày',
         ],
     },

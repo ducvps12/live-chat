@@ -2,10 +2,12 @@ import { Request, Response } from 'express';
 import asyncHandler from 'express-async-handler';
 import prisma from '../../infra/prisma';
 import os from 'os';
-import axios from 'axios';
+import { getAIBaseUrl } from '../../config/ai';
+import { aiService } from '../ai/ai.service';
+import { PLAN_TIERS } from '../subscription/subscription.service';
+import type { Prisma } from '@prisma/client';
 
-const AI_API_URL = process.env.AI_API_URL || 'http://163.61.111.226:8318/v1';
-const AI_API_KEY = process.env.AI_API_KEY || 'friend-key-alpha';
+const AI_API_URL = getAIBaseUrl();
 
 export const adminController = {
     overview: asyncHandler(async (_req: Request, res: Response) => {
@@ -44,6 +46,7 @@ export const adminController = {
 
         const uptime = process.uptime();
         const memUsage = process.memoryUsage();
+        const aiStatus = await aiService.status();
 
         res.json({
             success: true,
@@ -71,7 +74,12 @@ export const adminController = {
                     freeRAM: Math.round(os.freemem() / 1024 / 1024 / 1024),
                 },
                 database: { name: 'MySQL (Prisma)', collections: 0, dataSize: 0, storageSize: 0, indexes: 0 },
-                ai: { apiUrl: AI_API_URL, model: process.env.AI_MODEL || 'gpt-5' },
+                ai: {
+                    apiUrl: AI_API_URL,
+                    model: aiStatus.model,
+                    provider: aiStatus.provider,
+                    status: aiStatus.status,
+                },
             },
         });
     }),
@@ -93,6 +101,34 @@ export const adminController = {
         }));
 
         res.json({ success: true, data: enriched });
+    }),
+
+    listWorkspaceWidgets: asyncHandler(async (req: Request, res: Response) => {
+        const workspaceId = req.params.workspaceId as string;
+        const workspace = await prisma.workspace.findUnique({
+            where: { id: workspaceId },
+            select: { id: true },
+        });
+        if (!workspace) {
+            res.status(404).json({ success: false, error: 'Workspace không tồn tại' });
+            return;
+        }
+
+        const widgets = await prisma.widget.findMany({
+            where: { workspaceId },
+            orderBy: { createdAt: 'desc' },
+            select: {
+                id: true,
+                name: true,
+                isActive: true,
+                domainRules: true,
+                config: true,
+                createdAt: true,
+                updatedAt: true,
+            },
+        });
+
+        res.json({ success: true, data: widgets });
     }),
 
     listUsers: asyncHandler(async (_req: Request, res: Response) => {
@@ -140,17 +176,37 @@ export const adminController = {
             omit: { passwordHash: true },
             include: {
                 workspaceMembers: {
-                    include: { workspace: { select: { id: true, name: true, slug: true, plan: true } } },
+                    include: {
+                        workspace: {
+                            select: {
+                                id: true,
+                                name: true,
+                                slug: true,
+                                plan: true,
+                                isActive: true,
+                                createdAt: true,
+                                _count: { select: { conversations: true, widgets: true, visitors: true } },
+                            },
+                        },
+                    },
                 },
                 sessions: {
                     orderBy: { createdAt: 'desc' },
-                    take: 20,
+                    take: 30,
                     select: { id: true, ipAddress: true, userAgent: true, createdAt: true, expiresAt: true, revokedAt: true },
                 },
                 orders: {
                     orderBy: { createdAt: 'desc' },
                     take: 50,
-                    select: { id: true, orderNumber: true, customerName: true, total: true, status: true, createdAt: true },
+                    select: {
+                        id: true,
+                        orderNumber: true,
+                        customerName: true,
+                        total: true,
+                        status: true,
+                        createdAt: true,
+                        workspace: { select: { id: true, name: true, slug: true } },
+                    },
                 },
                 _count: {
                     select: { orders: true, macros: true, campaigns: true, products: true, leads: true },
@@ -159,22 +215,73 @@ export const adminController = {
         });
         if (!user) { res.status(404).json({ success: false, message: 'User không tồn tại' }); return; }
 
-        // Get invoices from user's workspaces
-        const wsIds = user.workspaceMembers?.map(wm => wm.workspace.id) || [];
+        const rawUser = user as any;
+        const workspaces = rawUser.workspaceMembers?.map((wm: any) => ({
+            id: wm.workspace.id,
+            name: wm.workspace.name,
+            slug: wm.workspace.slug,
+            plan: wm.workspace.plan,
+            isActive: wm.workspace.isActive,
+            createdAt: wm.workspace.createdAt,
+            role: wm.role,
+            joinedAt: wm.joinedAt,
+            conversationCount: wm.workspace._count?.conversations || 0,
+            widgetCount: wm.workspace._count?.widgets || 0,
+            visitorCount: wm.workspace._count?.visitors || 0,
+        })) || [];
+
+        const wsIds = workspaces.map((workspace: any) => workspace.id);
         const invoices = wsIds.length > 0 ? await prisma.invoice.findMany({
             where: { workspaceId: { in: wsIds } },
             orderBy: { createdAt: 'desc' },
             take: 50,
+            include: { workspace: { select: { id: true, name: true, slug: true } } },
         }) : [];
         const subscriptions = wsIds.length > 0 ? await prisma.subscription.findMany({
             where: { workspaceId: { in: wsIds } },
-            include: { workspace: { select: { name: true } } },
+            include: { workspace: { select: { id: true, name: true, slug: true } } },
         }) : [];
 
-        const totalRevenue = (user.orders || []).reduce((s: number, o: any) => s + (o.status !== 'cancelled' ? o.total : 0), 0);
-        const totalInvoicePaid = invoices.filter(i => i.status === 'paid').reduce((s, i) => s + i.amount, 0);
+        const now = new Date();
+        const sessionStats = (rawUser.sessions || []).reduce((acc: any, session: any) => {
+            if (session.revokedAt) acc.revoked += 1;
+            else if (session.expiresAt && new Date(session.expiresAt) < now) acc.expired += 1;
+            else acc.active += 1;
+            acc.total += 1;
+            return acc;
+        }, { total: 0, active: 0, revoked: 0, expired: 0 });
 
-        res.json({ success: true, data: { ...user, invoices, subscriptions, totalRevenue, totalInvoicePaid } });
+        const counts = rawUser._count || {};
+        const lastSession = rawUser.sessions?.[0] || null;
+        const totalRevenue = (rawUser.orders || []).reduce((sum: number, order: any) => sum + (order.status !== 'cancelled' ? order.total : 0), 0);
+        const totalInvoicePaid = invoices.filter((invoice: any) => invoice.status === 'paid').reduce((sum: number, invoice: any) => sum + invoice.amount, 0);
+
+        res.json({
+            success: true,
+            data: {
+                ...rawUser,
+                workspaceMembers: undefined,
+                _count: undefined,
+                workspaces,
+                workspaceCount: workspaces.length,
+                lastLogin: lastSession?.createdAt || null,
+                lastIP: lastSession?.ipAddress || null,
+                lastDevice: lastSession?.userAgent || null,
+                orderCount: counts.orders || 0,
+                macroCount: counts.macros || 0,
+                campaignCount: counts.campaigns || 0,
+                productCount: counts.products || 0,
+                leadCount: counts.leads || 0,
+                invoiceCount: invoices.length,
+                paidInvoiceCount: invoices.filter((invoice: any) => invoice.status === 'paid').length,
+                subscriptionCount: subscriptions.length,
+                sessionStats,
+                invoices,
+                subscriptions,
+                totalRevenue,
+                totalInvoicePaid,
+            },
+        });
     }),
 
     updateUser: asyncHandler(async (req: Request, res: Response) => {
@@ -194,6 +301,94 @@ export const adminController = {
         });
         console.log(`[Admin] User ${updated.email} updated: role=${updated.role}, isActive=${updated.isActive}`);
         res.json({ success: true, data: updated, message: 'Cập nhật thành công' });
+    }),
+
+    upsertUserSubscription: asyncHandler(async (req: Request, res: Response) => {
+        const userId = String(req.params.userId);
+        const workspaceId = String(req.params.workspaceId);
+        const membership = await prisma.workspaceMember.findUnique({
+            where: { workspaceId_userId: { workspaceId, userId } },
+            select: { id: true },
+        });
+        if (!membership) {
+            res.status(404).json({ success: false, message: 'Workspace không thuộc user này' });
+            return;
+        }
+
+        const { planId = 'trial', status = 'active', billingCycle = 'monthly', currentPeriodStart, currentPeriodEnd, trialEndsAt, aiReplyUsed = 0 } = req.body || {};
+        const plan = PLAN_TIERS.find((item) => item.id === planId);
+        if (!plan) {
+            res.status(400).json({ success: false, message: 'Loại gói không hợp lệ' });
+            return;
+        }
+        if (!['active', 'expired', 'cancelled', 'past_due'].includes(status) || !['monthly', 'yearly'].includes(billingCycle)) {
+            res.status(400).json({ success: false, message: 'Trạng thái hoặc chu kỳ không hợp lệ' });
+            return;
+        }
+
+        const start = currentPeriodStart ? new Date(currentPeriodStart) : new Date();
+        const end = currentPeriodEnd ? new Date(currentPeriodEnd) : new Date(start.getTime() + (billingCycle === 'yearly' ? 365 : 30) * 86400000);
+        if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
+            res.status(400).json({ success: false, message: 'Thời hạn gói không hợp lệ' });
+            return;
+        }
+
+        const existing = await prisma.subscription.findUnique({ where: { workspaceId } });
+        const existingMetadata = existing?.metadata && typeof existing.metadata === 'object' && !Array.isArray(existing.metadata)
+            ? existing.metadata as Record<string, unknown>
+            : {};
+        const metadata = {
+            ...existingMetadata,
+            aiReplyQuota: {
+                periodKey: `${start.toISOString()}_${end.toISOString()}`,
+                used: Math.max(0, Math.floor(Number(aiReplyUsed) || 0)),
+                limit: plan.aiReplyLimit ?? null,
+                planId,
+                updatedAt: new Date().toISOString(),
+                updatedBy: 'admin',
+            },
+        } as Prisma.InputJsonValue;
+
+        const subscription = await prisma.$transaction(async (tx) => {
+            const saved = await tx.subscription.upsert({
+                where: { workspaceId },
+                create: {
+                    workspaceId, planId, status, billingCycle,
+                    currentPeriodStart: start, currentPeriodEnd: end,
+                    trialEndsAt: trialEndsAt ? new Date(trialEndsAt) : planId === 'trial' ? end : null,
+                    cancelledAt: status === 'cancelled' ? new Date() : null,
+                    metadata,
+                },
+                update: {
+                    planId, status, billingCycle,
+                    currentPeriodStart: start, currentPeriodEnd: end,
+                    trialEndsAt: trialEndsAt ? new Date(trialEndsAt) : planId === 'trial' ? end : null,
+                    cancelledAt: status === 'cancelled' ? (existing?.cancelledAt || new Date()) : null,
+                    metadata,
+                },
+            });
+            await tx.workspace.update({ where: { id: workspaceId }, data: { plan: planId } });
+            return saved;
+        });
+        res.json({ success: true, data: subscription, message: 'Đã cập nhật gói và quota AI auto-reply' });
+    }),
+
+    deleteUserSubscription: asyncHandler(async (req: Request, res: Response) => {
+        const userId = String(req.params.userId);
+        const workspaceId = String(req.params.workspaceId);
+        const membership = await prisma.workspaceMember.findUnique({
+            where: { workspaceId_userId: { workspaceId, userId } },
+            select: { id: true },
+        });
+        if (!membership) {
+            res.status(404).json({ success: false, message: 'Workspace không thuộc user này' });
+            return;
+        }
+        await prisma.$transaction([
+            prisma.subscription.deleteMany({ where: { workspaceId } }),
+            prisma.workspace.update({ where: { id: workspaceId }, data: { plan: 'free' } }),
+        ]);
+        res.json({ success: true, message: 'Đã xóa gói; workspace trở về free' });
     }),
 
     revokeSessions: asyncHandler(async (req: Request, res: Response) => {
@@ -240,31 +435,17 @@ export const adminController = {
     }),
 
     aiHealth: asyncHandler(async (_req: Request, res: Response) => {
-        try {
-            const start = Date.now();
-            const response = await axios.get(`${AI_API_URL}/models`, {
-                headers: { 'Authorization': `Bearer ${AI_API_KEY}` },
-                timeout: 10000,
-            });
-            const latency = Date.now() - start;
-            const models = response.data?.data || [];
-            res.json({
-                success: true,
-                data: {
-                    status: 'online', latency,
-                    models: models.map((m: any) => ({ id: m.id, owned_by: m.owned_by })),
-                    modelCount: models.length,
-                },
-            });
-        } catch (err: any) {
-            res.json({
-                success: true,
-                data: {
-                    status: 'offline', error: err?.response?.status || err.message,
-                    latency: -1, models: [], modelCount: 0,
-                },
-            });
-        }
+        const status = await aiService.status();
+        res.json({
+            success: true,
+            data: {
+                ...status,
+                latency: status.latencyMs,
+                models: status.models.map((id) => ({ id, owned_by: status.provider })),
+                modelCount: status.models.length,
+                error: status.status === 'offline' ? status.message : undefined,
+            },
+        });
     }),
 
     recentMessages: asyncHandler(async (_req: Request, res: Response) => {

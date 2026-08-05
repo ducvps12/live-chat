@@ -25,9 +25,26 @@ import {
     sendZaloFriendRequest,
     getZaloFriendIds,
     getZaloAliasList,
+    clearZaloSessionTransport,
 } from '../../infra/zaloService';
 import { emitToConversation } from '../../infra/socket';
 import prisma from '../../infra/prisma';
+import { resolveZaloSendAccount } from '../conversation/zalo-identity.helpers';
+import { SETTINGS_KEYS, settingsService } from '../admin/settings.service';
+import { zaloNetworkProfileService } from './zalo-network-profile.service';
+
+const zaloSendAccountError = (error: 'ACCOUNT_NOT_IN_WORKSPACE' | 'ACCOUNT_OFFLINE' | 'NO_CONNECTED_ACCOUNT' | 'AMBIGUOUS_ACCOUNT') => {
+    switch (error) {
+        case 'ACCOUNT_NOT_IN_WORKSPACE':
+            return new AppError('Tài khoản Zalo không thuộc workspace này', 403, 'ZALO_ACCOUNT_FORBIDDEN');
+        case 'ACCOUNT_OFFLINE':
+            return new AppError('Tài khoản Zalo đã chọn đang offline', 409, 'ZALO_ACCOUNT_OFFLINE');
+        case 'AMBIGUOUS_ACCOUNT':
+            return new AppError('Workspace có nhiều tài khoản Zalo đang kết nối; cần chọn đúng tài khoản gửi', 409, 'ZALO_ACCOUNT_REQUIRED');
+        default:
+            return new AppError('Không có tài khoản Zalo nào đang kết nối', 400, 'ZALO_NOT_CONNECTED');
+    }
+};
 
 class ZaloService {
     // Map accountId → workspaceId for message routing
@@ -41,6 +58,12 @@ class ZaloService {
      * Gọi hàm này lúc bootstrap server
      */
     async bootActiveAccounts() {
+        const enabled = (await settingsService.get(SETTINGS_KEYS.ZALO_PERSONAL_ENABLED, 'true')) === 'true';
+        const autoReconnect = (await settingsService.get(SETTINGS_KEYS.ZALO_AUTO_RECONNECT, 'true')) === 'true';
+        if (!enabled || !autoReconnect) {
+            console.log('[ZaloService] Auto restore disabled from Admin Control Panel.');
+            return;
+        }
         console.log('[ZaloService] Booting up active Zalo accounts...');
         try {
             const activeAccounts = await zaloAccountRepo.findActive();
@@ -56,7 +79,8 @@ class ZaloService {
                         (msg) => this.handleMessage(workspaceId, msg, accountId),
                         (err) => console.error(`[ZaloService] Account ${accountId} listener error:`, err),
                         undefined, // onUndo
-                        (reaction) => this.handleReaction(workspaceId, reaction)
+                        (reaction) => this.handleReaction(workspaceId, reaction),
+                        await zaloNetworkProfileService.transportForAccount(account),
                     );
                     console.log(`[ZaloService] Successfully booted account ${accountId} for workspace ${workspaceId}`);
 
@@ -99,11 +123,9 @@ class ZaloService {
                                 console.log(`[ZaloService] Auto-fix: ownId resolved to "${ownId}"`);
 
                                 if (ownId) {
-                                    // Look up own profile
                                     try {
                                         const result = await session.api.getUserInfo([ownId]);
                                         console.log(`[ZaloService] Auto-fix: getUserInfo result type: ${typeof result}, isMap: ${result instanceof Map}`);
-                                        // Zalo API returns { changed_profiles: { uid: {...} }, unchanged_profiles: {...} }
                                         let info: any = null;
                                         if (result instanceof Map) {
                                             info = result.get(ownId);
@@ -144,19 +166,64 @@ class ZaloService {
                     setTimeout(() => this.syncAllHistory(workspaceId), 15000);
                 } catch (err) {
                     console.error(`[ZaloService] Failed to boot account ${accountId}:`, err);
-                    // Update DB status to reflect failed restore
                     try { await zaloAccountRepo.updateStatus(accountId, 'disconnected'); } catch { /* silent */ }
                 }
             }
+            this.startAutoReconnectWatchdog();
         } catch (err) {
             console.error('[ZaloService] Error in bootActiveAccounts:', err);
         }
     }
 
+    private autoReconnectTimer: NodeJS.Timeout | null = null;
+
     /**
-     * Generate mã QR để user quét đăng nhập trên ứng dụng
+     * Watchdog ngầm định kỳ (60s) kiểm tra và tự động khôi phục kết nối cho các tài khoản active bị offline
      */
+    private startAutoReconnectWatchdog() {
+        if (this.autoReconnectTimer) return;
+        console.log('[ZaloService] Starting auto-reconnect background watchdog (interval: 60s)...');
+        this.autoReconnectTimer = setInterval(async () => {
+            try {
+                const autoReconnect = (await settingsService.get(SETTINGS_KEYS.ZALO_AUTO_RECONNECT, 'true')) === 'true';
+                if (!autoReconnect) return;
+
+                const activeAccounts = await zaloAccountRepo.findActive();
+                for (const account of activeAccounts) {
+                    const accountId = account.id.toString();
+                    const workspaceId = account.workspaceId.toString();
+
+                    if (!isZaloSessionConnected(accountId) && hasStoredCredentials(accountId)) {
+                        console.log(`[ZaloService Watchdog] Account ${accountId} (${account.name || 'Zalo'}) is offline. Attempting auto-restore...`);
+                        try {
+                            await restoreZaloSession(
+                                accountId,
+                                (msg) => this.handleMessage(workspaceId, msg, accountId),
+                                (err) => console.error(`[ZaloService Watchdog] Account ${accountId} listener error:`, err),
+                                undefined,
+                                (reaction) => this.handleReaction(workspaceId, reaction),
+                                await zaloNetworkProfileService.transportForAccount(account),
+                            );
+                        } catch (err: any) {
+                            console.warn(`[ZaloService Watchdog] Auto-restore attempt failed for account ${accountId}:`, err.message);
+                        }
+                    }
+                }
+            } catch (err) {
+                console.error('[ZaloService Watchdog] Error during health check:', err);
+            }
+        }, 60_000);
+    }
+
     async generateQRLogin(workspaceId: string): Promise<string> {
+        const enabled = (await settingsService.get(SETTINGS_KEYS.ZALO_PERSONAL_ENABLED, 'true')) === 'true';
+        const noticeAccepted = (await settingsService.get(SETTINGS_KEYS.ZALO_CONNECTOR_NOTICE_ACCEPTED, 'false')) === 'true';
+        if (!enabled) {
+            throw new AppError('Kết nối Zalo cá nhân đang bị tắt trong Admin Control Panel.', 503, 'ZALO_CONNECTOR_DISABLED');
+        }
+        if (!noticeAccepted) {
+            throw new AppError('Quản trị viên cần xác nhận lưu ý về connector Zalo cá nhân trước khi cho phép đăng nhập QR.', 503, 'ZALO_CONNECTOR_NOTICE_REQUIRED');
+        }
         // Generate a temporary session ID — will be replaced by accountId after DB insert
         const tempSessionId = `qr_${workspaceId}_${Date.now()}`;
 
@@ -370,8 +437,10 @@ class ZaloService {
             // Disconnect specific account
             const account = await zaloAccountRepo.findById(accountId);
             if (account && account.workspaceId.toString() === workspaceId) {
+                await zaloNetworkProfileService.remove(workspaceId, accountId);
                 await zaloAccountRepo.delete(accountId);
                 await destroyZaloSession(accountId);
+                clearZaloSessionTransport(accountId);
                 this.accountWorkspaceMap.delete(accountId);
             }
         } else {
@@ -379,8 +448,10 @@ class ZaloService {
             const accounts = await zaloAccountRepo.findByWorkspaceId(workspaceId);
             for (const acc of accounts) {
                 const id = acc.id.toString();
+                await zaloNetworkProfileService.remove(workspaceId, id);
                 await zaloAccountRepo.delete(id);
                 await destroyZaloSession(id);
+                clearZaloSessionTransport(id);
                 this.accountWorkspaceMap.delete(id);
             }
         }
@@ -391,6 +462,10 @@ class ZaloService {
      * Kết nối lại 1 Zalo account bị mất kết nối (sử dụng credentials đã lưu)
      */
     async reconnectAccount(workspaceId: string, accountId: string) {
+        const enabled = (await settingsService.get(SETTINGS_KEYS.ZALO_PERSONAL_ENABLED, 'true')) === 'true';
+        if (!enabled) {
+            throw new AppError('Kết nối Zalo cá nhân đang bị tắt trong Admin Control Panel.', 503, 'ZALO_CONNECTOR_DISABLED');
+        }
         const account = await zaloAccountRepo.findById(accountId);
         if (!account || account.workspaceId.toString() !== workspaceId) {
             throw new AppError('Tài khoản Zalo không tồn tại', 404, 'NOT_FOUND');
@@ -410,6 +485,7 @@ class ZaloService {
 
         // Destroy any stale session first
         try { await destroyZaloSession(accountId); } catch { /* ignore */ }
+        clearZaloSessionTransport(accountId);
 
         // Restore session from credentials
         const success = await restoreZaloSession(
@@ -417,7 +493,8 @@ class ZaloService {
             (msg) => this.handleMessage(workspaceId, msg, accountId),
             (err) => console.error(`[ZaloService] Reconnected account ${accountId} error:`, err),
             undefined, // onUndo
-            (reaction) => this.handleReaction(workspaceId, reaction)
+            (reaction) => this.handleReaction(workspaceId, reaction),
+            await zaloNetworkProfileService.transportForAccount(account),
         );
 
         if (!success) {
@@ -652,7 +729,8 @@ class ZaloService {
                     attachments,
                     message.msgId,
                     accountId, // Optional
-                    accountName // Optional
+                    accountName, // Optional
+                    message.threadType,
                 );
             } else {
                 // ── Incoming from others: route as visitor message ──
@@ -667,7 +745,8 @@ class ZaloService {
                     message.msgId,
                     isGroupMsg ? senderDisplayName : undefined, // pass sender name for group messages
                     accountId, // Optional
-                    accountName // Optional
+                    accountName, // Optional
+                    message.threadType,
                 );
             }
         } catch (err) {
@@ -752,19 +831,15 @@ class ZaloService {
      * Core API để Frontend gửi tin nhắn qua Zalo (Reply lại khách)
      */
     async sendMessage(workspaceId: string, threadId: string, text: string, type: 'text' | 'image' | 'sticker' = 'text', attachmentUrl?: string, accountId?: string) {
-        // Find a connected session: prefer specified accountId, then any connected account in workspace
-        let sessionId = accountId;
-        if (!sessionId || !isZaloSessionConnected(sessionId)) {
-            const accounts = await zaloAccountRepo.findByWorkspaceId(workspaceId);
-            const connected = accounts.find(a => isZaloSessionConnected(a.id.toString()));
-            if (connected) {
-                sessionId = connected.id.toString();
-            }
-        }
-
-        if (!sessionId || !isZaloSessionConnected(sessionId)) {
-            throw new AppError('Tài khoản Zalo chưa kết nối hoặc đang offline', 400, 'ZALO_NOT_CONNECTED');
-        }
+        // Never silently cross accounts: an explicit account must belong to this
+        // workspace and be online; legacy callers may omit it only when exactly
+        // one workspace account is connected.
+        const accounts = await zaloAccountRepo.findByWorkspaceId(workspaceId);
+        const workspaceAccountIds = accounts.map(account => account.id.toString());
+        const connectedAccountIds = workspaceAccountIds.filter(id => isZaloSessionConnected(id));
+        const resolution = resolveZaloSendAccount(workspaceAccountIds, connectedAccountIds, accountId);
+        if ('error' in resolution) throw zaloSendAccountError(resolution.error);
+        const sessionId = resolution.accountId;
 
         // Determine thread type
         let threadType: 'user' | 'group' = 'user';
@@ -826,18 +901,12 @@ class ZaloService {
     ) {
         const delayMs = options?.delayMs || 3000; // 3s between each recipient
 
-        // Find connected session
-        let sessionId = options?.accountId;
-        if (!sessionId || !isZaloSessionConnected(sessionId)) {
-            const accounts = await zaloAccountRepo.findByWorkspaceId(workspaceId);
-            const connected = accounts.find(a => isZaloSessionConnected(a.id.toString()));
-            if (connected) {
-                sessionId = connected.id.toString();
-            }
-        }
-        if (!sessionId || !isZaloSessionConnected(sessionId)) {
-            throw new AppError('Tài khoản Zalo chưa kết nối', 400, 'ZALO_NOT_CONNECTED');
-        }
+        const accounts = await zaloAccountRepo.findByWorkspaceId(workspaceId);
+        const workspaceAccountIds = accounts.map(account => account.id.toString());
+        const connectedAccountIds = workspaceAccountIds.filter(id => isZaloSessionConnected(id));
+        const resolution = resolveZaloSendAccount(workspaceAccountIds, connectedAccountIds, options?.accountId);
+        if ('error' in resolution) throw zaloSendAccountError(resolution.error);
+        const sessionId = resolution.accountId;
 
         const results: Array<{ threadId: string; success: boolean; error?: string }> = [];
 
@@ -967,7 +1036,6 @@ class ZaloService {
                 }
             } catch { /* alias fetch is optional */ }
 
-            const ConvModel = (await import('../conversation/repos/conversation.model')).ConversationModel;
             let updatedCount = 0;
 
             for (const conv of convs) {
@@ -979,42 +1047,67 @@ class ZaloService {
                 const alias = aliasMap.get(conv.threadId);
                 const bestName = alias || conv.displayName;
                 
-                // Force-update ALL conversations for this visitor (refresh avatar + name)
-                const updateFields: Record<string, any> = {};
-                if (conv.avatar) {
-                    updateFields['visitorInfo.avatar'] = conv.avatar;
-                }
-                if (bestName) {
-                    updateFields['visitorInfo.name'] = bestName;
-                }
-                // Store alias separately in metadata for reference
-                if (alias) {
-                    updateFields['metadata.zaloAlias'] = alias;
-                    updateFields['metadata.zaloOriginalName'] = conv.displayName || '';
-                }
-                
-                if (Object.keys(updateFields).length === 0) continue;
-                
-                const result = await ConvModel.updateMany(
-                    { visitorId },
-                    { $set: updateFields }
-                );
-                if (result.modifiedCount > 0) updatedCount += result.modifiedCount;
+                // Fetch existing conversations for this visitor using Prisma
+                const dbConvs = await prisma.conversation.findMany({
+                    where: { visitorId }
+                });
 
-                // Also update the Visitor model so avatar + name persists across new conversations
-                try {
-                    const VisitorModel = (await import('../conversation/repos/visitor.model')).VisitorModel;
-                    const visitorUpdate: Record<string, any> = {};
-                    if (conv.avatar) visitorUpdate['attributes.avatar'] = conv.avatar;
-                    if (bestName) visitorUpdate.name = bestName;
-                    if (alias) visitorUpdate['attributes.zaloAlias'] = alias;
-                    if (Object.keys(visitorUpdate).length > 0) {
-                        await VisitorModel.updateMany(
-                            { visitorId },
-                            { $set: visitorUpdate }
-                        );
+                if (dbConvs.length > 0) {
+                    for (const dbConv of dbConvs) {
+                        const currentVisitorInfo = typeof dbConv.visitorInfo === 'string'
+                            ? JSON.parse(dbConv.visitorInfo)
+                            : (dbConv.visitorInfo || {});
+
+                        const visitorInfo = { ...currentVisitorInfo };
+                        if (conv.avatar) visitorInfo.avatar = conv.avatar;
+                        if (bestName) visitorInfo.name = bestName;
+
+                        const currentMetadata = typeof dbConv.metadata === 'string'
+                            ? JSON.parse(dbConv.metadata)
+                            : (dbConv.metadata || {});
+
+                        const metadata = { ...currentMetadata };
+                        if (alias) {
+                            metadata.zaloAlias = alias;
+                            metadata.zaloOriginalName = conv.displayName || '';
+                        }
+
+                        await prisma.conversation.update({
+                            where: { id: dbConv.id },
+                            data: {
+                                visitorInfo: visitorInfo as any,
+                                metadata: metadata as any
+                            }
+                        });
+                        updatedCount++;
                     }
-                } catch { /* silent — visitor model may not exist for all contacts */ }
+                }
+
+                // Also update the Visitor model using Prisma
+                try {
+                    const dbVisitor = await prisma.visitor.findFirst({
+                        where: { visitorId }
+                    });
+                    if (dbVisitor) {
+                        const currentAttributes = typeof dbVisitor.attributes === 'string'
+                            ? JSON.parse(dbVisitor.attributes)
+                            : (dbVisitor.attributes || {});
+
+                        const attributes = { ...currentAttributes };
+                        if (conv.avatar) attributes.avatar = conv.avatar;
+                        if (alias) attributes.zaloAlias = alias;
+
+                        await prisma.visitor.update({
+                            where: { id: dbVisitor.id },
+                            data: {
+                                name: bestName || dbVisitor.name,
+                                attributes: attributes as any
+                            }
+                        });
+                    }
+                } catch (err) {
+                    console.error('[ZaloService] Visitor backfill error:', err);
+                }
             }
 
             console.log(`[ZaloService] Avatar + alias backfill complete: ${updatedCount} conversations updated (${aliasMap.size} aliases, ${convs.length} contacts)`);
@@ -1136,6 +1229,15 @@ class ZaloService {
                 const messages = await getZaloMessages(accountId, conv.threadId, conv.threadType, 200);
                 
                 if (messages.length === 0) {
+                    await conversationService.ensureZaloConversationShell(
+                        workspaceId,
+                        conv.threadId,
+                        conv.displayName || `Zalo ${conv.threadId}`,
+                        conv.avatar || '',
+                        accountId,
+                        accountName,
+                        conv.threadType,
+                    );
                     job.processedThreads++;
                     continue;
                 }
@@ -1202,14 +1304,14 @@ class ZaloService {
                             await conversationService.handleSelfZaloMessage(
                                 workspaceId, conversationKey, conversationName,
                                 conv.avatar || '', contentText, msgType, attachments, clientMsgId,
-                                accountId, accountName
+                                accountId, accountName, conv.threadType
                             );
                         } else {
                             await conversationService.handleIncomingZaloMessage(
                                 workspaceId, conversationKey, conversationName,
                                 conv.avatar || '', contentText, msgType, attachments, clientMsgId,
                                 isGroupMsg ? (m.senderName || `Thành viên ${senderId.slice(-6)}`) : undefined,
-                                accountId, accountName
+                                accountId, accountName, conv.threadType
                             );
                         }
                     } catch (err: any) {

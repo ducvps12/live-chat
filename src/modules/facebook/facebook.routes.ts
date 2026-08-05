@@ -6,7 +6,7 @@ import { scopeCheck } from '../../middlewares/scopeCheck';
 const router = Router({ mergeParams: true });
 
 // ── Public webhook endpoints (no auth — Facebook calls these directly) ──
-// These are registered at /api/v1/facebook/webhook
+// These are registered at /api/facebook/webhook
 router.get('/webhook', facebookController.verifyWebhook);
 router.post('/webhook', facebookController.handleWebhook);
 
@@ -20,7 +20,8 @@ const protectedRouter = Router({ mergeParams: true });
 protectedRouter.use(requireAuth);
 protectedRouter.use(scopeCheck);
 
-// /api/v1/workspaces/:workspaceId/facebook/...
+// /api/workspaces/:workspaceId/facebook/...
+protectedRouter.get('/status', facebookController.getConfigStatus);
 protectedRouter.get('/oauth-url', facebookController.getOAuthUrl);
 protectedRouter.get('/pages', facebookController.getPages);
 protectedRouter.post('/pages', facebookController.connectPage);

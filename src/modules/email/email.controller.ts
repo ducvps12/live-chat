@@ -1,6 +1,13 @@
 import { Request, Response } from 'express';
 import prisma from '../../infra/prisma';
 import expressAsyncHandler from 'express-async-handler';
+import type { Prisma } from '@prisma/client';
+import {
+    maskEmailTransportConfig,
+    mergeProtectedEmailTransportConfig,
+    protectEmailTransportConfig,
+} from './email-account-secrets';
+import { smtpService } from './smtp.service';
 
 export const emailController = {
     list: expressAsyncHandler(async (req: Request, res: Response) => {
@@ -12,8 +19,8 @@ export const emailController = {
         // Mask passwords in smtp/imap JSON
         const masked = accounts.map(a => {
             const result = { ...a } as any;
-            if (result.smtp && typeof result.smtp === 'object') result.smtp = { ...result.smtp, password: '***' };
-            if (result.imap && typeof result.imap === 'object') result.imap = { ...result.imap, password: '***' };
+            result.smtp = maskEmailTransportConfig(result.smtp);
+            result.imap = maskEmailTransportConfig(result.imap);
             return result;
         });
         res.json({ success: true, data: masked });
@@ -26,8 +33,8 @@ export const emailController = {
         if (!account) { res.status(404).json({ success: false, message: 'Email account không tồn tại' }); return; }
         if (account.workspaceId !== workspaceId) { res.status(403).json({ success: false, message: 'Không có quyền' }); return; }
         const result = { ...account } as any;
-        if (result.smtp && typeof result.smtp === 'object') result.smtp = { ...result.smtp, password: '***' };
-        if (result.imap && typeof result.imap === 'object') result.imap = { ...result.imap, password: '***' };
+        result.smtp = maskEmailTransportConfig(result.smtp);
+        result.imap = maskEmailTransportConfig(result.imap);
         res.json({ success: true, data: result });
     }),
 
@@ -43,8 +50,8 @@ export const emailController = {
                 workspaceId,
                 email: email.trim(),
                 displayName: displayName || '',
-                smtp: smtp || {},
-                imap: imap || {},
+                smtp: protectEmailTransportConfig(smtp) as Prisma.InputJsonObject,
+                imap: protectEmailTransportConfig(imap) as Prisma.InputJsonObject,
                 allowReceive: allowReceive !== false,
                 allowSend: allowSend !== false,
                 ticketType: ticketType || 'support',
@@ -53,8 +60,8 @@ export const emailController = {
         });
 
         const result = { ...account } as any;
-        if (result.smtp && typeof result.smtp === 'object') result.smtp = { ...result.smtp, password: '***' };
-        if (result.imap && typeof result.imap === 'object') result.imap = { ...result.imap, password: '***' };
+        result.smtp = maskEmailTransportConfig(result.smtp);
+        result.imap = maskEmailTransportConfig(result.imap);
         res.status(201).json({ success: true, data: result });
     }),
 
@@ -69,12 +76,10 @@ export const emailController = {
         const data: any = {};
         if (displayName !== undefined) data.displayName = displayName;
         if (smtp !== undefined) {
-            const current = (account.smtp as any) || {};
-            data.smtp = { ...current, ...smtp };
+            data.smtp = mergeProtectedEmailTransportConfig(account.smtp, smtp);
         }
         if (imap !== undefined) {
-            const current = (account.imap as any) || {};
-            data.imap = { ...current, ...imap };
+            data.imap = mergeProtectedEmailTransportConfig(account.imap, imap);
         }
         if (isActive !== undefined) data.isActive = isActive;
         if (allowReceive !== undefined) data.allowReceive = allowReceive;
@@ -83,8 +88,8 @@ export const emailController = {
 
         const updated = await prisma.emailAccount.update({ where: { id: accountId }, data });
         const result = { ...updated } as any;
-        if (result.smtp && typeof result.smtp === 'object') result.smtp = { ...result.smtp, password: '***' };
-        if (result.imap && typeof result.imap === 'object') result.imap = { ...result.imap, password: '***' };
+        result.smtp = maskEmailTransportConfig(result.smtp);
+        result.imap = maskEmailTransportConfig(result.imap);
         res.json({ success: true, data: result });
     }),
 
@@ -96,5 +101,11 @@ export const emailController = {
         if (account.workspaceId !== workspaceId) { res.status(403).json({ success: false, message: 'Không có quyền' }); return; }
         await prisma.emailAccount.delete({ where: { id: accountId } });
         res.json({ success: true, message: 'Đã xóa email account' });
+    }),
+
+    testSmtp: expressAsyncHandler(async (req: Request, res: Response) => {
+        const { smtp, email, displayName } = req.body;
+        const result = await smtpService.testConnection({ enabled: true, ...(smtp || {}), fromEmail: email, fromName: displayName });
+        res.json({ success: true, data: result });
     }),
 };

@@ -12,6 +12,12 @@ export interface IWidgetResponse {
         language: string;
         avatarUrl?: string;
         showBranding: boolean;
+        brandingMode?: 'nemark' | 'custom' | 'hidden';
+        brandingName?: string;
+        brandingUrl?: string;
+        themePreset?: 'modern' | 'minimal' | 'glass' | 'compact';
+        customCss?: string;
+        entitlements?: { whiteLabel: boolean; customCss: boolean };
         offlineMessage: string;
         autoReply?: string;
         preChatForm: {

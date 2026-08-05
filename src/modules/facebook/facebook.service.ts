@@ -1,19 +1,120 @@
 import { fbPageRepo } from './repos/fb-page.repo';
 import { conversationService } from '../conversation/conversation.service';
 import mongoose from 'mongoose';
+import { createHmac, timingSafeEqual } from 'crypto';
+import { AppError } from '../../middlewares/errorHandler';
+import { SETTINGS_KEYS, settingsService } from '../admin/settings.service';
 
 const FB_GRAPH_URL = 'https://graph.facebook.com/v19.0';
-const FB_APP_ID = process.env.FB_APP_ID || '';
-const FB_APP_SECRET = process.env.FB_APP_SECRET || '';
-const FB_VERIFY_TOKEN = process.env.FB_VERIFY_TOKEN || 'nemark_fb_verify_2024';
-const FB_REDIRECT_URI = process.env.FB_REDIRECT_URI || '';
+const OAUTH_STATE_TTL_MS = 15 * 60 * 1000;
+
+type FacebookRuntimeConfig = {
+    enabled: boolean;
+    appId: string;
+    appSecret: string;
+    verifyToken: string;
+    redirectUri: string;
+    stateSecret: string;
+};
 
 class FacebookService {
+    private getStateSecret(): string {
+        return process.env.FB_OAUTH_STATE_SECRET || process.env.JWT_SECRET || '';
+    }
+
+    private async getRuntimeConfig(): Promise<FacebookRuntimeConfig> {
+        const baseUrl = (process.env.BASE_URL || process.env.FRONTEND_URL || 'http://localhost:3010').replace(/\/$/, '');
+        const [enabled, appId, appSecret, verifyToken, redirectUri] = await Promise.all([
+            settingsService.get(SETTINGS_KEYS.FACEBOOK_ENABLED, 'true'),
+            settingsService.get(SETTINGS_KEYS.FACEBOOK_APP_ID, process.env.FB_APP_ID || ''),
+            settingsService.getSecret(SETTINGS_KEYS.FACEBOOK_APP_SECRET, process.env.FB_APP_SECRET || ''),
+            settingsService.getSecret(SETTINGS_KEYS.FACEBOOK_VERIFY_TOKEN, process.env.FB_VERIFY_TOKEN || ''),
+            settingsService.get(
+                SETTINGS_KEYS.FACEBOOK_REDIRECT_URI,
+                process.env.FB_REDIRECT_URI || `${baseUrl}/api/facebook/callback`,
+            ),
+        ]);
+        return {
+            enabled: enabled === 'true',
+            appId,
+            appSecret,
+            verifyToken,
+            redirectUri,
+            stateSecret: this.getStateSecret(),
+        };
+    }
+
+    private assertOAuthConfigured(config: FacebookRuntimeConfig): void {
+        if (!config.enabled) {
+            throw new AppError('Tích hợp Facebook đang bị tắt trong Admin Control Panel.', 503, 'FACEBOOK_DISABLED');
+        }
+        if (!config.appId || !config.appSecret) {
+            throw new AppError(
+                'Facebook App chưa được cấu hình trên máy chủ. Quản trị viên cần bổ sung FB_APP_ID và FB_APP_SECRET trước khi kết nối Fanpage.',
+                503,
+                'FACEBOOK_APP_NOT_CONFIGURED',
+            );
+        }
+        if (!config.stateSecret) {
+            throw new AppError('Facebook OAuth state secret chua duoc cau hinh tren may chu.', 503, 'FACEBOOK_STATE_NOT_CONFIGURED');
+        }
+    }
+
+    async getConfigStatus() {
+        const config = await this.getRuntimeConfig();
+        const appConfigured = Boolean(config.appId && config.appSecret);
+        const stateConfigured = Boolean(config.stateSecret);
+        const webhookConfigured = Boolean(config.verifyToken);
+        return {
+            enabled: config.enabled,
+            oauthReady: config.enabled && appConfigured && stateConfigured,
+            webhookReady: config.enabled && webhookConfigured,
+            redirectUri: config.redirectUri,
+            webhookUrl: `${(process.env.BASE_URL || process.env.FRONTEND_URL || 'http://localhost:3010').replace(/\/$/, '')}/api/facebook/webhook`,
+            missing: [
+                ...(!config.appId ? ['Facebook App ID'] : []),
+                ...(!config.appSecret ? ['Facebook App Secret'] : []),
+                ...(!stateConfigured ? ['FB_OAUTH_STATE_SECRET or JWT_SECRET'] : []),
+                ...(!webhookConfigured ? ['Facebook Verify Token'] : []),
+            ],
+        };
+    }
+
+    private createOAuthState(workspaceId: string, stateSecret: string): string {
+        const payload = Buffer.from(JSON.stringify({ workspaceId, issuedAt: Date.now() })).toString('base64url');
+        const signature = createHmac('sha256', stateSecret).update(payload).digest('base64url');
+        return `${payload}.${signature}`;
+    }
+
+    async verifyOAuthState(state: string): Promise<string> {
+        const config = await this.getRuntimeConfig();
+        const [payload, receivedSignature] = String(state || '').split('.');
+        if (!payload || !receivedSignature || !config.stateSecret) {
+            throw new AppError('Invalid Facebook OAuth state', 400, 'FACEBOOK_OAUTH_STATE_INVALID');
+        }
+        const expectedSignature = createHmac('sha256', config.stateSecret).update(payload).digest('base64url');
+        const received = Buffer.from(receivedSignature);
+        const expected = Buffer.from(expectedSignature);
+        if (received.length !== expected.length || !timingSafeEqual(received, expected)) {
+            throw new AppError('Invalid Facebook OAuth state', 400, 'FACEBOOK_OAUTH_STATE_INVALID');
+        }
+        try {
+            const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as { workspaceId?: string; issuedAt?: number };
+            if (!parsed.workspaceId || !parsed.issuedAt || Date.now() - parsed.issuedAt > OAUTH_STATE_TTL_MS) {
+                throw new Error('expired');
+            }
+            return parsed.workspaceId;
+        } catch {
+            throw new AppError('Facebook OAuth state expired or invalid', 400, 'FACEBOOK_OAUTH_STATE_INVALID');
+        }
+    }
+
     /**
      * Step 1: Generate OAuth URL for user to login with Facebook
      */
-    getOAuthUrl(workspaceId: string): string {
-        const redirectUri = FB_REDIRECT_URI || `${process.env.BASE_URL || 'http://localhost:3010'}/api/v1/facebook/callback`;
+    async getOAuthUrl(workspaceId: string): Promise<string> {
+        const config = await this.getRuntimeConfig();
+        this.assertOAuthConfigured(config);
         const scopes = [
             'pages_messaging',
             'pages_manage_metadata',
@@ -21,15 +122,16 @@ class FacebookService {
             'pages_show_list',
         ].join(',');
 
-        return `https://www.facebook.com/v19.0/dialog/oauth?client_id=${FB_APP_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${scopes}&state=${workspaceId}&response_type=code`;
+        return `https://www.facebook.com/v19.0/dialog/oauth?client_id=${config.appId}&redirect_uri=${encodeURIComponent(config.redirectUri)}&scope=${scopes}&state=${encodeURIComponent(this.createOAuthState(workspaceId, config.stateSecret))}&response_type=code`;
     }
 
     /**
      * Step 2: Exchange auth code for user access token
      */
     async exchangeCodeForToken(code: string): Promise<string> {
-        const redirectUri = FB_REDIRECT_URI || `${process.env.BASE_URL || 'http://localhost:3010'}/api/v1/facebook/callback`;
-        const url = `${FB_GRAPH_URL}/oauth/access_token?client_id=${FB_APP_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&client_secret=${FB_APP_SECRET}&code=${code}`;
+        const config = await this.getRuntimeConfig();
+        this.assertOAuthConfigured(config);
+        const url = `${FB_GRAPH_URL}/oauth/access_token?client_id=${config.appId}&redirect_uri=${encodeURIComponent(config.redirectUri)}&client_secret=${config.appSecret}&code=${code}`;
 
         const res = await fetch(url);
         const data = await res.json() as any;
@@ -43,7 +145,9 @@ class FacebookService {
      * Step 2b: Exchange short-lived token for long-lived token
      */
     async getLongLivedToken(shortToken: string): Promise<string> {
-        const url = `${FB_GRAPH_URL}/oauth/access_token?grant_type=fb_exchange_token&client_id=${FB_APP_ID}&client_secret=${FB_APP_SECRET}&fb_exchange_token=${shortToken}`;
+        const config = await this.getRuntimeConfig();
+        this.assertOAuthConfigured(config);
+        const url = `${FB_GRAPH_URL}/oauth/access_token?grant_type=fb_exchange_token&client_id=${config.appId}&client_secret=${config.appSecret}&fb_exchange_token=${shortToken}`;
 
         const res = await fetch(url);
         const data = await res.json() as any;
@@ -127,7 +231,7 @@ class FacebookService {
     async getPages(workspaceId: string) {
         const pages = await fbPageRepo.findByWorkspaceId(workspaceId);
         return pages.map(p => ({
-            id: (p._id as unknown as string).toString(),
+            id: p.id,
             pageId: p.pageId,
             pageName: p.pageName,
             pageAvatar: p.pageAvatar,
@@ -389,8 +493,9 @@ class FacebookService {
     /**
      * Verify webhook (called by Facebook during setup)
      */
-    verifyWebhook(mode: string, token: string, challenge: string): string | null {
-        if (mode === 'subscribe' && token === FB_VERIFY_TOKEN) {
+    async verifyWebhook(mode: string, token: string, challenge: string): Promise<string | null> {
+        const config = await this.getRuntimeConfig();
+        if (config.enabled && mode === 'subscribe' && token === config.verifyToken) {
             console.log('[FacebookService] ✅ Webhook verified');
             return challenge;
         }
@@ -564,7 +669,7 @@ class FacebookService {
 
             for (const page of allPages) {
                 try {
-                    const pageDbId = (page._id as any).toString();
+                    const pageDbId = page.id;
                     const workspaceId = page.workspaceId.toString();
                     console.log(`[FacebookService]   → Syncing page "${page.pageName}" (${page.pageId})`);
                     const result = await this.syncPageConversations(workspaceId, pageDbId);

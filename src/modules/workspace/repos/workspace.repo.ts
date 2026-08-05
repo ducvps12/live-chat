@@ -1,5 +1,5 @@
 import prisma from '../../../infra/prisma';
-import type { Workspace, WorkspaceMember } from '@prisma/client';
+import type { Prisma, Workspace, WorkspaceMember } from '@prisma/client';
 
 type WorkspaceWithMembers = Workspace & { members: WorkspaceMember[] };
 
@@ -35,7 +35,7 @@ export const workspaceRepo = {
         });
     },
 
-    async update(id: string, data: Partial<Omit<Workspace, 'id' | 'createdAt' | 'updatedAt'>>): Promise<Workspace | null> {
+    async update(id: string, data: Prisma.WorkspaceUpdateInput): Promise<Workspace | null> {
         return prisma.workspace.update({ where: { id }, data });
     },
 
@@ -50,6 +50,14 @@ export const workspaceRepo = {
 
     async removeMember(workspaceId: string, userId: string): Promise<WorkspaceWithMembers | null> {
         await prisma.workspaceMember.deleteMany({ where: { workspaceId, userId } });
+        return prisma.workspace.findUnique({ where: { id: workspaceId }, include: { members: true } });
+    },
+
+    async updateMemberRole(workspaceId: string, userId: string, role: string): Promise<WorkspaceWithMembers | null> {
+        await prisma.workspaceMember.update({
+            where: { workspaceId_userId: { workspaceId, userId } },
+            data: { role },
+        });
         return prisma.workspace.findUnique({ where: { id: workspaceId }, include: { members: true } });
     },
 

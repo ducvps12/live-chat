@@ -11,7 +11,7 @@ function createPrismaClient() {
         user: process.env.MYSQL_USER || 'root',
         password: process.env.MYSQL_PASSWORD || '',
         database: process.env.MYSQL_DATABASE || 'livechatnemark',
-        connectionLimit: 10,
+        connectionLimit: 50,
         connectTimeout: 30000,       // 30s — wait longer for remote DB
         acquireTimeout: 30000,       // 30s — pool acquisition timeout
         idleTimeout: 60000,          // 60s — close idle connections

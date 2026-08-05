@@ -11,6 +11,7 @@ router.use(scopeCheck);
 
 // ── Core ──
 router.get('/status', zaloController.getStatus);
+router.get('/oa/readiness', zaloController.getOAReadiness);
 router.post('/qr', zaloController.generateQR);
 router.delete('/disconnect', zaloController.disconnect);
 router.post('/send', zaloController.sendMessage);
@@ -32,6 +33,9 @@ router.get('/friends', zaloController.getFriends);               // GET ?search=
 router.post('/backfill-avatars', zaloController.backfillAvatars); // POST — backfill missing avatars
 router.post('/accounts/:accountId/sync', zaloController.syncAccount); // POST — sync name + data for specific account
 router.post('/accounts/:accountId/reconnect', zaloController.reconnectAccount); // POST — reconnect disconnected account
+router.get('/accounts/:accountId/network-profile', zaloController.getNetworkProfile);
+router.put('/accounts/:accountId/network-profile', zaloController.saveNetworkProfile);
+router.post('/accounts/:accountId/network-profile/test', zaloController.testNetworkProfile);
 
 // ── Historical Sync ──
 router.post('/sync', zaloController.startSync);                  // POST — start full history sync

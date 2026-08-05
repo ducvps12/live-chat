@@ -1,5 +1,6 @@
 import prisma from '../../../infra/prisma';
 import type { AIBot } from '@prisma/client';
+import { isBotChannelEnabled } from '../auto-reply.helpers';
 
 export const chatbotRepo = {
     async findByWorkspace(workspaceId: string) {
@@ -19,10 +20,7 @@ export const chatbotRepo = {
         if (!channel) return bots;
 
         // Filter by channel in JSON
-        return bots.filter(bot => {
-            const channels = bot.channels as any;
-            return channels?.[channel]?.enabled === true;
-        });
+        return bots.filter(bot => isBotChannelEnabled(bot.channels, channel));
     },
 
     async create(data: {
@@ -42,6 +40,7 @@ export const chatbotRepo = {
         scenarios?: any[];
         quickReplies?: any[];
         followUp?: any;
+        personaConfig?: any;
         isActive?: boolean;
         isDraft?: boolean;
     }) {

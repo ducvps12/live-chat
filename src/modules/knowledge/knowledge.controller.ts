@@ -3,6 +3,34 @@ import { knowledgeService } from './knowledge.service';
 import expressAsyncHandler from 'express-async-handler';
 
 export const knowledgeController = {
+    /** POST /:workspaceId/knowledge/import-text */
+    importFromText: expressAsyncHandler(async (req: Request, res: Response) => {
+        const { workspaceId } = req.params;
+        const { topic, text } = req.body;
+        if (typeof topic !== 'string' || typeof text !== 'string') {
+            res.status(400).json({ success: false, message: 'Chủ đề và nội dung là bắt buộc' });
+            return;
+        }
+        const result = await knowledgeService.importPlainText(workspaceId as string, topic, text);
+        res.status(201).json({ success: true, data: result });
+    }),
+
+    /** POST /:workspaceId/knowledge/import-url */
+    importFromUrl: expressAsyncHandler(async (req: Request, res: Response) => {
+        const { workspaceId } = req.params;
+        const { url, topic } = req.body;
+        if (typeof url !== 'string' || !url.trim()) {
+            res.status(400).json({ success: false, message: 'URL là bắt buộc' });
+            return;
+        }
+        const result = await knowledgeService.importFromWebsite(
+            workspaceId as string,
+            url.trim(),
+            typeof topic === 'string' ? topic.trim() : undefined,
+        );
+        res.status(201).json({ success: true, data: result });
+    }),
+
     /**
      * POST /:workspaceId/knowledge/sync
      * Sync from Google Sheets URL
@@ -111,9 +139,10 @@ export const knowledgeController = {
      * Update entry
      */
     update: expressAsyncHandler(async (req: Request, res: Response) => {
+        const { workspaceId } = req.params;
         const { id } = req.params;
         const { product, question, answer, upsaleText } = req.body;
-        const entry = await knowledgeService.update(id as string, { product, question, answer, upsaleText });
+        const entry = await knowledgeService.update(workspaceId as string, id as string, { product, question, answer, upsaleText });
         res.json({ success: true, data: entry });
     }),
 
@@ -122,8 +151,9 @@ export const knowledgeController = {
      * Delete entry
      */
     remove: expressAsyncHandler(async (req: Request, res: Response) => {
+        const { workspaceId } = req.params;
         const { id } = req.params;
-        await knowledgeService.remove(id as string);
+        await knowledgeService.remove(workspaceId as string, id as string);
         res.json({ success: true, message: 'Đã xóa' });
     }),
 };

@@ -31,6 +31,22 @@ export const zaloService = {
         const res = await httpClient.post(`/workspaces/${workspaceId}/zalo/accounts/${accountId}/reconnect`);
         return res.data;
     },
+    getOAReadiness: async (workspaceId: string) => {
+        const res = await httpClient.get(`/workspaces/${workspaceId}/zalo/oa/readiness`);
+        return res.data;
+    },
+    getNetworkProfile: async (workspaceId: string, accountId: string) => {
+        const res = await httpClient.get(`/workspaces/${workspaceId}/zalo/accounts/${accountId}/network-profile`);
+        return res.data;
+    },
+    saveNetworkProfile: async (workspaceId: string, accountId: string, payload: Record<string, unknown>) => {
+        const res = await httpClient.put(`/workspaces/${workspaceId}/zalo/accounts/${accountId}/network-profile`, payload);
+        return res.data;
+    },
+    testNetworkProfile: async (workspaceId: string, accountId: string) => {
+        const res = await httpClient.post(`/workspaces/${workspaceId}/zalo/accounts/${accountId}/network-profile/test`);
+        return res.data;
+    },
     getGroups: async (workspaceId: string) => {
         const res = await httpClient.get(`/workspaces/${workspaceId}/zalo/groups`);
         return res.data;

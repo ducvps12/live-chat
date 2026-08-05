@@ -3,7 +3,7 @@ import mongoose, { Document, Schema } from 'mongoose';
 export interface IPreChatField {
     key: string;       // 'name' | 'email' | 'phone' | 'message' | custom
     label: string;
-    type: 'text' | 'email' | 'tel' | 'textarea' | 'select';
+    type: 'text' | 'email' | 'tel' | 'textarea' | 'select' | 'checkbox';
     required: boolean;
     enabled: boolean;
     placeholder?: string;  // custom placeholder per field
@@ -42,6 +42,11 @@ export interface IWidgetConfig {
     avatarUrl?: string;
     headerAvatar?: string;
     showBranding: boolean;
+    brandingMode?: 'nemark' | 'custom' | 'hidden';
+    brandingName?: string;
+    brandingUrl?: string;
+    themePreset?: 'modern' | 'minimal' | 'glass' | 'compact';
+    customCss?: string;
     offlineMessage: string;
     autoReply?: string;
     profileDisplay?: 'agent' | 'company';
@@ -57,6 +62,10 @@ export interface IWidgetConfig {
         enabled: boolean;
         title: string;
         fields: IPreChatField[];
+        marketingConsent?: {
+            enabled: boolean;
+            text: string;
+        };
     };
 }
 
@@ -77,7 +86,7 @@ const preChatFieldSchema = new Schema(
     {
         key: { type: String, required: true },
         label: { type: String, required: true },
-        type: { type: String, enum: ['text', 'email', 'tel', 'textarea', 'select'], default: 'text' },
+        type: { type: String, enum: ['text', 'email', 'tel', 'textarea', 'select', 'checkbox'], default: 'text' },
         required: { type: Boolean, default: false },
         enabled: { type: Boolean, default: true },
         placeholder: { type: String },
@@ -105,6 +114,11 @@ const widgetSchema = new Schema<IWidget>(
             avatarUrl: { type: String },
             headerAvatar: { type: String },
             showBranding: { type: Boolean, default: true },
+            brandingMode: { type: String, enum: ['nemark', 'custom', 'hidden'], default: 'nemark' },
+            brandingName: { type: String, default: '' },
+            brandingUrl: { type: String, default: '' },
+            themePreset: { type: String, enum: ['modern', 'minimal', 'glass', 'compact'], default: 'modern' },
+            customCss: { type: String, default: '' },
             offlineMessage: { type: String, default: 'Hiện tại không có agent trực tuyến. Vui lòng để lại lời nhắn.' },
             autoReply: { type: String },
             profileDisplay: { type: String, enum: ['agent', 'company'], default: 'company' },
@@ -140,6 +154,10 @@ const widgetSchema = new Schema<IWidget>(
                         { key: 'email', label: 'Email', type: 'email', required: false, enabled: true },
                         { key: 'phone', label: 'Số điện thoại', type: 'tel', required: false, enabled: true },
                     ],
+                },
+                marketingConsent: {
+                    enabled: { type: Boolean, default: false },
+                    text: { type: String, default: '' },
                 },
             },
         },

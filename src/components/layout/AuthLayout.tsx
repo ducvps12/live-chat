@@ -1,139 +1,137 @@
 import React from 'react';
 import Link from 'next/link';
-import { MessageCircle, Shield, Zap, Users } from 'lucide-react';
+import { Bot, CheckCircle2, LockKeyhole, MessageSquare, ShieldCheck, Smartphone } from 'lucide-react';
 
 interface AuthLayoutProps {
     children: React.ReactNode;
 }
 
+const proofItems = [
+    { icon: MessageSquare, label: 'Inbox hợp nhất', desc: 'Web chat, Facebook, Email, Zalo' },
+    { icon: Bot, label: 'AI hỗ trợ agent', desc: 'Gợi ý trả lời và tự động hóa CSKH' },
+    { icon: Smartphone, label: 'Zalo vận hành', desc: 'Kết nối phiên chăm sóc khách hàng' },
+];
+
 export default function AuthLayout({ children }: AuthLayoutProps) {
     return (
-        <div style={{ minHeight: '100vh', display: 'flex', fontFamily: "var(--font-sans, 'Inter', sans-serif)" }}>
-            {/* ─── Left Panel: Branding ─── */}
-            <div
-                className="auth-left-panel"
+        <div className="auth-shell" style={{ minHeight: '100vh', display: 'grid', gridTemplateColumns: 'minmax(420px, 0.88fr) minmax(500px, 1.12fr)', background: 'var(--ent-bg)', fontFamily: 'var(--font-sans)' }}>
+            <section
+                className="auth-product-panel"
                 style={{
-                    width: '50%',
-                    background: 'linear-gradient(160deg, #4f46e5 0%, #6366f1 35%, #8b5cf6 65%, #a78bfa 100%)',
+                    minHeight: '100vh',
+                    padding: '34px 38px',
                     display: 'flex',
                     flexDirection: 'column',
-                    justifyContent: 'center',
-                    alignItems: 'center',
-                    padding: '60px 48px',
+                    background: 'linear-gradient(180deg, #0f172a 0%, #111827 58%, #172033 100%)',
+                    color: '#fff',
                     position: 'relative',
                     overflow: 'hidden',
                 }}
             >
-                {/* Decorative circles */}
-                <div style={{ position: 'absolute', top: -120, right: -80, width: 300, height: 300, borderRadius: '50%', background: 'rgba(255,255,255,0.06)', pointerEvents: 'none' }} />
-                <div style={{ position: 'absolute', bottom: -100, left: -60, width: 250, height: 250, borderRadius: '50%', background: 'rgba(255,255,255,0.04)', pointerEvents: 'none' }} />
-                <div className="animate-float" style={{ position: 'absolute', top: '30%', right: '15%', width: 80, height: 80, borderRadius: '50%', background: 'rgba(255,255,255,0.05)', pointerEvents: 'none' }} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <img src="/images/logo.png" alt="NemarkChat" style={{ width: 42, height: 42, borderRadius: 8, background: '#fff' }} />
+                    <div>
+                        <div style={{ fontSize: 20, fontWeight: 900, lineHeight: 1 }}>NemarkChat</div>
+                        <div style={{ color: '#94a3b8', fontSize: 12, fontWeight: 700 }}>Omnichannel Customer Operations</div>
+                    </div>
+                </div>
 
-                {/* Content */}
-                <div style={{ position: 'relative', zIndex: 1, maxWidth: 420, textAlign: 'center' }}>
-                    {/* Logo */}
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14, marginBottom: 40 }}>
-                        <img
-                            src="/images/nemarkchat-logo.png"
-                            alt="NemarkChat"
-                            style={{
-                                width: 48, height: 48, borderRadius: 14,
-                                objectFit: 'contain',
-                                boxShadow: '0 8px 32px rgba(0,0,0,0.15)',
-                                background: 'rgba(255,255,255,0.15)',
-                                padding: 4,
-                            }}
-                        />
-                        <span style={{ fontWeight: 800, fontSize: 28, color: 'white', letterSpacing: '-0.02em' }}>
-                            Nemark<span style={{ opacity: 0.9 }}>Chat</span>
-                        </span>
+                <div style={{ margin: 'auto 0', maxWidth: 620 }}>
+                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minHeight: 30, padding: '0 12px', borderRadius: 999, border: '1px solid rgba(147,197,253,0.25)', background: 'rgba(37,99,235,0.16)', color: '#bfdbfe', fontSize: 12, fontWeight: 800, marginBottom: 22 }}>
+                        <ShieldCheck size={15} />
+                        Một inbox cho toàn bộ đội CSKH
                     </div>
 
-                    <h2 style={{ fontSize: 32, fontWeight: 800, color: 'white', lineHeight: 1.3, marginBottom: 16, letterSpacing: '-0.02em' }}>
-                        Nền tảng Live Chat<br />thế hệ mới
-                    </h2>
-                    <p style={{ fontSize: 16, color: 'rgba(255,255,255,0.75)', lineHeight: 1.7, marginBottom: 48 }}>
-                        Kết nối khách hàng tức thì, quản lý đa kênh thông minh và tự động hoá hỗ trợ.
+                    <h1 style={{ margin: 0, fontSize: 46, lineHeight: 1.06, fontWeight: 900, letterSpacing: '-0.035em', color: '#fff', maxWidth: 600 }}>
+                        Mỗi cuộc trò chuyện đều có người phụ trách.
+                    </h1>
+                    <p style={{ margin: '18px 0 0', color: '#cbd5e1', fontSize: 16, lineHeight: 1.75, maxWidth: 540 }}>
+                        Gom Zalo, Facebook, website và email vào một nơi. Phân phối cho đúng team,
+                        theo dõi SLA và để AI xử lý phần lặp lại mà không làm mất ngữ cảnh khách hàng.
                     </p>
 
-                    {/* Feature list */}
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, textAlign: 'left' }}>
-                        {[
-                            { icon: Zap, text: 'Chat realtime dưới 200ms' },
-                            { icon: Users, text: 'Team management & RBAC đa workspace' },
-                            { icon: Shield, text: 'Bảo mật enterprise-grade' },
-                        ].map(({ icon: Icon, text }) => (
-                            <div key={text} style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-                                <div style={{
-                                    width: 40, height: 40, borderRadius: 12,
-                                    background: 'rgba(255,255,255,0.12)',
-                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                    flexShrink: 0,
-                                }}>
-                                    <Icon size={18} color="white" />
+                    <div className="auth-proof-list" style={{ display: 'grid', gap: 12, marginTop: 34 }}>
+                        {proofItems.map(({ icon: Icon, label, desc }) => (
+                            <div className="auth-proof-item" key={label} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: 14, borderRadius: 8, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.045)' }}>
+                                <div style={{ width: 42, height: 42, borderRadius: 8, background: 'rgba(37,99,235,0.22)', display: 'grid', placeItems: 'center', color: '#93c5fd' }}>
+                                    <Icon size={19} />
                                 </div>
-                                <span style={{ color: 'rgba(255,255,255,0.9)', fontSize: 15, fontWeight: 500 }}>
-                                    {text}
-                                </span>
+                                <div>
+                                    <div style={{ fontSize: 14, fontWeight: 850 }}>{label}</div>
+                                    <div style={{ color: '#94a3b8', fontSize: 13, marginTop: 2 }}>{desc}</div>
+                                </div>
                             </div>
                         ))}
                     </div>
                 </div>
-            </div>
 
-            {/* ─── Right Panel: Auth Form ─── */}
-            <div
-                className="auth-right-panel"
-                style={{
-                    width: '50%',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    background: 'var(--color-bg, #fff)',
-                    position: 'relative',
-                    overflow: 'hidden',
-                }}
-            >
-                {/* Top bar */}
-                <header style={{
-                    padding: '20px 40px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'flex-end',
-                    position: 'relative',
-                    zIndex: 10,
-                }}>
-                    <Link href="/" style={{ color: 'var(--color-text-secondary)', fontSize: 14, fontWeight: 500, textDecoration: 'none', display: 'flex', alignItems: 'center', gap: 6 }}>
-                        ← Về trang chủ
+                <div className="auth-stat-list" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+                    {[
+                        ['4+ kênh', 'trong một inbox'],
+                        ['SLA live', 'ưu tiên đúng việc'],
+                        ['AI + người', 'tiếp quản liền mạch'],
+                    ].map(([value, label]) => (
+                        <div className="auth-stat-item" key={label} style={{ padding: 14, borderRadius: 8, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                            <div style={{ fontSize: 20, fontWeight: 900 }}>{value}</div>
+                            <div style={{ color: '#94a3b8', fontSize: 12, marginTop: 2 }}>{label}</div>
+                        </div>
+                    ))}
+                </div>
+            </section>
+
+            <section className="auth-form-panel" style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: '#fff' }}>
+                <header className="auth-header" style={{ height: 70, padding: '0 36px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <Link className="auth-mobile-brand" href="/" aria-label="Về trang chủ NemarkChat">
+                        <img src="/images/logo.png" alt="" />
+                        <strong>NemarkChat</strong>
                     </Link>
+                    <Link className="auth-back-link" href="/" style={{ color: 'var(--ent-text-muted)', textDecoration: 'none', fontSize: 14, fontWeight: 750 }}>
+                        Về trang giới thiệu
+                    </Link>
+                    <span className="auth-security-note" style={{ display: 'inline-flex', alignItems: 'center', gap: 7, color: 'var(--ent-text-muted)', fontSize: 13, fontWeight: 700 }}>
+                        <LockKeyhole size={15} />
+                        Phiên đăng nhập bảo mật
+                    </span>
                 </header>
 
-                {/* Form container */}
-                <main style={{
-                    flex: 1,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    padding: '24px 40px',
-                    position: 'relative',
-                    zIndex: 10,
-                }}>
-                    {children}
+                <main className="auth-main" style={{ flex: 1, display: 'grid', placeItems: 'center', padding: '24px 28px 48px' }}>
+                    <div className="auth-content" style={{ width: '100%', maxWidth: 480 }}>
+                        {children}
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 20, color: 'var(--ent-text-muted)', fontSize: 12, fontWeight: 650 }}>
+                            <CheckCircle2 size={14} color="#12b76a" />
+                            Dành cho khách thuê workspace và đội vận hành CSKH
+                        </div>
+                    </div>
                 </main>
+            </section>
 
-                {/* Subtle background decoration */}
-                <div style={{
-                    position: 'absolute', bottom: -180, right: -180,
-                    width: 400, height: 400, borderRadius: '50%',
-                    background: 'radial-gradient(circle, rgba(99,102,241,0.04) 0%, transparent 70%)',
-                    pointerEvents: 'none', zIndex: 0,
-                }} />
-            </div>
-
-            {/* Responsive: mobile collapses */}
             <style jsx global>{`
-                @media (max-width: 768px) {
-                    .auth-left-panel { display: none !important; }
-                    .auth-right-panel { width: 100% !important; }
+                .auth-mobile-brand {
+                    display: none;
+                    align-items: center;
+                    gap: 9px;
+                    color: #0f172a;
+                    text-decoration: none;
+                    font-size: 15px;
+                }
+                .auth-mobile-brand img {
+                    width: 30px;
+                    height: 30px;
+                    border-radius: 7px;
+                }
+                @media (max-width: 920px) {
+                    .auth-product-panel { display: none !important; }
+                    .auth-shell { grid-template-columns: minmax(0, 1fr) !important; }
+                    .auth-form-panel { min-height: 100dvh !important; }
+                    .auth-mobile-brand { display: inline-flex !important; }
+                    .auth-back-link { display: none !important; }
+                }
+                @media (max-width: 560px) {
+                    .auth-header { height: 60px !important; padding: 0 18px !important; }
+                    .auth-security-note { display: none !important; }
+                    .auth-main { place-items: start center !important; padding: 24px 16px 32px !important; }
+                    .auth-content { max-width: 440px !important; }
+                    .auth-content .enterprise-card { padding: 24px 20px !important; border-radius: 12px !important; }
                 }
             `}</style>
         </div>

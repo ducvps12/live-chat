@@ -7,6 +7,8 @@ export const workspaceKeys = {
     detail: (id: string) => [...workspaceKeys.all, 'detail', id] as const,
     dashboard: (id: string) => [...workspaceKeys.all, 'dashboard', id] as const,
     agentPerformance: (id: string) => [...workspaceKeys.all, 'agent-performance', id] as const,
+    members: (id: string) => [...workspaceKeys.detail(id), 'members'] as const,
+    invitations: (id: string) => [...workspaceKeys.detail(id), 'invitations'] as const,
 };
 
 export const useMyWorkspaces = () => {
@@ -74,9 +76,17 @@ export const useDeleteWorkspace = () => {
 
 export const useWorkspaceMembers = (workspaceId: string) => {
     return useQuery({
-        queryKey: [...workspaceKeys.detail(workspaceId), 'members'],
+        queryKey: workspaceKeys.members(workspaceId),
         queryFn: () => workspaceHttpService.getMembers(workspaceId),
         enabled: !!workspaceId,
+    });
+};
+
+export const useWorkspaceInvitations = (workspaceId: string, enabled = true) => {
+    return useQuery({
+        queryKey: workspaceKeys.invitations(workspaceId),
+        queryFn: () => workspaceHttpService.getInvitations(workspaceId),
+        enabled: !!workspaceId && enabled,
     });
 };
 
@@ -86,8 +96,53 @@ export const useAddWorkspaceMember = () => {
         mutationFn: ({ workspaceId, email, role }: { workspaceId: string; email: string; role: string }) =>
             workspaceHttpService.addMember(workspaceId, { email, role }),
         onSuccess: (_data, variables) => {
-            qc.invalidateQueries({ queryKey: [...workspaceKeys.detail(variables.workspaceId), 'members'] });
+            qc.invalidateQueries({ queryKey: workspaceKeys.members(variables.workspaceId) });
+            qc.invalidateQueries({ queryKey: workspaceKeys.invitations(variables.workspaceId) });
             qc.invalidateQueries({ queryKey: workspaceKeys.detail(variables.workspaceId) });
+        },
+    });
+};
+
+export const useCancelWorkspaceInvitation = () => {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: ({ workspaceId, invitationId }: { workspaceId: string; invitationId: string }) =>
+            workspaceHttpService.cancelInvitation(workspaceId, invitationId),
+        onSuccess: (_data, variables) => {
+            qc.invalidateQueries({ queryKey: workspaceKeys.invitations(variables.workspaceId) });
+        },
+    });
+};
+
+export const useResendWorkspaceInvitation = () => {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: ({ workspaceId, invitationId }: { workspaceId: string; invitationId: string }) =>
+            workspaceHttpService.resendInvitation(workspaceId, invitationId),
+        onSuccess: (_data, variables) => {
+            qc.invalidateQueries({ queryKey: workspaceKeys.invitations(variables.workspaceId) });
+        },
+    });
+};
+
+export const useUpdateWorkspaceMemberRole = () => {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: ({ workspaceId, userId, role }: { workspaceId: string; userId: string; role: string }) =>
+            workspaceHttpService.updateMemberRole(workspaceId, userId, { role }),
+        onSuccess: (_data, variables) => {
+            qc.invalidateQueries({ queryKey: workspaceKeys.members(variables.workspaceId) });
+            qc.invalidateQueries({ queryKey: workspaceKeys.detail(variables.workspaceId) });
+        },
+    });
+};
+
+export const useAcceptWorkspaceInvitation = () => {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: (token: string) => workspaceHttpService.acceptInvitation(token),
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: workspaceKeys.list() });
         },
     });
 };
@@ -98,7 +153,7 @@ export const useRemoveWorkspaceMember = () => {
         mutationFn: ({ workspaceId, userId }: { workspaceId: string; userId: string }) =>
             workspaceHttpService.removeMember(workspaceId, userId),
         onSuccess: (_data, variables) => {
-            qc.invalidateQueries({ queryKey: [...workspaceKeys.detail(variables.workspaceId), 'members'] });
+            qc.invalidateQueries({ queryKey: workspaceKeys.members(variables.workspaceId) });
             qc.invalidateQueries({ queryKey: workspaceKeys.detail(variables.workspaceId) });
         },
     });

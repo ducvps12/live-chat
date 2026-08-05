@@ -62,8 +62,38 @@ export const workspaceHttpService = {
         return data;
     },
 
-    async addMember(workspaceId: string, payload: { email: string; role: string }): Promise<IApiRes<IWorkspaceResponse>> {
+    async addMember(workspaceId: string, payload: { email: string; role: string }): Promise<IApiRes<IWorkspaceResponse | { invited: boolean; email: string; role: string; expiresAt: string }>> {
         const { data } = await httpClient.post(`/workspaces/${workspaceId}/members`, payload);
+        return data;
+    },
+
+    async getInvitations(workspaceId: string): Promise<IApiRes<any[]>> {
+        const { data } = await httpClient.get(`/workspaces/${workspaceId}/invitations`);
+        return data;
+    },
+
+    async cancelInvitation(workspaceId: string, invitationId: string): Promise<IApiRes<any>> {
+        const { data } = await httpClient.delete(`/workspaces/${workspaceId}/invitations/${invitationId}`);
+        return data;
+    },
+
+    async resendInvitation(workspaceId: string, invitationId: string): Promise<IApiRes<any>> {
+        const { data } = await httpClient.post(`/workspaces/${workspaceId}/invitations/${invitationId}/resend`);
+        return data;
+    },
+
+    async updateMemberRole(workspaceId: string, userId: string, payload: { role: string }): Promise<IApiRes<IWorkspaceResponse>> {
+        const { data } = await httpClient.patch(`/workspaces/${workspaceId}/members/${userId}`, payload);
+        return data;
+    },
+
+    async getInvitation(token: string): Promise<IApiRes<any>> {
+        const { data } = await httpClient.get(`/workspaces/invitations/${token}`);
+        return data;
+    },
+
+    async acceptInvitation(token: string): Promise<IApiRes<any>> {
+        const { data } = await httpClient.post(`/workspaces/invitations/${token}/accept`);
         return data;
     },
 

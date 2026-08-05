@@ -2,14 +2,58 @@ import { Request, Response } from 'express';
 import asyncHandler from 'express-async-handler';
 import { facebookService } from './facebook.service';
 
+function sendOAuthPopupResult(
+    res: Response,
+    payload: {
+        type: 'nemarkchat:facebook-oauth';
+        success: boolean;
+        workspaceId?: string;
+        pages?: number;
+        error?: string;
+    },
+    fallbackUrl: string,
+) {
+    const targetOrigin = new URL(fallbackUrl).origin;
+    const safePayload = JSON.stringify(payload).replace(/</g, '\\u003c');
+    const safeOrigin = JSON.stringify(targetOrigin);
+    const safeFallbackUrl = JSON.stringify(fallbackUrl);
+
+    res.status(200).type('html').send(`<!doctype html>
+<html lang="vi">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Kết nối Facebook</title></head>
+<body style="font-family:system-ui,sans-serif;padding:32px;color:#0f172a">
+<p>${payload.success ? 'Đã kết nối Facebook. Cửa sổ này sẽ tự đóng.' : 'Chưa thể kết nối Facebook. Đang quay lại NemarkChat.'}</p>
+<p><a href=${safeFallbackUrl}>Quay lại NemarkChat</a></p>
+<script>
+(function () {
+  var payload = ${safePayload};
+  var targetOrigin = ${safeOrigin};
+  var fallbackUrl = ${safeFallbackUrl};
+  try {
+    if (window.opener && !window.opener.closed) {
+      window.opener.postMessage(payload, targetOrigin);
+      window.setTimeout(function () { window.close(); }, 80);
+      return;
+    }
+  } catch (_) {}
+  window.location.replace(fallbackUrl);
+})();
+</script>
+</body></html>`);
+}
+
 export const facebookController = {
     /**
      * Generate Facebook OAuth URL for the user to authorize
      */
     getOAuthUrl: asyncHandler(async (req: Request, res: Response) => {
         const workspaceId = req.params.workspaceId as string;
-        const url = facebookService.getOAuthUrl(workspaceId);
+        const url = await facebookService.getOAuthUrl(workspaceId);
         res.status(200).json({ success: true, data: { url } });
+    }),
+
+    getConfigStatus: asyncHandler(async (_req: Request, res: Response) => {
+        res.status(200).json({ success: true, data: await facebookService.getConfigStatus() });
     }),
 
     /**
@@ -17,14 +61,16 @@ export const facebookController = {
      */
     handleCallback: asyncHandler(async (req: Request, res: Response) => {
         const code = req.query.code as string;
-        const workspaceId = req.query.state as string;
+        const state = req.query.state as string;
 
-        if (!code || !workspaceId) {
+        if (!code || !state) {
             res.status(400).json({ success: false, error: 'Missing code or state' });
             return;
         }
 
+        let workspaceId = '';
         try {
+            workspaceId = await facebookService.verifyOAuthState(state);
             // Exchange code for token
             const shortToken = await facebookService.exchangeCodeForToken(code);
             const longToken = await facebookService.getLongLivedToken(shortToken);
@@ -33,7 +79,7 @@ export const facebookController = {
             const pages = await facebookService.getUserPages(longToken);
 
             // Auto-connect all pages
-            const connectedPages: any[] = [];
+            const connectedPages: Array<{ id: string }> = [];
             for (const page of pages) {
                 const saved = await facebookService.connectPage(
                     workspaceId,
@@ -48,37 +94,51 @@ export const facebookController = {
 
             // Auto-sync conversations in background (fire-and-forget)
             for (const saved of connectedPages) {
-                const pageDbId = (saved._id as any).toString();
+                const pageDbId = saved.id;
                 facebookService.syncPageConversations(workspaceId, pageDbId).catch(err => {
                     console.warn(`[FacebookController] Background sync error for page ${pageDbId}:`, err);
                 });
             }
 
-            // Redirect back to settings page
-            const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-            res.redirect(`${baseUrl}/workspace/${workspaceId}/settings?fb_connected=${pages.length}`);
-        } catch (err: any) {
+            const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3010';
+            const fallbackUrl = `${baseUrl}/workspace/${workspaceId}/settings?tab=facebook&fb_connected=${pages.length}`;
+            sendOAuthPopupResult(res, {
+                type: 'nemarkchat:facebook-oauth',
+                success: true,
+                workspaceId,
+                pages: pages.length,
+            }, fallbackUrl);
+        } catch (err: unknown) {
             console.error('[FacebookController] OAuth callback error:', err);
-            const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-            res.redirect(`${baseUrl}/workspace/${workspaceId}/settings?fb_error=${encodeURIComponent(err.message)}`);
+            const errorMessage = err instanceof Error ? err.message : 'Facebook OAuth failed';
+            const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3010';
+            const target = workspaceId ? `/workspace/${workspaceId}/settings?tab=facebook` : '/auth/login';
+            const separator = target.includes('?') ? '&' : '?';
+            const fallbackUrl = `${baseUrl}${target}${separator}fb_error=${encodeURIComponent(errorMessage)}`;
+            sendOAuthPopupResult(res, {
+                type: 'nemarkchat:facebook-oauth',
+                success: false,
+                workspaceId: workspaceId || undefined,
+                error: errorMessage.slice(0, 500),
+            }, fallbackUrl);
         }
     }),
 
     /**
      * Webhook verification (GET) — called by Facebook during setup
      */
-    verifyWebhook: (req: Request, res: Response) => {
+    verifyWebhook: asyncHandler(async (req: Request, res: Response) => {
         const mode = req.query['hub.mode'] as string;
         const token = req.query['hub.verify_token'] as string;
         const challenge = req.query['hub.challenge'] as string;
 
-        const result = facebookService.verifyWebhook(mode, token, challenge);
+        const result = await facebookService.verifyWebhook(mode, token, challenge);
         if (result) {
             res.status(200).send(result);
         } else {
             res.sendStatus(403);
         }
-    },
+    }),
 
     /**
      * Webhook handler (POST) — receives incoming messages

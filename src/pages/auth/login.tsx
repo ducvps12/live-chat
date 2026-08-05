@@ -1,4 +1,5 @@
-﻿import Head from 'next/head';
+import Head from 'next/head';
+import Link from 'next/link';
 import AuthLoginFeature from '../../features/auth/index';
 import AuthLayout from '../../components/layout/AuthLayout';
 
@@ -7,31 +8,18 @@ export default function LoginPage() {
         <AuthLayout>
             <Head>
                 <title>Đăng nhập | NemarkChat</title>
+                <meta name="robots" content="noindex,follow" />
             </Head>
 
-            <div
-                className="card animate-fade-in-up"
-                style={{
-                    width: '100%',
-                    maxWidth: 440,
-                    padding: '48px 32px'
-                }}
-            >
-                <AuthLoginFeature />
+            <AuthLoginFeature />
 
-                <div style={{ marginTop: 24, textAlign: 'center' }}>
-                    <a href="/auth/forgot-password" style={{ color: 'var(--color-text-secondary)', fontSize: 14 }}>
-                        Quên mật khẩu?
-                    </a>
-                </div>
-                <div style={{ marginTop: 16, textAlign: 'center' }}>
-                    <span style={{ color: 'var(--color-text-secondary)', fontSize: 14 }}>
-                        Chưa có tài khoản?{' '}
-                    </span>
-                    <a href="/auth/register" style={{ color: 'var(--color-primary)', fontSize: 14, fontWeight: 600 }}>
-                        Đăng ký ngay
-                    </a>
-                </div>
+            <div style={{ marginTop: 18, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, fontSize: 14 }}>
+                <Link href="/auth/forgot-password" style={{ color: 'var(--ent-text-muted)', fontWeight: 700, textDecoration: 'none' }}>
+                    Quên mật khẩu?
+                </Link>
+                <Link href="/auth/register" style={{ color: 'var(--ent-primary)', fontWeight: 800, textDecoration: 'none' }}>
+                    Tạo tài khoản mới
+                </Link>
             </div>
         </AuthLayout>
     );

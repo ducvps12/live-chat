@@ -57,6 +57,7 @@ export interface IAIBot extends Document {
         delaySeconds: number;
         message: string;
     };
+    personaConfig?: Record<string, unknown>;
 
     isActive: boolean;
     isDraft: boolean;
@@ -139,6 +140,7 @@ const aiBotSchema = new Schema<IAIBot>(
             delaySeconds: { type: Number, default: 30 },
             message: { type: String, default: 'Bạn còn cần hỗ trợ gì thêm không ạ?' },
         },
+        personaConfig: { type: Schema.Types.Mixed, default: () => ({}) },
 
         isActive: { type: Boolean, default: false },
         isDraft: { type: Boolean, default: true },

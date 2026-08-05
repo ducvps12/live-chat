@@ -134,6 +134,22 @@ const InfoRow: React.FC<{
     </div>
 );
 
+type SidebarMessage = {
+    _id?: string;
+    id?: string;
+    content?: string | null;
+    createdAt: string;
+    attachments?: Array<{ url?: string; data?: string; filename?: string; mimeType?: string }>;
+    sender?: { type?: string | null; name?: string | null } | null;
+    senderType?: string | null;
+    senderName?: string | null;
+};
+
+const getMessageSender = (msg?: SidebarMessage) => ({
+    type: msg?.sender?.type || msg?.senderType || '',
+    name: msg?.sender?.name || msg?.senderName || '',
+});
+
 interface VisitorProfileSidebarProps {
     workspaceId: string;
     visitorId: string | null;
@@ -147,13 +163,7 @@ interface VisitorProfileSidebarProps {
     conversationMetadata?: any;
     conversationChannel?: string;
     onUpdateMetadata?: (data: { leadStage?: string; isStarred?: boolean }) => void;
-    messages?: Array<{
-        _id: string;
-        content: string;
-        createdAt: string;
-        attachments?: Array<{ url?: string; data?: string; filename?: string; mimeType?: string }>;
-        sender: { type: string; name?: string };
-    }>;
+    messages?: SidebarMessage[];
 }
 
 export const VisitorProfileSidebar: React.FC<VisitorProfileSidebarProps> = ({
@@ -170,6 +180,14 @@ export const VisitorProfileSidebar: React.FC<VisitorProfileSidebarProps> = ({
     const [showAllMedia, setShowAllMedia] = useState(false);
     const [showAllFiles, setShowAllFiles] = useState(false);
     const [showAllLinks, setShowAllLinks] = useState(false);
+    const [isEditingMemory, setIsEditingMemory] = useState(false);
+    const [memoryDraft, setMemoryDraft] = useState({
+        profileSummary: '',
+        needs: '',
+        objections: '',
+        preferences: '',
+        nextBestAction: '',
+    });
     const [form] = Form.useForm();
 
     useEffect(() => {
@@ -180,6 +198,19 @@ export const VisitorProfileSidebar: React.FC<VisitorProfileSidebarProps> = ({
             });
         }
     }, [visitor, isEditing, form]);
+
+    useEffect(() => {
+        if (visitor && isEditingMemory) {
+            const memory = visitor.attributes?.customerIntelligence || {};
+            setMemoryDraft({
+                profileSummary: String(memory.profileSummary || ''),
+                needs: String(memory.needs || ''),
+                objections: String(memory.objections || ''),
+                preferences: String(memory.preferences || ''),
+                nextBestAction: String(memory.nextBestAction || ''),
+            });
+        }
+    }, [visitor, isEditingMemory]);
 
     // ── Empty / Loading states (Google style) ──
     if (!visitorId) {
@@ -209,10 +240,81 @@ export const VisitorProfileSidebar: React.FC<VisitorProfileSidebarProps> = ({
     };
 
     const displayName = visitor.name || visitor.email || `Khách ${visitor.visitorId.slice(0, 8)}`;
+    const handleSaveMemory = () => {
+        const compactMemory = Object.fromEntries(
+            Object.entries(memoryDraft).map(([key, value]) => [key, String(value || '').trim().slice(0, 1200)])
+        );
+        updateVisitor({
+            workspaceId,
+            visitorId,
+            data: {
+                attributes: {
+                    ...visitor.attributes,
+                    customerIntelligence: {
+                        ...compactMemory,
+                        updatedAt: new Date().toISOString(),
+                    },
+                },
+            },
+        }, {
+            onSuccess: () => {
+                message.success('Đã lưu AI Memory cho khách');
+                setIsEditingMemory(false);
+                refetch();
+            },
+            onError: () => message.error('Lỗi khi lưu AI Memory'),
+        });
+    };
+
     const lastPageUrl = visitor.attributes?.lastPageUrl || visitor.attributes?.pageUrl;
     const notes = visitor.attributes?.notes;
+    const customerIntelligence = visitor.attributes?.customerIntelligence || {};
     const locationInfo = visitor.attributes?.location;
     const isStarred = conversationMetadata?.isStarred;
+    const chronologicalMessages = [...messages].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    const visitorMessages = chronologicalMessages.filter(m => getMessageSender(m).type === 'visitor');
+    const agentMessages = chronologicalMessages.filter(m => getMessageSender(m).type === 'agent');
+    const latestVisitorMessage = [...visitorMessages].reverse().find(m => m.content?.trim());
+    const latestMessage = [...chronologicalMessages].reverse().find(m => m.content?.trim());
+    const latestMessageAt = latestMessage ? new Date(latestMessage.createdAt).getTime() : 0;
+    const activeSessionStart = latestMessageAt ? latestMessageAt - 24 * 60 * 60 * 1000 : 0;
+    const recentVisitorMessages = visitorMessages
+        .filter(m => !activeSessionStart || new Date(m.createdAt).getTime() >= activeSessionStart)
+        .slice(-12);
+    const buyingIntentPattern = /(^|[\s,.!?;:()])(?:mua|đặt|dat|giá|gia|ship|size|sđt|sdt|số điện thoại|bao nhiêu|chốt)(?=$|[\s,.!?;:()])/i;
+    const aiAnalysis = conversationMetadata?.aiAnalysis;
+    const analysisAt = aiAnalysis?.analyzedAt ? new Date(aiAnalysis.analyzedAt).getTime() : 0;
+    const analysisIsFresh = Boolean(
+        aiAnalysis
+        && analysisAt >= latestMessageAt
+        && Number(aiAnalysis.messageCount || 0) >= chronologicalMessages.length
+    );
+    const analyzedIntent = analysisIsFresh
+        ? `${aiAnalysis?.intent || ''} ${(aiAnalysis?.tags || []).join(' ')}`
+        : '';
+    const hasBuyingIntent = buyingIntentPattern.test(analyzedIntent)
+        || recentVisitorMessages.some(m => buyingIntentPattern.test(m.content || ''));
+    const needsReply = getMessageSender(latestMessage).type === 'visitor';
+    const currentStage = LEAD_STAGES.find(s => s.key === conversationMetadata?.leadStage);
+    const channelLabel = conversationChannel === 'facebook'
+        ? 'Facebook'
+        : conversationChannel === 'zalo'
+            ? 'Zalo'
+            : conversationChannel === 'web'
+                ? 'Website'
+                : conversationChannel || 'Inbox';
+    const insightTitle = hasBuyingIntent ? 'Có tín hiệu mua hàng' : needsReply ? 'Đang chờ phản hồi' : 'Đang theo dõi';
+    const insightTone = hasBuyingIntent ? '#e37400' : needsReply ? '#1a73e8' : '#5f6368';
+    const suggestedAction = hasBuyingIntent
+        ? 'Xác nhận biến thể, số lượng, SĐT và địa chỉ giao hàng.'
+        : needsReply
+            ? 'Trả lời trong phiên này để giữ SLA và tránh mất nhịp hội thoại.'
+            : 'Gắn tag đúng ngữ cảnh hoặc thêm ghi chú nếu cần bàn giao.';
+    const summaryText = analysisIsFresh && aiAnalysis?.summary
+        ? String(aiAnalysis.summary).replace(/\s+/g, ' ').slice(0, 160)
+        : latestVisitorMessage?.content
+        ? latestVisitorMessage.content.replace(/\s+/g, ' ').slice(0, 120)
+        : 'Chưa có nội dung khách gửi trong cuộc hội thoại này.';
 
     // ── Media extraction ──
     const IMG_RE = /\.(jpg|jpeg|png|gif|webp|bmp|svg)/i;
@@ -242,7 +344,7 @@ export const VisitorProfileSidebar: React.FC<VisitorProfileSidebarProps> = ({
         return (m.content?.match(URL_RE) || []).filter(u => !IMG_EXT.test(u)).map(u => ({
             url: u, domain: (() => { try { return new URL(u).hostname; } catch { return u; } })(),
             date: new Date(m.createdAt).toLocaleDateString('vi-VN'),
-            sender: m.sender.name || (m.sender.type === 'agent' ? 'Bạn' : 'Khách'),
+            sender: getMessageSender(m).name || (getMessageSender(m).type === 'agent' ? 'Bạn' : 'Khách'),
         }));
     }).reverse().filter(l => { if (seen.has(l.url)) return false; seen.add(l.url); return true; });
 
@@ -374,6 +476,64 @@ export const VisitorProfileSidebar: React.FC<VisitorProfileSidebarProps> = ({
                     </div>
                 ) : (
                     <>
+                        <div style={{ padding: '14px 16px 10px' }}>
+                            <div style={{
+                                border: '1px solid #dbe7ff',
+                                borderRadius: 16,
+                                background: 'linear-gradient(180deg, #f8fbff 0%, #ffffff 100%)',
+                                padding: 14,
+                                boxShadow: '0 10px 24px rgba(26,115,232,0.08)',
+                            }}>
+                                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+                                    <div style={{ minWidth: 0 }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 7, color: insightTone, fontSize: 12, fontWeight: 700 }}>
+                                            <Sparkles size={14} />
+                                            {insightTitle}
+                                        </div>
+                                        <div style={{ marginTop: 8, color: '#202124', fontSize: 13, fontWeight: 600, lineHeight: 1.45 }}>
+                                            {summaryText}{latestVisitorMessage?.content && latestVisitorMessage.content.length > 120 ? '...' : ''}
+                                        </div>
+                                    </div>
+                                    <span style={{
+                                        flexShrink: 0,
+                                        border: '1px solid #d8e2f3',
+                                        borderRadius: 999,
+                                        padding: '4px 8px',
+                                        color: '#475569',
+                                        background: '#fff',
+                                        fontSize: 11,
+                                        fontWeight: 700,
+                                    }}>{channelLabel}</span>
+                                </div>
+
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8, marginTop: 12 }}>
+                                    {[
+                                        { label: 'Tin khách', value: visitorMessages.length },
+                                        { label: 'Agent', value: agentMessages.length },
+                                        { label: 'Stage', value: currentStage?.label || 'Intake' },
+                                    ].map(item => (
+                                        <div key={item.label} style={{ border: '1px solid #eef2f7', borderRadius: 12, background: '#fff', padding: '9px 8px' }}>
+                                            <div style={{ color: '#9aa0a6', fontSize: 10, fontWeight: 700, textTransform: 'uppercase' }}>{item.label}</div>
+                                            <div style={{ marginTop: 3, color: '#202124', fontSize: 13, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.value}</div>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                <div style={{
+                                    marginTop: 12,
+                                    borderRadius: 12,
+                                    background: hasBuyingIntent ? '#fff7ed' : '#f8f9fa',
+                                    border: hasBuyingIntent ? '1px solid #fed7aa' : '1px solid #eef2f7',
+                                    padding: '10px 12px',
+                                    color: hasBuyingIntent ? '#9a3412' : '#475569',
+                                    fontSize: 12,
+                                    lineHeight: 1.5,
+                                    fontWeight: 600,
+                                }}>
+                                    {suggestedAction}
+                                </div>
+                            </div>
+                        </div>
                         {/* ── Contact Info ── */}
                         <Section title="Thông tin liên hệ" icon={<User size={15} />}>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -537,6 +697,86 @@ export const VisitorProfileSidebar: React.FC<VisitorProfileSidebarProps> = ({
                         </Section>
 
                         {/* ── Visitor Notes ── */}
+                        <Section title="AI Memory" icon={<Sparkles size={15} />} defaultOpen>
+                            <div style={{
+                                border: '1px solid #dbeafe',
+                                borderRadius: 14,
+                                background: 'linear-gradient(180deg, #eff6ff 0%, #ffffff 100%)',
+                                padding: 12,
+                            }}>
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+                                    <div>
+                                        <div style={{ fontSize: 13, fontWeight: 800, color: '#1e3a8a' }}>Hồ sơ ngữ cảnh riêng của khách</div>
+                                        <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>Lưu nhu cầu, rào cản, sở thích để AI/agent nói chuyện đúng người hơn.</div>
+                                    </div>
+                                    <Button size="small" type={isEditingMemory ? 'default' : 'primary'} onClick={() => setIsEditingMemory(!isEditingMemory)}>
+                                        {isEditingMemory ? 'Đóng' : 'Sửa'}
+                                    </Button>
+                                </div>
+
+                                {isEditingMemory ? (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                        <Button
+                                            size="small"
+                                            type="dashed"
+                                            icon={<Sparkles size={14} />}
+                                            onClick={() => setMemoryDraft(prev => ({
+                                                ...prev,
+                                                profileSummary: prev.profileSummary || summaryText,
+                                                needs: prev.needs || String(aiAnalysis?.intent || conversationMetadata?.customerGoal || ''),
+                                                preferences: prev.preferences || (conversationChannel ? `Kênh thường dùng: ${channelLabel}` : ''),
+                                                nextBestAction: prev.nextBestAction || suggestedAction,
+                                            }))}
+                                        >
+                                            Gợi ý từ hội thoại hiện tại
+                                        </Button>
+                                        {[
+                                            ['profileSummary', 'Tóm tắt khách', 'VD: Chủ shop thời trang, hay hỏi nhanh qua Zalo, ưu tiên chốt trong ngày'],
+                                            ['needs', 'Nhu cầu / mục tiêu', 'Khách đang muốn mua gì, giải quyết vấn đề gì?'],
+                                            ['objections', 'Rào cản / băn khoăn', 'Giá, ship, bảo hành, niềm tin, thời gian...'],
+                                            ['preferences', 'Sở thích giao tiếp', 'Thích ngắn gọn, thích báo giá rõ, hay cần ảnh/video...'],
+                                            ['nextBestAction', 'Hành động kế tiếp', 'VD: Gửi bảng giá + xin SĐT giao hàng'],
+                                        ].map(([key, label, placeholder]) => (
+                                            <label key={key} style={{ display: 'block' }}>
+                                                <div style={{ fontSize: 11, fontWeight: 800, color: '#475569', marginBottom: 4 }}>{label}</div>
+                                                <Input.TextArea
+                                                    rows={2}
+                                                    value={(memoryDraft as any)[key]}
+                                                    placeholder={placeholder}
+                                                    onChange={event => setMemoryDraft(prev => ({ ...prev, [key]: event.target.value }))}
+                                                    style={{ borderRadius: 10, fontSize: 12 }}
+                                                />
+                                            </label>
+                                        ))}
+                                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 2 }}>
+                                            <Button size="small" onClick={() => setIsEditingMemory(false)}>Hủy</Button>
+                                            <Button size="small" type="primary" loading={isUpdating} onClick={handleSaveMemory}>Lưu memory</Button>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                        {[
+                                            ['Tóm tắt', customerIntelligence.profileSummary],
+                                            ['Nhu cầu', customerIntelligence.needs],
+                                            ['Rào cản', customerIntelligence.objections],
+                                            ['Sở thích', customerIntelligence.preferences],
+                                            ['Kế tiếp', customerIntelligence.nextBestAction],
+                                        ].map(([label, value]) => (
+                                            <div key={label} style={{ display: 'grid', gridTemplateColumns: '74px 1fr', gap: 8, fontSize: 12, lineHeight: 1.45 }}>
+                                                <span style={{ color: '#64748b', fontWeight: 800 }}>{label}</span>
+                                                <span style={{ color: value ? '#0f172a' : '#94a3b8', whiteSpace: 'pre-wrap' }}>{value || 'Chưa ghi nhận'}</span>
+                                            </div>
+                                        ))}
+                                        {customerIntelligence.updatedAt && (
+                                            <div style={{ color: '#94a3b8', fontSize: 11, marginTop: 2 }}>
+                                                Cập nhật: {new Date(customerIntelligence.updatedAt).toLocaleString('vi-VN')}
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        </Section>
+
                         {notes && (
                             <Section title="Ghi chú visitor" icon={<StickyNote size={15} />} defaultOpen={false}>
                                 <div style={{

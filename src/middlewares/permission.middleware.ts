@@ -13,7 +13,8 @@ export const requirePermission = (...requiredPermissions: PermissionKey[]) => {
             return next(new AppError('Chưa xác thực, vui lòng đăng nhập', 401, 'UNAUTHORIZED'));
         }
 
-        const hasAll = requiredPermissions.every((perm) => hasPermission(user.role, perm));
+        const effectiveRole = (req as any).workspaceRole || user.role;
+        const hasAll = requiredPermissions.every((perm) => hasPermission(effectiveRole, perm));
         if (!hasAll) {
             return next(
                 new AppError(

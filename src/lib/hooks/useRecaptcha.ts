@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { resolveApiBaseUrl } from '../http/api-base';
 
 const RECAPTCHA_SITE_KEY = process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY || '';
 
@@ -14,20 +15,20 @@ export function useRecaptcha() {
 
     // Fetch settings to check if reCAPTCHA is enabled
     useEffect(() => {
-        // Check admin settings API for reCAPTCHA config
+        // Mirror the same public settings used by the server-side verifier.
+        // A protected admin endpoint cannot be queried from a logged-out page.
         const checkSettings = async () => {
             try {
-                const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4020/api';
-                const res = await fetch(`${apiUrl}/admin/settings`, {
-                    headers: {
-                        'Authorization': `Bearer ${localStorage.getItem('nemark_token') || ''}`,
-                    },
+                const apiUrl = resolveApiBaseUrl();
+                const res = await fetch(`${apiUrl}/auth/public-config`, {
+                    credentials: 'include',
+                    cache: 'no-store',
                 });
                 if (res.ok) {
                     const data = await res.json();
                     if (data.success && data.data) {
-                        const enabled = data.data.recaptcha_enabled === 'true';
-                        const key = data.data.recaptcha_site_key || RECAPTCHA_SITE_KEY;
+                        const enabled = data.data.recaptchaEnabled === true;
+                        const key = data.data.recaptchaSiteKey || RECAPTCHA_SITE_KEY;
                         setIsEnabled(enabled);
                         setSiteKey(key);
                     }

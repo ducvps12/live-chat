@@ -1,7 +1,9 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Spin, Modal, message, Progress, Tooltip } from 'antd';
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useRouter } from 'next/router';
+import { Alert, Checkbox, Form, Input, InputNumber, Modal, Progress, Select, Spin, Tooltip, message } from 'antd';
 import { useZaloStatus, useGenerateZaloQR, useDisconnectZalo } from '../../../domains/zalo/zalo.hooks';
-import { Smartphone, RefreshCw, CheckCircle2, ScanLine, Wifi, WifiOff, Zap, Plus, Trash2, Users, Database, Loader2 } from 'lucide-react';
+import { Smartphone, RefreshCw, CheckCircle2, ScanLine, Wifi, WifiOff, Zap, Plus, Trash2, Users, Database, Loader2, MessageSquare, ArrowRight, Network } from 'lucide-react';
 import { zaloService } from '../../../services/zalo.service';
 
 interface ZaloAccount {
@@ -23,9 +25,15 @@ interface SyncStatus {
 }
 
 export default function ZaloIntegrationSettings({ workspaceId }: { workspaceId: string }) {
+    const router = useRouter();
     const [localQrUrl, setLocalQrUrl] = useState<string | null>(null);
     const [hoverBtn, setHoverBtn] = useState<string | null>(null);
     const [confirmDisconnect, setConfirmDisconnect] = useState<string | null>(null);
+    const [networkAccountId, setNetworkAccountId] = useState<string | null>(null);
+    const [networkLoading, setNetworkLoading] = useState(false);
+    const [networkSaving, setNetworkSaving] = useState(false);
+    const [networkTesting, setNetworkTesting] = useState(false);
+    const [networkForm] = Form.useForm();
 
     // Track accounts count when QR was first shown — so we can detect NEW account login
     const accountsCountOnQrOpen = useRef<number>(0);
@@ -39,13 +47,14 @@ export default function ZaloIntegrationSettings({ workspaceId }: { workspaceId: 
     const [syncingAccountId, setSyncingAccountId] = useState<string | null>(null);
     // Per-account reconnect state
     const [reconnectingAccountId, setReconnectingAccountId] = useState<string | null>(null);
+    const [reconnectingAll, setReconnectingAll] = useState(false);
 
     const { data: res, isLoading, refetch } = useZaloStatus(workspaceId, !!localQrUrl);
     const { mutate: generateQR, isPending: isGenerating } = useGenerateZaloQR();
     const { mutate: disconnect, isPending: isDisconnecting } = useDisconnectZalo();
 
     const statusObj = res?.data;
-    const accounts: ZaloAccount[] = statusObj?.accounts || [];
+    const accounts: ZaloAccount[] = useMemo(() => statusObj?.accounts || [], [statusObj?.accounts]);
     const hasAnyConnected = accounts.some(a => a.isOnline);
 
     const handleConnect = () => {
@@ -66,6 +75,8 @@ export default function ZaloIntegrationSettings({ workspaceId }: { workspaceId: 
     };
 
     // ── Sync handlers ──
+    const openZaloInbox = () => router.push(`/workspace/${workspaceId}/inbox?channel=zalo`);
+
     const pollSyncStatus = useCallback(async () => {
         try {
             const res = await zaloService.getSyncStatus(workspaceId);
@@ -129,12 +140,110 @@ export default function ZaloIntegrationSettings({ workspaceId }: { workspaceId: 
             const data = res?.data;
             message.success(data?.message || 'Đã kết nối lại thành công!');
             // Refresh status to show updated connection state
-            refetch();
+            await refetch();
         } catch (err: any) {
             const errMsg = err?.response?.data?.error?.message || err?.response?.data?.message || 'Không thể kết nối lại. Vui lòng quét QR mới.';
-            message.error(errMsg);
+            const errorCode = err?.response?.data?.error?.code;
+            if (errorCode === 'NO_CREDENTIALS' || errorCode === 'RECONNECT_FAILED') {
+                Modal.confirm({
+                    title: 'Phiên Zalo đã hết hạn',
+                    content: `${errMsg} Quét QR mới để tạo lại phiên kết nối?`,
+                    okText: 'Quét QR mới',
+                    cancelText: 'Để sau',
+                    onOk: handleConnect,
+                });
+            } else {
+                message.error(errMsg);
+            }
         } finally {
             setReconnectingAccountId(null);
+        }
+    };
+
+    const handleReconnectAll = async () => {
+        if (reconnectingAll || reconnectingAccountId) return;
+        const offlineAccounts = accounts.filter(account => !account.isOnline);
+        const restorableAccounts = offlineAccounts.filter(account => account.hasCredentials !== false);
+        if (restorableAccounts.length === 0) {
+            handleConnect();
+            return;
+        }
+
+        setReconnectingAll(true);
+        let restored = 0;
+        for (const account of restorableAccounts) {
+            setReconnectingAccountId(account.accountId);
+            try {
+                await zaloService.reconnectAccount(workspaceId, account.accountId);
+                restored += 1;
+            } catch { /* tổng hợp kết quả sau khi chạy hết danh sách */ }
+        }
+        setReconnectingAccountId(null);
+        setReconnectingAll(false);
+        await refetch();
+
+        if (restored === restorableAccounts.length) {
+            message.success(`Đã kết nối lại ${restored} tài khoản Zalo`);
+        } else if (restored > 0) {
+            message.warning(`Đã khôi phục ${restored}/${restorableAccounts.length} tài khoản. Tài khoản còn lại cần quét QR mới.`);
+        } else {
+            Modal.confirm({
+                title: 'Không thể khôi phục phiên đã lưu',
+                content: 'Các phiên Zalo có thể đã hết hạn. Quét QR mới để kết nối lại?',
+                okText: 'Quét QR mới',
+                cancelText: 'Để sau',
+                onOk: handleConnect,
+            });
+        }
+    };
+
+    const openNetworkProfile = async (accountId: string) => {
+        setNetworkAccountId(accountId);
+        setNetworkLoading(true);
+        try {
+            const response = await zaloService.getNetworkProfile(workspaceId, accountId);
+            networkForm.setFieldsValue({
+                enabled: false,
+                protocol: 'http',
+                expectedCountry: 'VN',
+                ...response?.data,
+                password: '',
+            });
+        } catch (error: any) {
+            message.error(error?.response?.data?.error?.message || 'Không tải được Network Profile');
+        } finally {
+            setNetworkLoading(false);
+        }
+    };
+
+    const saveNetworkProfile = async () => {
+        if (!networkAccountId) return;
+        try {
+            const values = await networkForm.validateFields();
+            setNetworkSaving(true);
+            await zaloService.saveNetworkProfile(workspaceId, networkAccountId, values);
+            networkForm.setFieldValue('password', '');
+            message.success('Đã lưu Network Profile. Bấm kết nối lại để áp dụng proxy tĩnh.');
+        } catch (error: any) {
+            if (error?.errorFields) return;
+            message.error(error?.response?.data?.error?.message || 'Không lưu được Network Profile');
+        } finally {
+            setNetworkSaving(false);
+        }
+    };
+
+    const testNetworkProfile = async () => {
+        if (!networkAccountId) return;
+        setNetworkTesting(true);
+        try {
+            const response = await zaloService.testNetworkProfile(workspaceId, networkAccountId);
+            const result = response?.data;
+            if (result?.ok) message.success(`Proxy hoạt động · IP ${result.exitIp || '?'} · ${result.country || '?'}`);
+            else message.warning(result?.error || 'IP proxy không đúng khu vực mong đợi');
+        } catch (error: any) {
+            message.error(error?.response?.data?.error?.message || 'Kiểm tra proxy thất bại');
+        } finally {
+            setNetworkTesting(false);
         }
     };
 
@@ -180,6 +289,49 @@ export default function ZaloIntegrationSettings({ workspaceId }: { workspaceId: 
                     <div className="flex min-h-[200px] items-center justify-center"><Spin size="large" /></div>
                 ) : (
                     <div className="space-y-5">
+                        <div className="grid gap-3 md:grid-cols-3">
+                            {[
+                                { icon: ScanLine, title: '1. Kết nối phiên', desc: 'Quét QR hoặc khôi phục phiên đã lưu để giữ kênh online.', tone: '#2563eb' },
+                                { icon: Database, title: '2. Đồng bộ hội thoại', desc: 'Kéo avatar, tên khách và lịch sử chat về Inbox CSKH.', tone: '#7c3aed' },
+                                { icon: MessageSquare, title: '3. Agent xử lý', desc: 'Mở Inbox Zalo, phân công agent và bật AI auto-reply khi cần.', tone: '#059669' },
+                            ].map((item) => (
+                                <div key={item.title} className="rounded-2xl border border-slate-200 bg-white" style={{ padding: 14 }}>
+                                    <div className="flex items-start gap-3">
+                                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl" style={{ background: `${item.tone}14`, color: item.tone }}>
+                                            <item.icon size={17} />
+                                        </div>
+                                        <div>
+                                            <div className="text-[13px] font-bold text-slate-900">{item.title}</div>
+                                            <div className="mt-1 text-[12px] leading-5 text-slate-500">{item.desc}</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+
+                        {/* ── Disconnected Alert Banner ── */}
+                        {accounts.some(a => !a.isOnline) && (
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50/80 p-4 text-amber-900">
+                                <div className="flex items-center gap-3">
+                                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-amber-100 text-amber-700">
+                                        <WifiOff size={18} />
+                                    </div>
+                                    <div>
+                                        <div className="text-[13px] font-bold">Phát hiện tài khoản Zalo bị Mất kết nối</div>
+                                        <div className="text-[12px] text-amber-700">Hệ thống đang tự động khôi phục ngầm. Bạn cũng có thể bấm "Kết nối lại" để khôi phục ngay lập tức.</div>
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={() => void handleReconnectAll()}
+                                    disabled={reconnectingAll}
+                                    className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-xl bg-amber-600 px-4 text-[12px] font-semibold text-white transition-colors hover:bg-amber-700 shadow-sm"
+                                >
+                                    {reconnectingAll ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                                    {reconnectingAll ? 'Đang khôi phục...' : 'Kết nối lại tất cả'}
+                                </button>
+                            </div>
+                        )}
+
                         {/* ── Connected Accounts List ── */}
                         {accounts.length > 0 && (
                             <div className="space-y-3">
@@ -198,23 +350,43 @@ export default function ZaloIntegrationSettings({ workspaceId }: { workspaceId: 
                                         <div className="min-w-0 flex-1">
                                             <h4 className="m-0 text-[15px] font-semibold tracking-tight text-slate-900 truncate">{account.name}</h4>
                                             <div className="flex items-center gap-2 text-[12px] text-slate-500">
-                                                {account.isOnline ? (<><Wifi size={12} className="text-emerald-500" /><span className="text-emerald-600 font-medium">Đang hoạt động</span></>) : (<><WifiOff size={12} className="text-slate-400" /><span>Mất kết nối</span></>)}
+                                                {account.isOnline ? (<><Wifi size={12} className="text-emerald-500" /><span className="text-emerald-600 font-medium">Đang hoạt động</span></>) : (<><WifiOff size={12} className="text-slate-400" /><span className="text-amber-600 font-medium">Mất kết nối</span></>)}
                                             </div>
                                         </div>
                                         <div className="flex items-center gap-2 shrink-0">
-                                            {/* Per-account reconnect button (when offline and has saved credentials) */}
-                                            {!account.isOnline && account.hasCredentials !== false && (
-                                                <Tooltip title="Kết nối lại từ phiên đã lưu">
-                                                    <button onClick={() => handleReconnectAccount(account.accountId)}
-                                                        disabled={reconnectingAccountId === account.accountId}
-                                                        onMouseEnter={() => setHoverBtn(`reconnect-${account.accountId}`)} onMouseLeave={() => setHoverBtn(null)}
-                                                        className="inline-flex h-9 items-center gap-1.5 rounded-xl border transition-all duration-200"
-                                                        style={{ padding: '0 12px', cursor: reconnectingAccountId === account.accountId ? 'not-allowed' : 'pointer', opacity: reconnectingAccountId === account.accountId ? 0.5 : 1, background: hoverBtn === `reconnect-${account.accountId}` ? '#ecfdf5' : 'white', borderColor: hoverBtn === `reconnect-${account.accountId}` ? '#6ee7b7' : '#e2e8f0', color: '#059669', fontSize: 12, fontWeight: 600 }}
-                                                    >
-                                                        {reconnectingAccountId === account.accountId ? <Loader2 size={14} className="animate-spin" /> : <Wifi size={14} />}
-                                                        {reconnectingAccountId === account.accountId ? 'Đang kết nối...' : 'Kết nối lại'}
-                                                    </button>
-                                                </Tooltip>
+                                            <Tooltip title="Cấu hình Proxy tĩnh (HTTP/HTTPS/SOCKS5) giữ IP mạng ổn định cho tài khoản này">
+                                                <button onClick={() => void openNetworkProfile(account.accountId)}
+                                                    className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50/80 px-3 text-[12px] font-semibold text-blue-700 transition-colors hover:border-blue-300 hover:bg-blue-100">
+                                                    <Network size={14} /> Proxy & Chuyên sâu
+                                                </button>
+                                            </Tooltip>
+                                            {/* Per-account reconnect button */}
+                                            {!account.isOnline && (
+                                                account.hasCredentials !== false ? (
+                                                    <Tooltip title="Kết nối lại từ phiên đã lưu">
+                                                        <button onClick={() => handleReconnectAccount(account.accountId)}
+                                                            disabled={reconnectingAccountId === account.accountId}
+                                                            onMouseEnter={() => setHoverBtn(`reconnect-${account.accountId}`)} onMouseLeave={() => setHoverBtn(null)}
+                                                            className="inline-flex h-9 items-center gap-1.5 rounded-xl border transition-all duration-200"
+                                                            style={{ padding: '0 12px', cursor: reconnectingAccountId === account.accountId ? 'not-allowed' : 'pointer', opacity: reconnectingAccountId === account.accountId ? 0.5 : 1, background: hoverBtn === `reconnect-${account.accountId}` ? '#ecfdf5' : 'white', borderColor: hoverBtn === `reconnect-${account.accountId}` ? '#6ee7b7' : '#e2e8f0', color: '#059669', fontSize: 12, fontWeight: 600 }}
+                                                        >
+                                                            {reconnectingAccountId === account.accountId ? <Loader2 size={14} className="animate-spin" /> : <Wifi size={14} />}
+                                                            {reconnectingAccountId === account.accountId ? 'Đang kết nối...' : 'Kết nối lại'}
+                                                        </button>
+                                                    </Tooltip>
+                                                ) : (
+                                                    <Tooltip title="Bấm để quét mã QR mới kết nối lại">
+                                                        <button onClick={handleConnect}
+                                                            disabled={isGenerating}
+                                                            onMouseEnter={() => setHoverBtn(`reconnect-qr-${account.accountId}`)} onMouseLeave={() => setHoverBtn(null)}
+                                                            className="inline-flex h-9 items-center gap-1.5 rounded-xl border transition-all duration-200"
+                                                            style={{ padding: '0 12px', cursor: isGenerating ? 'not-allowed' : 'pointer', opacity: isGenerating ? 0.5 : 1, background: hoverBtn === `reconnect-qr-${account.accountId}` ? '#eff6ff' : 'white', borderColor: hoverBtn === `reconnect-qr-${account.accountId}` ? '#93c5fd' : '#cbd5e1', color: '#2563eb', fontSize: 12, fontWeight: 600 }}
+                                                        >
+                                                            {isGenerating ? <Loader2 size={14} className="animate-spin" /> : <ScanLine size={14} />}
+                                                            {isGenerating ? 'Đang tạo QR...' : 'Quét QR kết nối lại'}
+                                                        </button>
+                                                    </Tooltip>
+                                                )
                                             )}
                                             {/* Per-account sync button */}
                                             {account.isOnline && (
@@ -242,7 +414,100 @@ export default function ZaloIntegrationSettings({ workspaceId }: { workspaceId: 
                             </div>
                         )}
 
+                        {/* ── Advanced Configuration & Bot Automation Panel ── */}
+                        {accounts.length > 0 && !localQrUrl && (
+                            <div className="rounded-2xl border border-slate-200 bg-slate-50/50 p-5 space-y-4">
+                                <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-2.5">
+                                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600 text-white shadow-sm">
+                                            <Zap size={16} />
+                                        </div>
+                                        <div>
+                                            <h4 className="m-0 text-[14px] font-bold text-slate-900">Cấu hình chuyên sâu & Bot Tự động hóa Zalo</h4>
+                                            <p className="m-0 text-[12px] text-slate-500">Quản lý Proxy tĩnh, kịch bản Bot AI và tự động kết bạn nhóm Zalo</p>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="grid gap-3 md:grid-cols-3">
+                                    <div className="rounded-xl border border-slate-200 bg-white p-3.5 flex flex-col justify-between space-y-3">
+                                        <div className="space-y-1">
+                                            <div className="flex items-center gap-2 text-[13px] font-semibold text-slate-800">
+                                                <Network size={15} className="text-blue-600" />
+                                                <span>Proxy Tĩnh (Dedicated)</span>
+                                            </div>
+                                            <p className="m-0 text-[11px] leading-4 text-slate-500">Gán IP tĩnh riêng (HTTP/HTTPS/SOCKS5) cho từng nick Zalo để bảo vệ tài khoản.</p>
+                                        </div>
+                                        <button
+                                            onClick={() => accounts[0] && void openNetworkProfile(accounts[0].accountId)}
+                                            className="w-full inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 text-[11px] font-semibold text-blue-700 hover:bg-blue-100 transition-colors"
+                                        >
+                                            <Network size={13} /> Thiết lập Proxy Zalo
+                                        </button>
+                                    </div>
+
+                                    <div className="rounded-xl border border-slate-200 bg-white p-3.5 flex flex-col justify-between space-y-3">
+                                        <div className="space-y-1">
+                                            <div className="flex items-center gap-2 text-[13px] font-semibold text-slate-800">
+                                                <Zap size={15} className="text-amber-500" />
+                                                <span>Bot AI Auto-Reply</span>
+                                            </div>
+                                            <p className="m-0 text-[11px] leading-4 text-slate-500">AI tự trả lời khách Zalo theo kho trí thức, giả lập gõ phím & theo dõi kịch bản bán hàng.</p>
+                                        </div>
+                                        <button
+                                            onClick={() => router.push(`/workspace/${workspaceId}/chatbot`)}
+                                            className="w-full inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 text-[11px] font-semibold text-amber-700 hover:bg-amber-100 transition-colors"
+                                        >
+                                            <Zap size={13} /> Cấu hình Bot AI
+                                        </button>
+                                    </div>
+
+                                    <div className="rounded-xl border border-slate-200 bg-white p-3.5 flex flex-col justify-between space-y-3">
+                                        <div className="space-y-1">
+                                            <div className="flex items-center gap-2 text-[13px] font-semibold text-slate-800">
+                                                <Users size={15} className="text-emerald-600" />
+                                                <span>Auto Kết bạn & Quét Nhóm</span>
+                                            </div>
+                                            <p className="m-0 text-[11px] leading-4 text-slate-500">Tự động kết bạn với thành viên trong Nhóm Zalo & lưu tự động vào tập Leads CRM.</p>
+                                        </div>
+                                        <button
+                                            onClick={() => router.push(`/workspace/${workspaceId}/contacts`)}
+                                            className="w-full inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-100 transition-colors"
+                                        >
+                                            <Users size={13} /> Quản lý Tự động hóa
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
                         {/* ── Sync Section ── */}
+                        {accounts.length > 0 && !localQrUrl && (
+                            <div className="grid gap-3">
+                                <button
+                                    onClick={openZaloInbox}
+                                    onMouseEnter={() => setHoverBtn('open-zalo-inbox')}
+                                    onMouseLeave={() => setHoverBtn(null)}
+                                    className="flex items-center gap-3 rounded-lg border text-left transition-all duration-200"
+                                    style={{
+                                        padding: '16px 18px',
+                                        cursor: 'pointer',
+                                        background: hoverBtn === 'open-zalo-inbox' ? '#f0fdf4' : '#fff',
+                                        borderColor: hoverBtn === 'open-zalo-inbox' ? '#bbf7d0' : '#e2e8f0',
+                                    }}
+                                >
+                                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-emerald-50 text-emerald-600">
+                                        <MessageSquare size={18} />
+                                    </span>
+                                    <span className="min-w-0 flex-1">
+                                        <span className="block text-[13px] font-semibold text-slate-900">Mở Inbox CSKH · Zalo</span>
+                                        <span className="block text-[12px] leading-5 text-slate-500">Xử lý hội thoại đã đồng bộ trong Inbox hợp nhất.</span>
+                                    </span>
+                                    <ArrowRight size={16} color="#94a3b8" />
+                                </button>
+                            </div>
+                        )}
+
                         {accounts.length > 0 && hasAnyConnected && !localQrUrl && (
                             <div className="rounded-2xl border border-indigo-200/80 bg-gradient-to-r from-indigo-50/80 to-violet-50/60" style={{ padding: '20px 24px' }}>
                                 <div className="flex items-start gap-4">
@@ -344,6 +609,56 @@ export default function ZaloIntegrationSettings({ workspaceId }: { workspaceId: 
                 okText="Ngắt kết nối" cancelText="Huỷ" okButtonProps={{ danger: true, loading: isDisconnecting }}
                 onOk={() => confirmDisconnect && handleDisconnect(confirmDisconnect)}>
                 <p>Bạn có chắc muốn ngắt kết nối tài khoản Zalo này? Tin nhắn mới từ tài khoản này sẽ không được đồng bộ nữa.</p>
+            </Modal>
+
+            <Modal
+                open={!!networkAccountId}
+                title={<span className="inline-flex items-center gap-2"><Network size={18} /> Network Profile · Proxy tĩnh</span>}
+                onCancel={() => { setNetworkAccountId(null); networkForm.resetFields(); }}
+                onOk={() => void saveNetworkProfile()}
+                okText="Lưu cấu hình"
+                cancelText="Đóng"
+                confirmLoading={networkSaving}
+                width={620}
+            >
+                {networkLoading ? <div className="grid min-h-52 place-items-center"><Spin /></div> : <>
+                    <Alert
+                        showIcon
+                        type="info"
+                        message="Mỗi tài khoản dùng một proxy ổn định"
+                        description="Proxy giúp giữ đường mạng nhất quán, không bảo đảm Zalo không hạn chế tài khoản. Không xoay IP và không dùng để né chính sách."
+                        className="mb-4"
+                    />
+                    <Form form={networkForm} layout="vertical" initialValues={{ enabled: false, protocol: 'http', expectedCountry: 'VN' }}>
+                        <Form.Item name="enabled" valuePropName="checked"><Checkbox>Bật proxy cho tài khoản này</Checkbox></Form.Item>
+                        <div className="grid grid-cols-[140px_1fr_120px] gap-3">
+                            <Form.Item name="protocol" label="Giao thức"><Select options={['http', 'https', 'socks5'].map(value => ({ value, label: value.toUpperCase() }))} /></Form.Item>
+                            <Form.Item name="host" label="Host proxy"><Input placeholder="proxy.example.com" /></Form.Item>
+                            <Form.Item name="port" label="Port"><InputNumber min={1} max={65535} className="w-full" /></Form.Item>
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                            <Form.Item name="username" label="Username"><Input autoComplete="off" /></Form.Item>
+                            <Form.Item name="password" label="Password" extra="Để trống để giữ mật khẩu đã lưu."><Input.Password autoComplete="new-password" /></Form.Item>
+                        </div>
+                        <Form.Item name="expectedCountry" label="Mã quốc gia IP mong đợi"><Input maxLength={2} placeholder="VN" style={{ width: 120 }} /></Form.Item>
+                        <Form.Item
+                            name="staticAcknowledged"
+                            valuePropName="checked"
+                            rules={[{ validator: (_, value) => value ? Promise.resolve() : Promise.reject(new Error('Cần xác nhận trước khi lưu')) }]}
+                        >
+                            <Checkbox>Tôi xác nhận dùng proxy tĩnh, không xoay IP và không dùng để né chính sách.</Checkbox>
+                        </Form.Item>
+                    </Form>
+                    <button
+                        type="button"
+                        onClick={() => void testNetworkProfile()}
+                        disabled={networkTesting}
+                        className="inline-flex h-9 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-[12px] font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                    >
+                        {networkTesting ? <Loader2 size={14} className="animate-spin" /> : <Wifi size={14} />}
+                        Kiểm tra IP đã lưu
+                    </button>
+                </>}
             </Modal>
         </div>
     );

@@ -1,10 +1,10 @@
 import { useRouter } from 'next/router';
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { Fragment, ReactNode, useEffect, useState, useRef, useCallback } from 'react';
 import Head from 'next/head';
 import { Spin, message, Tag, Table, Modal } from 'antd';
 import AppLayout from '../../../components/layout/AppLayout';
 import { httpClient } from '../../../lib/http/client';
-import { Check, Crown, Zap, Star, Shield, CreditCard, Clock, FileText, ArrowRight, Sparkles, ChevronRight, Receipt, Copy, CheckCircle, Loader2, BanknoteIcon, QrCode, X } from 'lucide-react';
+import { Check, Crown, Zap, Star, Shield, CreditCard, Clock, FileText, ArrowRight, Sparkles, ChevronRight, Receipt, Copy, CheckCircle, Loader2, BanknoteIcon, QrCode, AlertTriangle, CalendarDays, BarChart3, WalletCards, RefreshCw, Users } from 'lucide-react';
 
 interface PlanTier {
     id: string;
@@ -27,7 +27,8 @@ interface Subscription {
 }
 
 interface Invoice {
-    _id: string;
+    _id?: string;
+    id: string;
     invoiceNumber: string;
     planId: string;
     amount: number;
@@ -40,6 +41,7 @@ interface Invoice {
 }
 
 interface PaymentInfo {
+    bankId?: string;
     bankName: string;
     accountNumber: string;
     accountName: string;
@@ -49,7 +51,7 @@ interface PaymentInfo {
     currency: string;
 }
 
-const planIcons: Record<string, any> = {
+const planIcons: Record<string, ReactNode> = {
     trial: <Clock size={22} />,
     starter: <Zap size={22} />,
     pro: <Crown size={22} />,
@@ -122,6 +124,29 @@ export default function BillingPage() {
     const [copiedField, setCopiedField] = useState<string | null>(null);
     const pollingRef = useRef<NodeJS.Timeout | null>(null);
     const pollingInvoiceIdRef = useRef<string | null>(null);
+    const wsId = Array.isArray(workspaceId) ? workspaceId[0] : workspaceId;
+
+    const fetchData = useCallback(async () => {
+        if (!wsId) return;
+        setLoading(true);
+        try {
+            const [subRes, invoiceRes] = await Promise.all([
+                httpClient.get(`/workspaces/${wsId}/subscription`),
+                httpClient.get(`/workspaces/${wsId}/subscription/invoices`),
+            ]);
+            if (subRes.data?.data) {
+                setSubscription(subRes.data.data.subscription);
+                setPlans(subRes.data.data.plan ? [subRes.data.data.plan] : []);
+            }
+            const plansRes = await httpClient.get(`/workspaces/${wsId}/subscription/plans`);
+            if (plansRes.data?.data) setPlans(plansRes.data.data);
+            if (invoiceRes.data?.data) setInvoices(invoiceRes.data.data.items || []);
+        } catch (err) {
+            console.error('Failed to fetch billing data:', err);
+        } finally {
+            setLoading(false);
+        }
+    }, [wsId]);
 
     useEffect(() => {
         const t = localStorage.getItem('nemark_token');
@@ -130,59 +155,32 @@ export default function BillingPage() {
     }, [router]);
 
     useEffect(() => {
-        if (!workspaceId) return;
+        if (!wsId) return;
         fetchData();
-    }, [workspaceId]);
-
-    // Cleanup polling on unmount
-    useEffect(() => {
-        return () => {
-            if (pollingRef.current) clearInterval(pollingRef.current);
-        };
-    }, []);
-
-    const fetchData = async () => {
-        setLoading(true);
-        try {
-            const [subRes, invoiceRes] = await Promise.all([
-                httpClient.get(`/workspaces/${workspaceId}/subscription`),
-                httpClient.get(`/workspaces/${workspaceId}/subscription/invoices`),
-            ]);
-            if (subRes.data?.data) {
-                setSubscription(subRes.data.data.subscription);
-                setPlans(subRes.data.data.plan ? [subRes.data.data.plan] : []);
-            }
-            const plansRes = await httpClient.get(`/workspaces/${workspaceId}/subscription/plans`);
-            if (plansRes.data?.data) setPlans(plansRes.data.data);
-            if (invoiceRes.data?.data) setInvoices(invoiceRes.data.data.items || []);
-        } catch (err) {
-            console.error('Failed to fetch billing data:', err);
-        } finally {
-            setLoading(false);
-        }
-    };
+    }, [fetchData, wsId]);
 
     const handleChangePlan = async (planId: string) => {
-        if (!workspaceId) return;
+        if (!wsId) return;
         setChangingPlan(planId);
         try {
-            const res = await httpClient.post(`/workspaces/${workspaceId}/subscription/change`, {
+            const res = await httpClient.post(`/workspaces/${wsId}/subscription/change`, {
                 planId,
                 billingCycle,
             });
 
             // If an invoice was created, open payment modal
-            const invoice = res.data?.data?.invoice;
-            if (invoice && invoice._id) {
+            const invoice = res.data?.data?.invoice as { id?: string; _id?: string } | undefined;
+            if (invoice && (invoice.id || invoice._id)) {
                 message.info('Hoá đơn đã được tạo. Vui lòng thanh toán chuyển khoản.');
                 await fetchData();
-                openPaymentModal(invoice._id);
+                router.push(`/workspace/${wsId}/payment/${invoice.id || invoice._id}`);
             } else {
                 message.success('Đã chuyển gói thành công!');
                 fetchData();
             }
-        } catch (err: any) {
-            message.error(err.response?.data?.error || 'Lỗi khi đổi gói');
+        } catch (err: unknown) {
+            const error = err as { response?: { data?: { error?: string } } };
+            message.error(error.response?.data?.error || 'Lỗi khi đổi gói');
         } finally {
             setChangingPlan(null);
         }
@@ -197,15 +195,17 @@ export default function BillingPage() {
 
         try {
             const res = await httpClient.get(
-                `/workspaces/${workspaceId}/subscription/invoices/${invoiceId}/payment-info`
+                `/workspaces/${wsId}/subscription/invoices/${invoiceId}/payment-info`
             );
             if (res.data?.data) {
                 setPaymentInfo(res.data.data);
                 // Start polling for payment
                 startPolling(invoiceId);
             }
-        } catch (err) {
-            message.error('Không thể tải thông tin thanh toán');
+        } catch (err: unknown) {
+            const error = err as { response?: { data?: { error?: string } } };
+            console.error('[Billing] Failed to load payment info:', error.response?.data || err);
+            message.error(error.response?.data?.error || 'Không thể tải thông tin thanh toán');
             setPaymentModalOpen(false);
         } finally {
             setPaymentLoading(false);
@@ -233,7 +233,7 @@ export default function BillingPage() {
 
             try {
                 const res = await httpClient.get(
-                    `/workspaces/${workspaceId}/subscription/invoices/${invoiceId}/check-payment`
+                    `/workspaces/${wsId}/subscription/invoices/${invoiceId}/check-payment`
                 );
                 if (res.data?.data?.found) {
                     // Payment confirmed!
@@ -250,7 +250,7 @@ export default function BillingPage() {
                 console.error('Payment check error:', err);
             }
         }, POLL_INTERVAL);
-    }, [workspaceId]);
+    }, [fetchData, wsId]);
 
     const closePaymentModal = () => {
         if (pollingRef.current) clearInterval(pollingRef.current);
@@ -271,11 +271,18 @@ export default function BillingPage() {
         }
     };
 
-    const handlePayInvoice = async (invoiceId: string) => {
-        openPaymentModal(invoiceId);
+    const handlePayInvoice = async (invoiceId: string, status?: string) => {
+        if (status === 'paid') {
+            message.success('Hoá đơn này đã được thanh toán.');
+            return;
+        }
+        router.push(`/workspace/${wsId}/payment/${invoiceId}`);
     };
 
-    if (!ready || !workspaceId) {
+    // Legacy payment modal is retained as a fallback while the main flow uses the full payment page.
+    void openPaymentModal;
+
+    if (!ready || !wsId) {
         return (
             <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc' }}>
                 <Spin size="large" />
@@ -286,6 +293,28 @@ export default function BillingPage() {
     const daysLeft = subscription?.currentPeriodEnd
         ? Math.max(0, Math.ceil((new Date(subscription.currentPeriodEnd).getTime() - Date.now()) / (1000 * 60 * 60 * 24)))
         : 0;
+    const currentPlan = subscription ? plans.find(p => p.id === subscription.planId) : null;
+    const pendingInvoices = invoices.filter((invoice) => invoice.status === 'pending');
+    const paidInvoices = invoices.filter((invoice) => invoice.status === 'paid');
+    const nextInvoice = pendingInvoices[0];
+    const totalPaid = paidInvoices.reduce((sum, invoice) => sum + invoice.amount, 0);
+    const renewalDate = subscription?.currentPeriodEnd
+        ? new Date(subscription.currentPeriodEnd).toLocaleDateString('vi-VN')
+        : 'Chưa có';
+    const planLimitLabel = currentPlan?.maxAgents && currentPlan.maxAgents > 999
+        ? 'Không giới hạn'
+        : `${currentPlan?.maxAgents || 1} agent`;
+    const estimatedMonthly = currentPlan
+        ? (subscription?.billingCycle === 'yearly' && currentPlan.priceYearly > 0
+            ? Math.round(currentPlan.priceYearly / 12)
+            : currentPlan.price)
+        : 0;
+    const usageCards = [
+        { label: 'Agent trong gói', value: planLimitLabel, hint: 'Quyền truy cập nhân sự CSKH', tone: '#2563eb', icon: Users },
+        { label: 'Chu kỳ còn lại', value: `${daysLeft} ngày`, hint: renewalDate, tone: daysLeft <= 7 ? '#dc2626' : '#059669', icon: CalendarDays },
+        { label: 'Hoá đơn chờ', value: pendingInvoices.length.toString(), hint: nextInvoice ? formatVND(nextInvoice.amount) : 'Không có khoản treo', tone: pendingInvoices.length ? '#d97706' : '#059669', icon: AlertTriangle },
+        { label: 'Đã thanh toán', value: formatVND(totalPaid), hint: `${paidInvoices.length} hoá đơn đã ghi nhận`, tone: '#7c3aed', icon: WalletCards },
+    ];
 
     const invoiceColumns = [
         {
@@ -328,10 +357,10 @@ export default function BillingPage() {
         {
             title: '',
             key: 'action',
-            render: (_: any, record: Invoice) =>
+            render: (_: unknown, record: Invoice & { _id?: string }) =>
                 record.status === 'pending' ? (
                     <button
-                        onClick={() => handlePayInvoice(record._id)}
+                        onClick={() => handlePayInvoice(record.id || record._id || '', record.status)}
                         style={{
                             background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
                             color: '#fff',
@@ -353,7 +382,7 @@ export default function BillingPage() {
 
     // ── VietQR URL ──
     const qrUrl = paymentInfo
-        ? generateVietQRUrl('ACB', paymentInfo.accountNumber, paymentInfo.amount, paymentInfo.transferContent, paymentInfo.accountName)
+        ? generateVietQRUrl(paymentInfo.bankId || 'ACB', paymentInfo.accountNumber, paymentInfo.amount, paymentInfo.transferContent, paymentInfo.accountName)
         : '';
 
     return (
@@ -519,6 +548,234 @@ export default function BillingPage() {
                 .plan-cta:disabled {
                     cursor: default;
                     opacity: 0.7;
+                }
+
+                .billing-overview-grid {
+                    display: grid;
+                    grid-template-columns: minmax(0, 1.2fr) minmax(300px, 0.8fr);
+                    gap: 20px;
+                    margin: -24px 0 36px;
+                    position: relative;
+                    z-index: 3;
+                }
+
+                .billing-panel {
+                    background: #fff;
+                    border: 1px solid #e2e8f0;
+                    border-radius: 22px;
+                    box-shadow: 0 14px 40px rgba(15, 23, 42, 0.06);
+                    overflow: hidden;
+                }
+
+                .billing-panel-header {
+                    padding: 18px 20px;
+                    border-bottom: 1px solid #edf2f7;
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    gap: 12px;
+                }
+
+                .billing-panel-title {
+                    display: flex;
+                    align-items: center;
+                    gap: 10px;
+                    color: #0f172a;
+                    font-size: 15px;
+                    font-weight: 850;
+                }
+
+                .billing-panel-icon {
+                    width: 34px;
+                    height: 34px;
+                    border-radius: 12px;
+                    display: grid;
+                    place-items: center;
+                    background: #eef2ff;
+                    color: #4f46e5;
+                }
+
+                .usage-grid {
+                    display: grid;
+                    grid-template-columns: repeat(4, minmax(0, 1fr));
+                    gap: 12px;
+                    padding: 18px;
+                }
+
+                .usage-card {
+                    min-height: 126px;
+                    border: 1px solid #edf2f7;
+                    background: #f8fafc;
+                    border-radius: 16px;
+                    padding: 14px;
+                    display: flex;
+                    flex-direction: column;
+                    justify-content: space-between;
+                }
+
+                .usage-card-top {
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    gap: 10px;
+                }
+
+                .usage-card-icon {
+                    width: 32px;
+                    height: 32px;
+                    border-radius: 11px;
+                    display: grid;
+                    place-items: center;
+                    background: #fff;
+                    border: 1px solid #e2e8f0;
+                }
+
+                .usage-label {
+                    color: #64748b;
+                    font-size: 11px;
+                    font-weight: 800;
+                    text-transform: uppercase;
+                    letter-spacing: 0;
+                }
+
+                .usage-value {
+                    margin-top: 12px;
+                    color: #0f172a;
+                    font-size: 22px;
+                    line-height: 1.05;
+                    font-weight: 900;
+                }
+
+                .usage-hint {
+                    color: #64748b;
+                    font-size: 12px;
+                    line-height: 1.4;
+                }
+
+                .billing-actions {
+                    padding: 18px;
+                    display: grid;
+                    gap: 10px;
+                }
+
+                .billing-action-row {
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    gap: 12px;
+                    padding: 13px 14px;
+                    border: 1px solid #edf2f7;
+                    border-radius: 15px;
+                    background: #f8fafc;
+                }
+
+                .billing-action-copy {
+                    min-width: 0;
+                }
+
+                .billing-action-title {
+                    color: #0f172a;
+                    font-size: 13px;
+                    font-weight: 850;
+                    margin-bottom: 2px;
+                }
+
+                .billing-action-text {
+                    color: #64748b;
+                    font-size: 12px;
+                    line-height: 1.4;
+                }
+
+                .mini-action-btn {
+                    height: 34px;
+                    padding: 0 12px;
+                    border-radius: 11px;
+                    border: 1px solid #c7d2fe;
+                    background: #fff;
+                    color: #4f46e5;
+                    font-size: 12px;
+                    font-weight: 850;
+                    cursor: pointer;
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 6px;
+                    white-space: nowrap;
+                }
+
+                .plan-compare {
+                    margin: 0 0 44px;
+                    background: #fff;
+                    border: 1px solid #e2e8f0;
+                    border-radius: 22px;
+                    overflow: hidden;
+                    box-shadow: 0 12px 34px rgba(15, 23, 42, 0.045);
+                }
+
+                .compare-grid {
+                    display: grid;
+                    grid-template-columns: 1.15fr repeat(4, minmax(120px, 1fr));
+                }
+
+                .compare-cell {
+                    padding: 14px 16px;
+                    border-bottom: 1px solid #edf2f7;
+                    border-right: 1px solid #edf2f7;
+                    color: #475569;
+                    font-size: 13px;
+                    min-height: 50px;
+                    display: flex;
+                    align-items: center;
+                }
+
+                .compare-cell strong {
+                    color: #0f172a;
+                }
+
+                .compare-head {
+                    background: #f8fafc;
+                    color: #0f172a;
+                    font-weight: 850;
+                }
+
+                .payment-flow {
+                    margin: 0 0 44px;
+                    display: grid;
+                    grid-template-columns: repeat(3, minmax(0, 1fr));
+                    gap: 14px;
+                }
+
+                .payment-flow-step {
+                    background: #fff;
+                    border: 1px solid #e2e8f0;
+                    border-radius: 18px;
+                    padding: 18px;
+                    min-height: 150px;
+                    box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
+                    display: flex;
+                    flex-direction: column;
+                    justify-content: space-between;
+                }
+
+                .payment-flow-icon {
+                    width: 38px;
+                    height: 38px;
+                    border-radius: 13px;
+                    display: grid;
+                    place-items: center;
+                    margin-bottom: 14px;
+                }
+
+                .payment-flow-title {
+                    color: #0f172a;
+                    font-size: 14px;
+                    font-weight: 900;
+                    margin-bottom: 6px;
+                }
+
+                .payment-flow-text {
+                    color: #64748b;
+                    font-size: 12px;
+                    line-height: 1.55;
                 }
 
                 .section-heading {
@@ -738,6 +995,11 @@ export default function BillingPage() {
                 @media (max-width: 768px) {
                     .billing-page { padding: 16px 12px 40px; }
                     .billing-banner { padding: 24px 20px; border-radius: 18px; }
+                    .billing-overview-grid { grid-template-columns: 1fr; margin-top: -12px; }
+                    .usage-grid { grid-template-columns: 1fr 1fr; }
+                    .compare-grid { grid-template-columns: 1fr; }
+                    .compare-cell { border-right: none; }
+                    .payment-flow { grid-template-columns: 1fr; }
                     .plans-grid { grid-template-columns: 1fr !important; }
                     .payment-header { padding: 20px 20px; }
                     .payment-body { padding: 20px 20px 24px; }
@@ -828,6 +1090,83 @@ export default function BillingPage() {
                             </div>
                         )}
 
+                        <div className="billing-overview-grid">
+                            <div className="billing-panel">
+                                <div className="billing-panel-header">
+                                    <div className="billing-panel-title">
+                                        <span className="billing-panel-icon"><BarChart3 size={18} /></span>
+                                        Tình trạng gói và sử dụng
+                                    </div>
+                                    <Tag style={{ margin: 0, borderRadius: 999, fontWeight: 750, border: 'none', background: daysLeft <= 7 ? '#fef2f2' : '#ecfdf5', color: daysLeft <= 7 ? '#dc2626' : '#059669' }}>
+                                        {daysLeft <= 7 ? 'Cần chú ý' : 'Ổn định'}
+                                    </Tag>
+                                </div>
+                                <div className="usage-grid">
+                                    {usageCards.map((item) => {
+                                        const Icon = item.icon;
+                                        return (
+                                            <div key={item.label} className="usage-card">
+                                                <div className="usage-card-top">
+                                                    <div className="usage-label">{item.label}</div>
+                                                    <span className="usage-card-icon" style={{ color: item.tone }}>
+                                                        <Icon size={17} />
+                                                    </span>
+                                                </div>
+                                                <div>
+                                                    <div className="usage-value">{item.value}</div>
+                                                    <div className="usage-hint">{item.hint}</div>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+
+                            <div className="billing-panel">
+                                <div className="billing-panel-header">
+                                    <div className="billing-panel-title">
+                                        <span className="billing-panel-icon" style={{ background: '#fff7ed', color: '#ea580c' }}><WalletCards size={18} /></span>
+                                        Việc cần xử lý
+                                    </div>
+                                </div>
+                                <div className="billing-actions">
+                                    <div className="billing-action-row">
+                                        <div className="billing-action-copy">
+                                            <div className="billing-action-title">Chi phí dự kiến</div>
+                                            <div className="billing-action-text">
+                                                {estimatedMonthly > 0 ? `${formatVND(estimatedMonthly)}/tháng với chu kỳ hiện tại` : 'Đang dùng gói miễn phí hoặc cần báo giá'}
+                                            </div>
+                                        </div>
+                                        <CreditCard size={18} color="#4f46e5" />
+                                    </div>
+                                    <div className="billing-action-row">
+                                        <div className="billing-action-copy">
+                                            <div className="billing-action-title">{nextInvoice ? 'Hoá đơn đang chờ' : 'Không có khoản treo'}</div>
+                                            <div className="billing-action-text">
+                                                {nextInvoice ? `${nextInvoice.invoiceNumber} · ${formatVND(nextInvoice.amount)}` : 'Tài khoản chưa có hoá đơn cần thanh toán'}
+                                            </div>
+                                        </div>
+                                        {nextInvoice ? (
+                                            <button className="mini-action-btn" onClick={() => handlePayInvoice(nextInvoice.id, nextInvoice.status)}>
+                                                Thanh toán <ArrowRight size={13} />
+                                            </button>
+                                        ) : (
+                                            <CheckCircle size={18} color="#059669" />
+                                        )}
+                                    </div>
+                                    <div className="billing-action-row">
+                                        <div className="billing-action-copy">
+                                            <div className="billing-action-title">Đồng bộ trạng thái</div>
+                                            <div className="billing-action-text">Tải lại gói, hạn mức và hóa đơn mới nhất.</div>
+                                        </div>
+                                        <button className="mini-action-btn" onClick={fetchData}>
+                                            <RefreshCw size={13} /> Tải lại
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
                         {/* ── Plan Cards ── */}
                         <div className="section-heading">
                             <div className="icon-wrap" style={{ background: 'linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)', color: '#d97706' }}>
@@ -888,7 +1227,7 @@ export default function BillingPage() {
                                             {plan.price > 0 && (
                                                 <span>/{billingCycle === 'yearly' ? 'tháng' : 'tháng'} · Tối đa {plan.maxAgents} agents</span>
                                             )}
-                                            {plan.price === 0 && <span>30 ngày · {plan.maxAgents} agent</span>}
+                                            {plan.price === 0 && <span>14 ngày · {plan.maxAgents} agent</span>}
                                             {plan.price < 0 && <span>Unlimited agents · Hỗ trợ 24/7</span>}
                                         </div>
 
@@ -947,6 +1286,105 @@ export default function BillingPage() {
                             })}
                         </div>
 
+                        <div className="section-heading">
+                            <div className="icon-wrap" style={{ background: 'linear-gradient(135deg, #ecfeff 0%, #cffafe 100%)', color: '#0891b2' }}>
+                                <Shield size={18} />
+                            </div>
+                            So sánh nhanh quyền lợi
+                        </div>
+
+                        <div className="plan-compare">
+                            <div className="compare-grid" style={{ gridTemplateColumns: `1.15fr repeat(${plans.length}, minmax(120px, 1fr))` }}>
+                                <div className="compare-cell compare-head"><strong>Năng lực</strong></div>
+                                {plans.map((plan) => (
+                                    <div key={`head-${plan.id}`} className="compare-cell compare-head">
+                                        <strong>{plan.nameVi}</strong>
+                                    </div>
+                                ))}
+
+                                {[
+                                    {
+                                        label: 'Agent hỗ trợ',
+                                        values: plans.map((plan) => plan.maxAgents > 999 ? 'Không giới hạn' : `${plan.maxAgents} agent`),
+                                    },
+                                    {
+                                        label: 'Hội thoại mỗi tháng',
+                                        values: plans.map((plan) => {
+                                            if (plan.id === 'trial') return '100';
+                                            if (plan.id === 'starter') return '500';
+                                            if (plan.id === 'pro') return 'Không giới hạn';
+                                            return 'Theo hợp đồng';
+                                        }),
+                                    },
+                                    {
+                                        label: 'AI chatbot',
+                                        values: plans.map((plan) => ['pro', 'enterprise'].includes(plan.id) ? 'Có' : plan.id === 'starter' ? 'Cơ bản' : 'Chưa gồm'),
+                                    },
+                                    {
+                                        label: 'SLA và hỗ trợ',
+                                        values: plans.map((plan) => plan.id === 'enterprise' ? 'SLA riêng' : plan.id === 'pro' ? 'Ưu tiên' : 'Tiêu chuẩn'),
+                                    },
+                                    {
+                                        label: 'Xuất dữ liệu',
+                                        values: plans.map((plan) => ['pro', 'enterprise'].includes(plan.id) ? 'CSV / báo cáo' : 'Giới hạn'),
+                                    },
+                                ].map((row) => (
+                                    <Fragment key={row.label}>
+                                        <div key={`${row.label}-label`} className="compare-cell"><strong>{row.label}</strong></div>
+                                        {row.values.map((value, index) => (
+                                            <div key={`${row.label}-${plans[index]?.id || index}`} className="compare-cell">{value}</div>
+                                        ))}
+                                    </Fragment>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="section-heading">
+                            <div className="icon-wrap" style={{ background: 'linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%)', color: '#16a34a' }}>
+                                <QrCode size={18} />
+                            </div>
+                            Quy trình thanh toán
+                        </div>
+
+                        <div className="payment-flow">
+                            {[
+                                {
+                                    title: 'Tạo hóa đơn',
+                                    text: 'Khi nâng cấp gói, hệ thống tạo hóa đơn theo chu kỳ tháng hoặc năm và giữ nguyên nội dung chuyển khoản.',
+                                    icon: Receipt,
+                                    bg: '#eef2ff',
+                                    color: '#4f46e5',
+                                },
+                                {
+                                    title: 'Quét QR hoặc chuyển khoản',
+                                    text: 'Khách thuê có thể quét VietQR hoặc copy số tài khoản, số tiền và nội dung chuyển khoản trong modal.',
+                                    icon: QrCode,
+                                    bg: '#fff7ed',
+                                    color: '#ea580c',
+                                },
+                                {
+                                    title: 'Tự động xác nhận',
+                                    text: 'Trang sẽ polling trạng thái thanh toán trong nền, sau khi khớp giao dịch sẽ kích hoạt gói và làm mới dữ liệu.',
+                                    icon: CheckCircle,
+                                    bg: '#ecfdf5',
+                                    color: '#059669',
+                                },
+                            ].map((step, index) => {
+                                const Icon = step.icon;
+                                return (
+                                    <div key={step.title} className="payment-flow-step">
+                                        <div>
+                                            <div className="payment-flow-icon" style={{ background: step.bg, color: step.color }}>
+                                                <Icon size={19} />
+                                            </div>
+                                            <div className="payment-flow-title">{index + 1}. {step.title}</div>
+                                            <div className="payment-flow-text">{step.text}</div>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+
                         {/* ── Invoice History ── */}
                         <div className="section-heading">
                             <div className="icon-wrap" style={{ background: 'linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%)', color: '#6366f1' }}>
@@ -959,7 +1397,7 @@ export default function BillingPage() {
                             <Table
                                 dataSource={invoices}
                                 columns={invoiceColumns}
-                                rowKey="_id"
+                                rowKey={(record) => record.id || record._id || record.invoiceNumber}
                                 pagination={{ pageSize: 10, hideOnSinglePage: true }}
                                 locale={{
                                     emptyText: (
@@ -1065,6 +1503,7 @@ export default function BillingPage() {
                                 {/* ── QR Code ── */}
                                 <div className="payment-qr-wrap">
                                     <div className="payment-qr-card">
+                                        {/* eslint-disable-next-line @next/next/no-img-element */}
                                         <img
                                             src={qrUrl}
                                             alt="QR Thanh toán"
@@ -1160,7 +1599,7 @@ export default function BillingPage() {
                                 {!paymentChecking && (
                                     <div className="payment-status-bar" style={{ background: '#f1f5f9', color: '#64748b', border: '1px solid #e2e8f0' }}>
                                         <Clock size={16} />
-                                        Hết thời gian chờ. Bấm "Kiểm tra lại" nếu đã chuyển khoản.
+                                        Hết thời gian chờ. Bấm &quot;Kiểm tra lại&quot; nếu đã chuyển khoản.
                                         <button
                                             onClick={() => pollingInvoiceIdRef.current && startPolling(pollingInvoiceIdRef.current)}
                                             style={{

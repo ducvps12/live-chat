@@ -14,6 +14,10 @@ router.get('/plans', subscriptionController.getPlans);
 // Current subscription
 router.get('/', subscriptionController.getSubscription);
 
+// AI auto-reply quota for current billing period
+router.get('/ai-quota', subscriptionController.getAIQuota);
+router.get('/public-api-entitlements', subscriptionController.getPublicApiEntitlements);
+
 // Change plan (upgrade/downgrade)
 router.post('/change', subscriptionController.changePlan);
 

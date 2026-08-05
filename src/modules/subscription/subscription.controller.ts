@@ -26,6 +26,18 @@ export const subscriptionController = {
         });
     }),
 
+    getAIQuota: asyncHandler(async (req: Request, res: Response) => {
+        const workspaceId = req.params.workspaceId as string;
+        const quota = await subscriptionService.getAIReplyQuota(workspaceId);
+
+        res.json({ success: true, data: quota });
+    }),
+
+    getPublicApiEntitlements: asyncHandler(async (req: Request, res: Response) => {
+        const workspaceId = req.params.workspaceId as string;
+        res.json({ success: true, data: await subscriptionService.getPublicApiEntitlements(workspaceId) });
+    }),
+
     /**
      * Nâng cấp / thay đổi plan — tạo invoice pending
      */
@@ -74,10 +86,12 @@ export const subscriptionController = {
      */
     getPaymentInfo: asyncHandler(async (req: Request, res: Response) => {
         const invoiceId = req.params.invoiceId as string;
+        console.log('[SubscriptionController] getPaymentInfo called, invoiceId:', invoiceId);
         const info = await subscriptionService.getPaymentInfo(invoiceId);
 
         if (!info) {
-            res.status(404).json({ success: false, error: 'Invoice không tồn tại' });
+            console.error('[SubscriptionController] Invoice not found:', invoiceId);
+            res.status(404).json({ success: false, error: `Invoice không tồn tại (id: ${invoiceId})` });
             return;
         }
 

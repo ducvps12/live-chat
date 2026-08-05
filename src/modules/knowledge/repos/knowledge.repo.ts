@@ -1,6 +1,19 @@
 import prisma from '../../../infra/prisma';
 import type { KnowledgeEntry } from '@prisma/client';
 
+type KnowledgeSearchOptions = {
+    allowStopwordFallback?: boolean;
+    minScore?: number;
+};
+
+const KNOWLEDGE_SEARCH_STOP_WORDS = new Set([
+    'xin', 'chào', 'dạ', 'ạ', 'thì', 'mà', 'là', 'bị', 'cho', 'được', 'có', 'không',
+    'và', 'hoặc', 'của', 'để', 'trong', 'ngoài', 'tại', 'với', 'như', 'những', 'các',
+    'này', 'kia', 'đó', 'nào', 'ai', 'gì', 'sao', 'vậy', 'shop', 'admin',
+    'tôi', 'mình', 'bạn', 'anh', 'chị', 'em', 'tớ', 'tui', 'tao',
+    'cần', 'muốn', 'mua', 'đang', 'định', 'giúp', 'hỏi', 'xem', 'tìm', 'kiếm',
+]);
+
 export const knowledgeRepo = {
     async create(data: {
         workspaceId: string;
@@ -57,10 +70,20 @@ export const knowledgeRepo = {
         });
     },
 
-    async search(workspaceId: string, queryText: string, limit = 5) {
-        // Strategy: LIKE search for Vietnamese text (MySQL FULLTEXT doesn't handle Vietnamese well)
-        const words = queryText.toLowerCase().split(/\s+/).filter(w => w.length > 1);
-        if (words.length === 0) return [];
+    async search(workspaceId: string, queryText: string, limit = 5, options: KnowledgeSearchOptions = {}) {
+        const queryLower = queryText.toLowerCase().trim();
+        const words = [...new Set(queryLower
+            .split(/\s+/)
+            .map(w => w.trim())
+            .filter(w => w.length > 1 && !KNOWLEDGE_SEARCH_STOP_WORDS.has(w)))];
+
+        if (words.length === 0) {
+            if (options.allowStopwordFallback === false) return [];
+
+            const fallbackWords = queryLower.split(/\s+/).filter(w => w.length > 1);
+            if (fallbackWords.length === 0) return [];
+            words.push(...fallbackWords);
+        }
 
         // Build OR conditions: each word matches any of question/answer/product
         const orConditions = words.flatMap(w => [
@@ -69,10 +92,40 @@ export const knowledgeRepo = {
             { product: { contains: w } },
         ]);
 
-        return prisma.knowledgeEntry.findMany({
+        const candidates = await prisma.knowledgeEntry.findMany({
             where: { workspaceId, OR: orConditions },
-            take: limit,
         });
+
+        // Score candidates based on relevance
+        const scored = candidates.map(entry => {
+            let score = 0;
+            const q = (entry.question || '').toLowerCase();
+            const a = (entry.answer || '').toLowerCase();
+            const p = (entry.product || '').toLowerCase();
+
+            // Exact phrase match bonus
+            if (q.includes(queryLower)) score += 30;
+            if (p.includes(queryLower)) score += 20;
+            if (a.includes(queryLower)) score += 10;
+
+            // Word matching
+            words.forEach(w => {
+                if (p.includes(w)) score += 5;
+                if (q.includes(w)) score += 3;
+                if (a.includes(w)) score += 1;
+            });
+
+            return { entry, score };
+        });
+
+        // Sort by score desc
+        scored.sort((a, b) => b.score - a.score);
+
+        const minScore = Math.max(0, options.minScore ?? 0);
+        return scored
+            .filter(({ score }) => score >= minScore)
+            .slice(0, limit)
+            .map(({ entry }) => entry);
     },
 
     async findById(id: string) {

@@ -22,13 +22,47 @@ router.get(
     async (req, res) => {
         try {
             const { workspaceRepo } = await import('./repos/workspace.repo');
-            const ws = await workspaceRepo.findBySlug(req.params.slug);
+            const slug = Array.isArray(req.params.slug) ? req.params.slug[0] : req.params.slug;
+            const ws = await workspaceRepo.findBySlug(slug);
             if (!ws) return res.status(404).json({ success: false, error: 'Workspace không tồn tại' });
             res.json({ success: true, data: { id: ws.id, slug: ws.slug, name: ws.name } });
         } catch (err: any) {
             res.status(500).json({ success: false, error: err.message });
         }
     }
+);
+
+router.get(
+    '/invitations/:token',
+    workspaceController.getInvitation
+);
+
+router.post(
+    '/invitations/:token/accept',
+    requireAuth,
+    workspaceController.acceptInvitation
+);
+
+// ────────── Public Widget/Popup endpoints (no auth) ──────────
+// Keep these before any '/:workspaceId...' route. Express matches routes in
+// declaration order, so '/public/...' would otherwise be captured as
+// workspaceId = "public" and the embedded widget would fall back to
+// "Chat tạm thời không khả dụng".
+router.get('/public/system-support-widget', workspaceController.getSystemSupportWidget);
+router.get('/public/widgets/:widgetId/config', widgetController.getPublicConfig);
+router.get('/public/widgets/:widgetId/check-domain', widgetController.checkDomain);
+router.post(
+    '/public/widgets/:widgetId/offline-messages',
+    validateRequest(offlineMessageValidate.create),
+    offlineMessageController.create
+);
+router.post(
+    '/public/popups/:popupId/stat',
+    popupController.incrementStat
+);
+router.get(
+    '/public/popups/workspace/:workspaceId/active',
+    popupController.getActive
 );
 
 // ────────── Workspace CRUD ──────────
@@ -58,6 +92,44 @@ router.get(
     requireAuth,
     scopeCheck,
     workspaceController.getDashboardStats
+);
+
+router.post(
+    '/:workspaceId/starter-kit',
+    requireAuth,
+    scopeCheck,
+    requirePermission(PERMISSIONS.WORKSPACE_UPDATE),
+    workspaceController.provisionStarterKit
+);
+
+router.get(
+    '/:workspaceId/analytics',
+    requireAuth,
+    scopeCheck,
+    workspaceController.getAnalytics
+);
+
+router.get(
+    '/:workspaceId/ai-runtime',
+    requireAuth,
+    scopeCheck,
+    workspaceController.getAIRuntimeSettings
+);
+
+router.patch(
+    '/:workspaceId/ai-runtime',
+    requireAuth,
+    scopeCheck,
+    requirePermission(PERMISSIONS.WORKSPACE_UPDATE),
+    workspaceController.updateAIRuntimeSettings
+);
+
+router.post(
+    '/:workspaceId/ai-runtime/test',
+    requireAuth,
+    scopeCheck,
+    requirePermission(PERMISSIONS.WORKSPACE_UPDATE),
+    workspaceController.testAIRuntimeSettings
 );
 
 router.patch(
@@ -92,6 +164,39 @@ router.post(
     requirePermission(PERMISSIONS.WORKSPACE_MANAGE_MEMBERS),
     validateRequest(workspaceValidate.addMember),
     workspaceController.addMember
+);
+
+router.get(
+    '/:workspaceId/invitations',
+    requireAuth,
+    scopeCheck,
+    requirePermission(PERMISSIONS.WORKSPACE_MANAGE_MEMBERS),
+    workspaceController.listInvitations
+);
+
+router.delete(
+    '/:workspaceId/invitations/:invitationId',
+    requireAuth,
+    scopeCheck,
+    requirePermission(PERMISSIONS.WORKSPACE_MANAGE_MEMBERS),
+    workspaceController.cancelInvitation
+);
+
+router.post(
+    '/:workspaceId/invitations/:invitationId/resend',
+    requireAuth,
+    scopeCheck,
+    requirePermission(PERMISSIONS.WORKSPACE_MANAGE_MEMBERS),
+    workspaceController.resendInvitation
+);
+
+router.patch(
+    '/:workspaceId/members/:userId',
+    requireAuth,
+    scopeCheck,
+    requirePermission(PERMISSIONS.WORKSPACE_MANAGE_MEMBERS),
+    validateRequest(workspaceValidate.updateMemberRole),
+    workspaceController.updateMemberRole
 );
 
 router.delete(
@@ -206,10 +311,6 @@ router.delete(
     widgetController.delete
 );
 
-// ────────── Public Widget endpoints (no auth) ──────────
-router.get('/public/widgets/:widgetId/config', widgetController.getPublicConfig);
-router.get('/public/widgets/:widgetId/check-domain', widgetController.checkDomain);
-
 // ────────── Popup CRUD (under workspace scope) ──────────
 router.post(
     '/:workspaceId/popups',
@@ -234,19 +335,6 @@ router.delete(
     requireAuth,
     scopeCheck,
     popupController.delete
-);
-router.post(
-    '/public/popups/:popupId/stat',
-    popupController.incrementStat
-);
-router.get(
-    '/public/popups/workspace/:workspaceId/active',
-    popupController.getActive
-);
-router.post(
-    '/public/widgets/:widgetId/offline-messages',
-    validateRequest(offlineMessageValidate.create),
-    offlineMessageController.create
 );
 
 // ────────── Offline Messages (authenticated, under workspace scope) ──────────

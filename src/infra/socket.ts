@@ -11,6 +11,8 @@ import { startScreencast, stopScreencast, dispatchMouse, dispatchKeyboard, dispa
 import { createZaloSession, restoreZaloSession, getZaloConversations, getZaloMessages, sendZaloMsg, sendZaloImage, destroyZaloSession, isZaloSessionConnected, hasStoredCredentials, logoutZaloSession, addSessionMessageCallback, addSessionUndoCallback, clearSessionMessageCallbacks, undoZaloMessage, deleteZaloMessage, sendZaloReply, searchZaloStickers, sendZaloSticker, sendZaloVoice, getThreadContactData, getAllContactData, loadContactData } from './zaloService';
 import { externalSessionRepo } from '../modules/external-session/repos/externalSession.repo';
 import { zaloMessageRepo } from '../modules/zalo/repos/zalo-message.repo';
+import { zaloAccountRepo } from '../modules/zalo/repos/zalo-account.repo';
+import prisma from './prisma';
 import type { ZaloIncomingMessage, ZaloUndoEvent } from './zaloService';
 
 let io: Server;
@@ -22,10 +24,16 @@ async function getWorkspaceIdForSession(sessionId: string): Promise<string | nul
     if (sessionWorkspaceCache.has(sessionId)) return sessionWorkspaceCache.get(sessionId)!;
     try {
         const session = await externalSessionRepo.findById(sessionId);
-        const wsId = session?.workspaceId?.toString() || null;
+        const account = session ? null : await zaloAccountRepo.findById(sessionId);
+        const wsId = session?.workspaceId?.toString() || account?.workspaceId?.toString() || null;
         if (wsId) sessionWorkspaceCache.set(sessionId, wsId);
         return wsId;
     } catch { return null; }
+}
+
+async function sessionBelongsToWorkspace(sessionId: string, workspaceId?: string): Promise<boolean> {
+    if (!sessionId || !workspaceId) return false;
+    return (await getWorkspaceIdForSession(sessionId)) === workspaceId;
 }
 
 async function saveZaloMessageToDB(sessionId: string, msg: ZaloIncomingMessage): Promise<void> {
@@ -101,6 +109,19 @@ interface SocketData {
     workspaceId?: string;   // for agents
 }
 
+async function visitorCanAccessConversation(
+    conversationId: string | undefined,
+    visitorId: string,
+    widgetId?: string,
+) {
+    if (!conversationId || !widgetId) return false;
+    const conversation = await conversationRepo.findById(conversationId);
+    if (!conversation) return false;
+    return conversation.visitorId === visitorId
+        && conversation.widgetId?.toString() === widgetId
+        && ['widget', 'website'].includes(String(conversation.channel || ''));
+}
+
 /**
  * Initialize Socket.IO on the HTTP server.
  */
@@ -146,7 +167,9 @@ export function initSocketGateway(server: http.Server): Server {
 
         // Join conversation room if provided
         if (conversationId) {
-            socket.join(rooms.conversation(conversationId));
+            visitorCanAccessConversation(conversationId, vid, data.widgetId).then(allowed => {
+                if (allowed) socket.join(rooms.conversation(conversationId));
+            }).catch(() => {});
         }
 
         console.log(`[Socket] Visitor connected: ${vid} (socket: ${socket.id})`);
@@ -157,8 +180,11 @@ export function initSocketGateway(server: http.Server): Server {
             // Notify agents in this widget's workspace
             // (widgetId → workspaceId mapping comes from the conversation)
             if (conversationId) {
-                conversationRepo.findById(conversationId).then(conv => {
-                    if (conv) {
+                Promise.all([
+                    visitorCanAccessConversation(conversationId, vid, data.widgetId),
+                    conversationRepo.findById(conversationId),
+                ]).then(([allowed, conv]) => {
+                    if (allowed && conv) {
                         emitToWorkspace((conv.workspaceId as any).toString(), 'presence:visitorOnline', {
                             visitorId: vid, status: 'online',
                         });
@@ -173,22 +199,24 @@ export function initSocketGateway(server: http.Server): Server {
         // ── Visitor events ──
 
         // Join a conversation room (when conversation is created/resumed later)
-        socket.on('join:conversation', (joinData: { conversationId: string }) => {
-            if (joinData.conversationId) {
+        socket.on('join:conversation', async (joinData: { conversationId: string }) => {
+            if (joinData.conversationId && await visitorCanAccessConversation(joinData.conversationId, vid, data.widgetId)) {
                 socket.join(rooms.conversation(joinData.conversationId));
                 console.log(`[Socket] Visitor ${vid} joined room: ${rooms.conversation(joinData.conversationId)}`);
             }
         });
 
         // Typing indicator
-        socket.on('typing:start', (typingData: { conversationId: string }) => {
+        socket.on('typing:start', async (typingData: { conversationId: string }) => {
+            if (!await visitorCanAccessConversation(typingData.conversationId, vid, data.widgetId)) return;
             socket.to(rooms.conversation(typingData.conversationId)).emit('typing:start', {
                 conversationId: typingData.conversationId,
                 sender: { type: 'visitor', id: vid },
             });
         });
 
-        socket.on('typing:stop', (typingData: { conversationId: string }) => {
+        socket.on('typing:stop', async (typingData: { conversationId: string }) => {
+            if (!await visitorCanAccessConversation(typingData.conversationId, vid, data.widgetId)) return;
             socket.to(rooms.conversation(typingData.conversationId)).emit('typing:stop', {
                 conversationId: typingData.conversationId,
                 sender: { type: 'visitor', id: vid },
@@ -197,8 +225,9 @@ export function initSocketGateway(server: http.Server): Server {
 
         // ── Message Status Updates ──
         socket.on('message:delivered', async (msgData: { messageIds: string[], conversationId: string }) => {
-            if (msgData.messageIds?.length > 0) {
-                await messageRepo.markAsDelivered(msgData.messageIds);
+            if (msgData.messageIds?.length > 0
+                && await visitorCanAccessConversation(msgData.conversationId, vid, data.widgetId)) {
+                await messageRepo.markAsDelivered(msgData.messageIds, msgData.conversationId);
                 socket.to(rooms.conversation(msgData.conversationId)).emit('message:updated', {
                     messageIds: msgData.messageIds,
                     status: 'delivered'
@@ -207,7 +236,8 @@ export function initSocketGateway(server: http.Server): Server {
         });
 
         socket.on('message:seen', async (seenData: { conversationId: string, messageId: string }) => {
-            if (seenData.conversationId && seenData.messageId) {
+            if (seenData.conversationId && seenData.messageId
+                && await visitorCanAccessConversation(seenData.conversationId, vid, data.widgetId)) {
                 // Update cursor for visitor
                 await conversationRepo.updateReadCursor(seenData.conversationId, vid, 'visitor', seenData.messageId);
                 // Mark agent messages as read
@@ -233,8 +263,11 @@ export function initSocketGateway(server: http.Server): Server {
             // ── Presence: visitor disconnect ──
             const newStatus = presenceStore.visitorDisconnect(vid, socket.id);
             if (newStatus === 'offline' && conversationId) {
-                conversationRepo.findById(conversationId).then(conv => {
-                    if (conv) {
+                Promise.all([
+                    visitorCanAccessConversation(conversationId, vid, data.widgetId),
+                    conversationRepo.findById(conversationId),
+                ]).then(([allowed, conv]) => {
+                    if (allowed && conv) {
                         emitToWorkspace((conv.workspaceId as any).toString(), 'presence:visitorOffline', {
                             visitorId: vid, status: 'offline',
                         });
@@ -484,16 +517,35 @@ export function initSocketGateway(server: http.Server): Server {
     const remoteNs = io.of('/remote');
 
     // Auth middleware (JWT same as agent)
-    remoteNs.use((socket, next) => {
+    remoteNs.use(async (socket, next) => {
         const token = socket.handshake.auth?.token || socket.handshake.query?.token;
         if (!token) return next(new Error('MISSING_TOKEN'));
         try {
             const decoded = jwt.verify(token as string, env.JWT_SECRET) as any;
+            const userId = decoded.id || decoded.userId;
+            const workspaceQuery = socket.handshake.query?.workspaceId;
+            const workspaceId = (Array.isArray(workspaceQuery) ? workspaceQuery[0] : workspaceQuery) || decoded.workspaceId;
+            if (!userId || !workspaceId) return next(new Error('MISSING_WORKSPACE'));
+
+            if (decoded.role !== 'admin') {
+                const workspaceAccess = await prisma.workspace.findFirst({
+                    where: {
+                        id: String(workspaceId),
+                        OR: [
+                            { ownerId: String(userId) },
+                            { members: { some: { userId: String(userId) } } },
+                        ],
+                    },
+                    select: { id: true },
+                });
+                if (!workspaceAccess) return next(new Error('WORKSPACE_FORBIDDEN'));
+            }
+
             (socket as any).data = {
                 type: 'agent',
-                id: decoded.id || decoded.userId,
+                id: userId,
                 name: decoded.name || 'Unknown',
-                workspaceId: socket.handshake.query?.workspaceId || decoded.workspaceId,
+                workspaceId: String(workspaceId),
             } as SocketData;
             next();
         } catch {
@@ -508,9 +560,21 @@ export function initSocketGateway(server: http.Server): Server {
         const data = (socket as any).data as SocketData;
         console.log(`[Remote] User ${data.name} (${data.id}) connected`);
 
+        const canUseZaloSession = async (sessionId: string): Promise<boolean> => {
+            const allowed = await sessionBelongsToWorkspace(sessionId, data.workspaceId);
+            if (!allowed) {
+                console.warn(`[Remote] Blocked cross-workspace Zalo session access by ${data.id}: ${sessionId}`);
+            }
+            return allowed;
+        };
+
         // ── Join a browser session ──
         socket.on('session:join', async ({ sessionId }: { sessionId: string }) => {
             try {
+                if (!await sessionBelongsToWorkspace(sessionId, data.workspaceId)) {
+                    socket.emit('session:error', { message: 'Phiên không thuộc workspace này' });
+                    return;
+                }
                 const instance = browserPool.get(sessionId);
                 if (!instance || instance.status !== 'running') {
                     socket.emit('session:error', { message: 'Phiên trình duyệt không hoạt động' });
@@ -645,6 +709,11 @@ export function initSocketGateway(server: http.Server): Server {
         // ── Start zca-js session (native Zalo API) ──
         socket.on('zalo:connectZCA', async ({ sessionId }: { sessionId: string }) => {
             try {
+                const existingWorkspaceId = await getWorkspaceIdForSession(sessionId);
+                if (existingWorkspaceId && existingWorkspaceId !== data.workspaceId) {
+                    socket.emit('zalo:zcaError', { sessionId, error: 'Tài khoản Zalo không thuộc workspace này' });
+                    return;
+                }
                 console.log(`[ZaloZCA] Starting zca-js session for ${sessionId}...`);
 
                 // Track the real accountId after DB upsert (closure for onMessage)
@@ -850,7 +919,11 @@ export function initSocketGateway(server: http.Server): Server {
         });
 
         // ── Join Zalo session room for realtime events (zca-js) ──
-        socket.on('zalo:join', ({ sessionId }: { sessionId: string }) => {
+        socket.on('zalo:join', async ({ sessionId }: { sessionId: string }) => {
+            if (!await canUseZaloSession(sessionId)) {
+                socket.emit('zalo:zcaError', { sessionId, error: 'Tài khoản Zalo không thuộc workspace này' });
+                return;
+            }
             const room = `remote:${sessionId}`;
             const roomsToLeave = Array.from(socket.rooms).filter(r => r.startsWith('remote:') && r !== room);
             for (const r of roomsToLeave) socket.leave(r);
@@ -861,6 +934,10 @@ export function initSocketGateway(server: http.Server): Server {
         // ── Restore zca-js session from saved credentials (no QR needed) ──
         socket.on('zalo:restoreSession', async ({ sessionId }: { sessionId: string }) => {
             try {
+                if (!await canUseZaloSession(sessionId)) {
+                    socket.emit('zalo:zcaError', { sessionId, error: 'Tài khoản Zalo không thuộc workspace này' });
+                    return;
+                }
                 console.log(`[ZaloZCA] Attempting session restore for ${sessionId}...`);
 
                 if (isZaloSessionConnected(sessionId)) {
@@ -941,6 +1018,10 @@ export function initSocketGateway(server: http.Server): Server {
         // ── Get Zalo conversations (pure zca-js) ──
         socket.on('zalo:getConversations', async ({ sessionId }: { sessionId: string }) => {
             try {
+                if (!await canUseZaloSession(sessionId)) {
+                    socket.emit('zalo:conversations', { conversations: [], error: 'Tài khoản Zalo không thuộc workspace này' });
+                    return;
+                }
                 // If session not connected, try auto-restore from stored credentials
                 if (!isZaloSessionConnected(sessionId)) {
                     if (hasStoredCredentials(sessionId)) {
@@ -1009,6 +1090,10 @@ export function initSocketGateway(server: http.Server): Server {
             sessionId: string; contactName?: string; threadId?: string; threadType?: 'user' | 'group';
         }) => {
             try {
+                if (!await canUseZaloSession(sessionId)) {
+                    socket.emit('zalo:messages', { messages: [], error: 'Tài khoản Zalo không thuộc workspace này' });
+                    return;
+                }
                 if (!isZaloSessionConnected(sessionId) || !threadId) {
                     socket.emit('zalo:messages', { messages: [], error: !threadId ? 'Thiếu threadId' : 'Zalo chưa kết nối' });
                     return;
@@ -1053,6 +1138,10 @@ export function initSocketGateway(server: http.Server): Server {
             sessionId: string; text: string; contactName?: string; threadId?: string; threadType?: 'user' | 'group'; imageUrl?: string;
         }) => {
             try {
+                if (!await canUseZaloSession(sessionId)) {
+                    socket.emit('zalo:messageSent', { success: false, error: 'Tài khoản Zalo không thuộc workspace này' });
+                    return;
+                }
                 if (!isZaloSessionConnected(sessionId) || !threadId) {
                     socket.emit('zalo:messageSent', { success: false, error: !threadId ? 'Thiếu threadId' : 'Zalo chưa kết nối' });
                     return;
@@ -1100,6 +1189,10 @@ export function initSocketGateway(server: http.Server): Server {
         // ── Logout Zalo (clear credentials) ──
         socket.on('zalo:logout', async ({ sessionId }: { sessionId: string }) => {
             try {
+                if (!await canUseZaloSession(sessionId)) {
+                    socket.emit('zalo:zcaError', { sessionId, error: 'Tài khoản Zalo không thuộc workspace này' });
+                    return;
+                }
                 logoutZaloSession(sessionId);
                 await externalSessionRepo.updateStatus(sessionId, 'disconnected');
                 socket.emit('session:status', { status: 'disconnected' });
@@ -1114,6 +1207,10 @@ export function initSocketGateway(server: http.Server): Server {
             sessionId: string; msgId: string; cliMsgId: string; threadId: string; threadType?: 'user' | 'group';
         }) => {
             try {
+                if (!await canUseZaloSession(sessionId)) {
+                    socket.emit('zalo:undoResult', { success: false, error: 'Tài khoản Zalo không thuộc workspace này' });
+                    return;
+                }
                 const result = await undoZaloMessage(sessionId, msgId, cliMsgId, threadId, threadType || 'user');
                 socket.emit('zalo:undoResult', { success: true, msgId, result });
                 // Broadcast to room so UI removes the message
@@ -1128,6 +1225,10 @@ export function initSocketGateway(server: http.Server): Server {
             sessionId: string; msgId: string; cliMsgId: string; uidFrom: string; threadId: string; threadType?: 'user' | 'group'; onlyMe?: boolean;
         }) => {
             try {
+                if (!await canUseZaloSession(sessionId)) {
+                    socket.emit('zalo:deleteResult', { success: false, error: 'Tài khoản Zalo không thuộc workspace này' });
+                    return;
+                }
                 const result = await deleteZaloMessage(sessionId, msgId, cliMsgId, uidFrom, threadId, threadType || 'user', onlyMe !== false);
                 socket.emit('zalo:deleteResult', { success: true, msgId, result });
                 // Broadcast to room so UI removes the message
@@ -1143,6 +1244,10 @@ export function initSocketGateway(server: http.Server): Server {
             quotedMsg: { msgId: string; cliMsgId: string; content: string; uidFrom: string; ts: number };
         }) => {
             try {
+                if (!await canUseZaloSession(sessionId)) {
+                    socket.emit('zalo:messageSent', { success: false, error: 'Tài khoản Zalo không thuộc workspace này' });
+                    return;
+                }
                 const result = await sendZaloReply(sessionId, threadId, threadType, text, quotedMsg);
                 socket.emit('zalo:messageSent', { success: true, result });
                 // Re-fetch messages
@@ -1159,6 +1264,10 @@ export function initSocketGateway(server: http.Server): Server {
             sessionId: string; keyword: string;
         }) => {
             try {
+                if (!await canUseZaloSession(sessionId)) {
+                    socket.emit('zalo:stickersResult', { stickers: [], error: 'Tài khoản Zalo không thuộc workspace này' });
+                    return;
+                }
                 const stickers = await searchZaloStickers(sessionId, keyword);
                 socket.emit('zalo:stickersResult', { stickers });
             } catch (err: any) {
@@ -1172,6 +1281,10 @@ export function initSocketGateway(server: http.Server): Server {
             threadId: string; threadType?: 'user' | 'group';
         }) => {
             try {
+                if (!await canUseZaloSession(sessionId)) {
+                    socket.emit('zalo:messageSent', { success: false, error: 'Tài khoản Zalo không thuộc workspace này' });
+                    return;
+                }
                 await sendZaloSticker(sessionId, sticker, threadId, threadType || 'user');
                 socket.emit('zalo:messageSent', { success: true });
                 // Re-fetch messages
@@ -1188,6 +1301,10 @@ export function initSocketGateway(server: http.Server): Server {
             sessionId: string; voiceUrl: string; threadId: string; threadType?: 'user' | 'group';
         }) => {
             try {
+                if (!await canUseZaloSession(sessionId)) {
+                    socket.emit('zalo:messageSent', { success: false, error: 'Tài khoản Zalo không thuộc workspace này' });
+                    return;
+                }
                 await sendZaloVoice(sessionId, voiceUrl, threadId, threadType || 'user');
                 socket.emit('zalo:messageSent', { success: true });
             } catch (err: any) {
@@ -1200,6 +1317,10 @@ export function initSocketGateway(server: http.Server): Server {
             sessionId: string; threadId: string;
         }) => {
             try {
+                if (!await canUseZaloSession(sessionId)) {
+                    socket.emit('zalo:contactData', { threadId, data: null, error: 'Tài khoản Zalo không thuộc workspace này' });
+                    return;
+                }
                 loadContactData(sessionId); // ensure loaded
                 const data = getThreadContactData(sessionId, threadId);
                 socket.emit('zalo:contactData', { threadId, data });
@@ -1211,6 +1332,10 @@ export function initSocketGateway(server: http.Server): Server {
         // ── Get all contact data for a session ──
         socket.on('zalo:getAllContacts', async ({ sessionId }: { sessionId: string }) => {
             try {
+                if (!await canUseZaloSession(sessionId)) {
+                    socket.emit('zalo:allContacts', { contacts: [], error: 'Tài khoản Zalo không thuộc workspace này' });
+                    return;
+                }
                 loadContactData(sessionId);
                 const contacts = getAllContactData(sessionId);
                 socket.emit('zalo:allContacts', { contacts });

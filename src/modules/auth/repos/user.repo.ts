@@ -14,6 +14,19 @@ export const userRepo = {
         return prisma.user.findUnique({ where: { googleId } });
     },
 
+    async findByValidResetToken(tokenHash: string, now = new Date()): Promise<User | null> {
+        return prisma.user.findFirst({
+            where: {
+                resetPasswordToken: tokenHash,
+                resetPasswordExpires: { gt: now },
+            },
+        });
+    },
+
+    async countByRole(role: string): Promise<number> {
+        return prisma.user.count({ where: { role } });
+    },
+
     async createUser(data: {
         email: string;
         passwordHash: string;

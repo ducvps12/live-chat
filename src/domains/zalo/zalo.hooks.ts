@@ -8,7 +8,12 @@ export function useZaloStatus(workspaceId: string, waitingForScan = false) {
         queryKey: ZALO_KEYS.status(workspaceId),
         queryFn: () => zaloService.getStatus(workspaceId),
         enabled: !!workspaceId,
-        refetchInterval: waitingForScan ? 3000 : false,
+        refetchInterval: query => {
+            if (waitingForScan) return 3000;
+            const accounts = (query.state.data as any)?.data?.accounts || [];
+            return accounts.some((account: any) => !account?.isOnline) ? 10_000 : false;
+        },
+        refetchOnWindowFocus: true,
     });
 }
 

@@ -371,12 +371,13 @@ export default function ZaloPersonalPage() {
         }
     }, [isMobile, selectedAccountId, selectedConvId]);
 
-    // Auto-select first connected account on mobile
+    // Auto-select the first connected account so operators land directly in the working queue.
     useEffect(() => {
-        if (!isMobile || selectedAccountId || accounts.length === 0) return;
+        if (selectedAccountId || accounts.length === 0) return;
         const connected = accounts.find(a => a.status === 'connected');
         if (connected) {
             setSelectedAccountId(connected._id);
+            if (isMobile) setMobileView('conversations');
         }
     }, [isMobile, accounts, selectedAccountId]);
 
@@ -542,7 +543,15 @@ export default function ZaloPersonalPage() {
             }));
             setConversations(mapped);
             if (wasManualScan && mapped.length > 0) {
-                message.success(`Đã tìm thấy ${mapped.length} hội thoại`);
+                const currentId = selectedConvIdRef.current;
+                const selectedStillExists = currentId ? mapped.some(conv => conv._id === currentId) : false;
+                if (!selectedStillExists) {
+                    setSelectedConvId(mapped[0]._id);
+                    if (typeof window !== 'undefined' && window.innerWidth <= 768) {
+                        setMobileView('chat');
+                    }
+                }
+                message.success(`Đã tìm thấy ${mapped.length} hội thoại. Đang mở ${mapped[0].contactName}.`);
             }
         });
 

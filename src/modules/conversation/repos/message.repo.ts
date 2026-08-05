@@ -48,6 +48,7 @@ export const messageRepo = {
         const where: any = { conversationId };
         if (options?.excludeInternal) {
             where.isInternal = false;
+            where.senderType = { not: 'system' };
         }
 
         const [items, total] = await Promise.all([
@@ -63,13 +64,32 @@ export const messageRepo = {
         return { items: items.reverse(), total };
     },
 
-    async getLatest(conversationId: string, limit: number = 30): Promise<Message[]> {
+    async getLatest(
+        conversationId: string,
+        limit: number = 30,
+        options?: { excludeInternal?: boolean },
+    ): Promise<Message[]> {
         const msgs = await prisma.message.findMany({
-            where: { conversationId },
-            orderBy: { createdAt: 'desc' },
+            where: {
+                conversationId,
+                ...(options?.excludeInternal ? { isInternal: false, senderType: { not: 'system' } } : {}),
+            },
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
             take: limit,
         });
         return msgs.reverse();
+    },
+
+    async findLatestVisitor(conversationId: string): Promise<Message | null> {
+        return prisma.message.findFirst({
+            where: {
+                conversationId,
+                senderType: 'visitor',
+                isDeleted: false,
+                isInternal: false,
+            },
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        });
     },
 
     async getMessagePage(conversationId: string, messageId: string, limit: number = 50): Promise<number | null> {
@@ -86,17 +106,25 @@ export const messageRepo = {
         return Math.floor((count - 1) / limit) + 1;
     },
 
-    async findSince(conversationId: string, since: Date, limit: number = 50): Promise<Message[]> {
+    async findSince(conversationId: string, since: Date, limit: number = 50, excludeInternal: boolean = false): Promise<Message[]> {
         return prisma.message.findMany({
-            where: { conversationId, createdAt: { gt: since } },
+            where: {
+                conversationId,
+                createdAt: { gt: since },
+                ...(excludeInternal ? { isInternal: false, senderType: { not: 'system' } } : {}),
+            },
             orderBy: { createdAt: 'asc' },
             take: limit,
         });
     },
 
-    async markAsDelivered(messageIds: string[]): Promise<void> {
+    async markAsDelivered(messageIds: string[], conversationId?: string): Promise<void> {
         await prisma.message.updateMany({
-            where: { id: { in: messageIds }, status: 'sent' },
+            where: {
+                id: { in: messageIds },
+                status: 'sent',
+                ...(conversationId ? { conversationId } : {}),
+            },
             data: { status: 'delivered' },
         });
     },

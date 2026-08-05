@@ -20,6 +20,8 @@ export const conversationValidate = {
             name: Joi.string().allow('').max(100),
             email: Joi.string().email().allow('').max(200),
             phone: Joi.string().allow('').max(20),
+            marketingConsent: Joi.boolean().optional(),
+            consentText: Joi.string().allow('').max(500).optional(),
         }).unknown(true),
         metadata: Joi.object({
             pageUrl: Joi.string().allow('').max(2000),
@@ -40,7 +42,7 @@ export const conversationValidate = {
         attachments: Joi.array().items(attachmentSchema).max(MAX_ATTACHMENTS),
         clientMessageId: Joi.string().max(100).optional(),
         replyTo: Joi.object({
-            messageId: Joi.string().required(),
+            messageId: Joi.string().max(191).required(),
             content: Joi.string().allow('').required(),
             senderName: Joi.string().allow('').required(),
         }).optional(),
@@ -61,7 +63,7 @@ export const conversationValidate = {
         attachments: Joi.array().items(attachmentSchema).max(MAX_ATTACHMENTS),
         clientMessageId: Joi.string().max(100).optional(),
         replyTo: Joi.object({
-            messageId: Joi.string().required(),
+            messageId: Joi.string().max(191).required(),
             content: Joi.string().allow('').required(),
             senderName: Joi.string().allow('').required(),
         }).optional(),

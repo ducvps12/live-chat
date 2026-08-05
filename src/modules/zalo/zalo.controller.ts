@@ -1,8 +1,29 @@
 import { Request, Response } from 'express';
 import asyncHandler from 'express-async-handler';
 import { zaloService } from './zalo.service';
+import { zaloNetworkProfileService } from './zalo-network-profile.service';
+import { zaloOAService } from './zalo-oa.service';
 
 export const zaloController = {
+    getOAReadiness: asyncHandler(async (_req: Request, res: Response) => {
+        res.json({ success: true, data: zaloOAService.readiness() });
+    }),
+
+    getNetworkProfile: asyncHandler(async (req: Request, res: Response) => {
+        const data = await zaloNetworkProfileService.get(req.params.workspaceId as string, req.params.accountId as string);
+        res.json({ success: true, data });
+    }),
+
+    saveNetworkProfile: asyncHandler(async (req: Request, res: Response) => {
+        const data = await zaloNetworkProfileService.save(req.params.workspaceId as string, req.params.accountId as string, req.body || {});
+        res.json({ success: true, data, message: 'Đã lưu Network Profile. Kết nối lại tài khoản để áp dụng.' });
+    }),
+
+    testNetworkProfile: asyncHandler(async (req: Request, res: Response) => {
+        const data = await zaloNetworkProfileService.test(req.params.workspaceId as string, req.params.accountId as string);
+        res.json({ success: true, data });
+    }),
+
     /**
      * Bị gọi từ giao diện Dashboard để lấy mã QR link với Zalo
      */
@@ -48,9 +69,9 @@ export const zaloController = {
      */
     sendMessage: asyncHandler(async (req: Request, res: Response) => {
         const workspaceId = req.params.workspaceId as string;
-        const { threadId, text, type, attachmentUrl } = req.body;
+        const { threadId, text, type, attachmentUrl, accountId } = req.body;
 
-        const result = await zaloService.sendMessage(workspaceId, threadId, text, type, attachmentUrl);
+        const result = await zaloService.sendMessage(workspaceId, threadId, text, type, attachmentUrl, accountId);
 
         res.status(200).json({
             success: true,
@@ -64,7 +85,7 @@ export const zaloController = {
      */
     broadcast: asyncHandler(async (req: Request, res: Response) => {
         const workspaceId = req.params.workspaceId as string;
-        const { messages, recipientIds, delayMs } = req.body;
+        const { messages, recipientIds, delayMs, accountId } = req.body;
 
         if (!messages?.length || !recipientIds?.length) {
             res.status(400).json({ success: false, error: { message: 'Cần chọn ít nhất 1 tin nhắn và 1 người nhận' } });
@@ -93,6 +114,7 @@ export const zaloController = {
 
             const result = await zaloService.broadcastMessages(workspaceId, messages, batch, {
                 delayMs: Math.max(delayMs || 3000, 2000),
+                accountId,
             });
 
             allResults.push(...result.results);
@@ -371,12 +393,12 @@ export const zaloController = {
         const { zaloAccountRepo } = await import('./repos/zalo-account.repo');
         const accounts = await zaloAccountRepo.findByWorkspaceId(workspaceId);
         const { isZaloSessionConnected } = await import('../../infra/zaloService');
-        const connected = accounts.find((a: any) => isZaloSessionConnected((a._id as unknown as string).toString()));
+        const connected = accounts.find((account) => isZaloSessionConnected(account.id));
         if (!connected) {
             res.status(400).json({ success: false, error: { message: 'Không có tài khoản Zalo nào đang kết nối' } });
             return;
         }
-        const accountId = (connected._id as unknown as string).toString();
+        const accountId = connected.id;
         await zaloService.backfillAvatars(workspaceId, accountId);
         res.status(200).json({ success: true, message: 'Đã cập nhật avatar cho các cuộc hội thoại' });
     }),

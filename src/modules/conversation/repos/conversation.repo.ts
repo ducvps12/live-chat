@@ -13,6 +13,7 @@ export const conversationRepo = {
         channel?: string;
         assignedTo?: string;
         metadata?: any;
+        lastMessageAt?: Date;
     }): Promise<Conversation> {
         return prisma.conversation.create({ data: data as any });
     },
@@ -37,8 +38,9 @@ export const conversationRepo = {
 
     async findByVisitor(visitorId: string, widgetId: string) {
         return prisma.conversation.findMany({
-            where: { visitorId, widgetId },
+            where: { visitorId, widgetId, channel: { in: ['widget', 'website'] } },
             orderBy: { updatedAt: 'desc' },
+            take: 50,
         });
     },
 

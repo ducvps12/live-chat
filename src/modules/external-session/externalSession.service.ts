@@ -24,7 +24,7 @@ export const externalSessionService = {
             provider: 'zalo',
             label,
             status: 'pending_login',
-            createdBy: userId as any,
+            createdById: userId,
             browserProfileId,
             proxyConfig,
         });
@@ -57,10 +57,9 @@ export const externalSessionService = {
 
         // Enrich with browser alive status
         return sessions.map(s => {
-            const doc = s.toObject();
             return {
-                ...doc,
-                browserAlive: browserPool.isAlive(s._id.toString()),
+                ...s,
+                browserAlive: browserPool.isAlive(s.id.toString()),
             };
         });
     },
@@ -72,7 +71,7 @@ export const externalSessionService = {
         const session = await externalSessionRepo.findById(sessionId);
         if (!session) throw new AppError('Phiên không tồn tại', 404, 'SESSION_NOT_FOUND');
         return {
-            ...session.toObject(),
+            ...session,
             browserAlive: browserPool.isAlive(sessionId),
         };
     },

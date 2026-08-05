@@ -36,6 +36,7 @@ model User {
 
   sessions            Session[]
   workspaceMembers    WorkspaceMember[]
+  workspaceInvitations WorkspaceInvitation[]
   externalSessions    ExternalSession[]   @relation("CreatedBy")
   controlledSessions  ExternalSession[]   @relation("ControlledBy")
   auditLogs           SessionAuditLog[]
@@ -48,6 +49,9 @@ model User {
   emailAccounts       EmailAccount[]
   distributionRules   DistributionRule[]
   campaigns           Campaign[]          @relation("CampaignCreator")
+  apiProjects         ApiProject[]
+  automationWorkflows AutomationWorkflow[]
+  signalMonitors      SignalMonitor[]
 
   @@index([role])
   @@index([isActive])
@@ -91,6 +95,7 @@ model Workspace {
   updatedAt DateTime  @updatedAt
 
   members          WorkspaceMember[]
+  invitations      WorkspaceInvitation[]
   widgets          Widget[]
   conversations    Conversation[]
   visitors         Visitor[]
@@ -101,6 +106,8 @@ model Workspace {
   externalSessions ExternalSession[]
   knowledgeEntries KnowledgeEntry[]
   campaigns        Campaign[]
+  campaignRecipients CampaignRecipient[]
+  emailSuppressions EmailSuppression[]
   chatbots         AIBot[]
   macros           Macro[]
   leads            Lead[]
@@ -115,6 +122,11 @@ model Workspace {
   businessHours    BusinessHours?
   emailAccounts    EmailAccount[]
   auditLogs        SessionAuditLog[]
+  apiProjects      ApiProject[]
+  automationWorkflows AutomationWorkflow[]
+  signalMonitors   SignalMonitor[]
+  signalSnapshots  SignalSnapshot[]
+  signalAlertSetting SignalAlertSetting?
 
   @@index([ownerId])
   @@index([isActive, createdAt])
@@ -133,6 +145,192 @@ model WorkspaceMember {
   @@unique([workspaceId, userId])
   @@index([userId])
   @@index([userId, workspaceId])
+}
+
+// Workspace-scoped website change monitoring. Secrets live only in the
+// alert setting and are encrypted by the application before persistence.
+model SignalMonitor {
+  id                String    @id @default(cuid())
+  workspaceId       String
+  createdById       String?
+  name              String
+  url               String    @db.Text
+  intervalMinutes   Int       @default(360)
+  isActive           Boolean   @default(true)
+  status             String    @default("pending")
+  lastCheckedAt      DateTime?
+  nextCheckAt        DateTime?
+  lastChangedAt      DateTime?
+  lastContentHash    String    @default("")
+  lastHttpStatus     Int?
+  lastError          String?   @db.VarChar(500)
+  consecutiveErrors Int       @default(0)
+  notifyTelegram    Boolean   @default(true)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  workspace         Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy          User?     @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  snapshots          SignalSnapshot[]
+
+  @@index([workspaceId, isActive])
+  @@index([isActive, nextCheckAt])
+  @@index([createdById])
+}
+
+model SignalSnapshot {
+  id          String        @id @default(cuid())
+  monitorId   String
+  workspaceId String
+  contentHash String
+  title       String        @default("")
+  excerpt     String?       @db.Text
+  diffSummary String?       @db.Text
+  changed     Boolean       @default(false)
+  httpStatus  Int?
+  createdAt   DateTime      @default(now())
+
+  monitor     SignalMonitor @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([monitorId, createdAt])
+  @@index([workspaceId, createdAt])
+}
+
+model SignalAlertSetting {
+  id                        String    @id @default(cuid())
+  workspaceId               String    @unique
+  telegramEnabled           Boolean   @default(false)
+  telegramBotTokenEncrypted String?   @db.Text
+  telegramChatId            String    @default("")
+  notifyOnChange            Boolean   @default(true)
+  notifyOnError             Boolean   @default(true)
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
+
+  workspace                 Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
+
+// Public AI API is deliberately isolated from the internal gateway token.
+// A workspace owns projects; every external key belongs to exactly one project
+// and is stored only as a SHA-256 hash.
+model ApiProject {
+  id                    String   @id @default(cuid())
+  workspaceId           String
+  createdById           String
+  name                  String
+  isActive              Boolean  @default(true)
+  monthlyRequestLimit   Int      @default(100)
+  rateLimitPerMinute    Int      @default(10)
+  concurrencyLimit      Int      @default(1)
+  allowedModels         Json     @default("[\"qwen2.5:7b\",\"qwen2.5:14b\"]")
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  workspace             Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy             User      @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  keys                  ApiKey[]
+  usage                 ApiUsage[]
+
+  @@index([workspaceId, isActive])
+  @@index([createdById])
+}
+
+model ApiKey {
+  id          String   @id @default(cuid())
+  projectId   String
+  name        String
+  prefix      String
+  secretHash  String   @unique
+  scopes      Json     @default("[\"chat:generate\"]")
+  isActive    Boolean  @default(true)
+  lastUsedAt  DateTime?
+  expiresAt   DateTime?
+  createdAt   DateTime @default(now())
+  revokedAt   DateTime?
+
+  project     ApiProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, isActive])
+  @@index([prefix])
+}
+
+model ApiUsage {
+  id          String   @id @default(cuid())
+  projectId   String
+  periodKey   String   // YYYY-MM (UTC)
+  requestCount Int     @default(0)
+  inputChars  Int      @default(0)
+  outputChars Int      @default(0)
+  updatedAt   DateTime @updatedAt
+
+  project     ApiProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, periodKey])
+  @@index([periodKey])
+}
+
+// Workflow definitions are deliberately declarative. Execution is only enabled
+// for the allow-listed actions and approval modes exposed by the runtime.
+model AutomationWorkflow {
+  id              String   @id @default(cuid())
+  workspaceId     String
+  createdById     String
+  name            String
+  isActive        Boolean  @default(false)
+  triggerType     String   @default("conversation_created")
+  actionType      String   @default("draft_reply")
+  approvalMode    String   @default("required") // required | automatic_safe
+  config          Json     @default("{}")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy       User      @relation(fields: [createdById], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, isActive])
+  @@index([createdById])
+}
+
+// Audit rows make every automation decision observable. They intentionally do
+// not model a relation to Conversation so conversation retention/deletion does
+// not block operational audit history.
+model AutomationRun {
+  id             String   @id @default(cuid())
+  workflowId     String
+  workspaceId    String
+  eventId        String
+  conversationId String?
+  actionType     String
+  status         String   @default("queued") // completed | needs_review | skipped | failed
+  summary        String   @default("") @db.VarChar(500)
+  output         Json     @default("{}")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([workflowId, eventId])
+  @@index([workspaceId, createdAt])
+  @@index([conversationId, createdAt])
+}
+
+model WorkspaceInvitation {
+  id          String    @id @default(cuid())
+  workspaceId String
+  email       String
+  role        String    @default("agent") // admin | agent | member
+  tokenHash   String    @unique
+  invitedById String?
+  acceptedAt  DateTime?
+  expiresAt   DateTime
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invitedBy   User?     @relation(fields: [invitedById], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, email])
+  @@index([email, acceptedAt])
+  @@index([expiresAt])
 }
 
 model Widget {
@@ -470,8 +668,13 @@ model Campaign {
   id               String    @id @default(cuid())
   workspaceId      String
   name             String
+  channel          String    @default("zalo") // zalo | telegram | email
   status           String    @default("draft") // draft | scheduled | running | paused | completed | failed
   messages         Json      @default("[]") // string[]
+  subject          String    @default("") @db.VarChar(240)
+  emailHtml        String?   @db.LongText
+  emailText        String?   @db.LongText
+  emailAccountId   String?
   audience         Json      @default("{}") // ICampaignAudience
   schedule         Json      @default("{}") // ICampaignSchedule
   antiSpam         Json      @default("{\"delayBetweenMs\":8000,\"maxPerHour\":30,\"randomizeDelay\":true}")
@@ -486,8 +689,58 @@ model Campaign {
 
   workspace        Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   createdBy        User?     @relation("CampaignCreator", fields: [createdById], references: [id])
+  emailAccount     EmailAccount? @relation(fields: [emailAccountId], references: [id], onDelete: SetNull)
+  recipients       CampaignRecipient[]
 
   @@index([workspaceId, status, createdAt])
+  @@index([workspaceId, channel, status])
+  @@index([emailAccountId])
+}
+
+model CampaignRecipient {
+  id                String    @id @default(cuid())
+  campaignId        String
+  workspaceId       String
+  leadId             String?
+  channel            String
+  recipient          String    @db.VarChar(320)
+  normalizedRecipient String   @db.VarChar(320)
+  displayName        String    @default("") @db.VarChar(120)
+  status             String    @default("pending") // pending | sending | sent | failed | suppressed | unsubscribed
+  attemptCount       Int       @default(0)
+  maxAttempts        Int       @default(3)
+  idempotencyKey     String    @unique @db.VarChar(64)
+  unsubscribeToken   String?   @unique @db.VarChar(64)
+  providerMessageId  String?
+  lastError          String?   @db.Text
+  nextAttemptAt      DateTime?
+  sentAt             DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  campaign           Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  workspace          Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  lead               Lead?     @relation(fields: [leadId], references: [id], onDelete: SetNull)
+
+  @@unique([campaignId, normalizedRecipient])
+  @@index([campaignId, status, nextAttemptAt])
+  @@index([workspaceId, normalizedRecipient])
+  @@index([leadId])
+}
+
+model EmailSuppression {
+  id               String    @id @default(cuid())
+  workspaceId      String
+  email            String    @db.VarChar(320)
+  reason           String    @default("unsubscribed") // unsubscribed | rejected | manual
+  sourceCampaignId String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  workspace        Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, email])
+  @@index([workspaceId, reason])
 }
 
 // ═══════════════════════════════════════════════
@@ -512,6 +765,7 @@ model AIBot {
   scenarios          Json     @default("[]") // IScenario[]
   quickReplies       Json     @default("[]") // IQuickReply[]
   followUp           Json     @default("{\"enabled\":false,\"delaySeconds\":30,\"message\":\"\"}")
+  personaConfig      Json?    // BotPersonaConfig: voice, examples, identity policy, pacing and typing UX
   isActive           Boolean  @default(false)
   isDraft            Boolean  @default(true)
   stats              Json     @default("{\"totalConversations\":0,\"totalReplies\":0,\"leadsCollected\":0}")
@@ -563,6 +817,11 @@ model Lead {
   name              String
   phone             String    @default("")
   email             String    @default("")
+  widgetVisitorId   String?
+  marketingConsent  Boolean   @default(false)
+  consentAt         DateTime?
+  consentSource     String?
+  metadata          Json      @default("{}")
   avatar            String    @default("")
   stage             String    @default("mới") // mới | tiềm_năng | đang_tư_vấn | chốt_đơn | khách_hàng | từ_chối
   source            String    @default("manual") // zalo | facebook | widget | manual
@@ -579,11 +838,14 @@ model Lead {
 
   workspace         Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   assignedUser      User?     @relation("AssignedLeads", fields: [assignedTo], references: [id])
+  campaignRecipients CampaignRecipient[]
 
+  @@unique([workspaceId, widgetVisitorId])
   @@index([workspaceId, stage])
   @@index([workspaceId, source])
   @@index([workspaceId, createdAt])
   @@index([workspaceId, zaloUserId])
+  @@index([workspaceId, marketingConsent, email])
 }
 
 // ═══════════════════════════════════════════════
@@ -745,6 +1007,7 @@ model EmailAccount {
 
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   createdBy   User      @relation(fields: [createdById], references: [id])
+  campaigns   Campaign[]
 
   @@unique([workspaceId, email])
 }

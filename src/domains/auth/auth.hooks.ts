@@ -31,8 +31,11 @@ export const useLogout = () => {
     const queryClient = useQueryClient();
     return useMutation({
         mutationFn: () => authApi.logout(),
-        onSuccess: () => {
-            localStorage.removeItem('nemark_token');
+        onSettled: () => {
+            if (typeof window !== 'undefined') {
+                localStorage.removeItem('nemark_token');
+                sessionStorage.removeItem('nemark_token');
+            }
             queryClient.removeQueries({ queryKey: authKeys.all });
         }
     });

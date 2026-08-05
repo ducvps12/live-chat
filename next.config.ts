@@ -6,7 +6,39 @@ const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: true,
   },
+  distDir: process.env.NEXT_DIST_DIR || ".next",
+  turbopack: {
+    root: __dirname,
+  },
+  async headers() {
+    return [
+      {
+        source: '/app.css',
+        headers: [
+          {
+            key: 'Cache-Control',
+            value: 'public, max-age=0, must-revalidate',
+          },
+        ],
+      },
+    ];
+  },
+  async redirects() {
+    return [
+      {
+        source: '/workspace/:workspaceId/remote-session',
+        destination: '/workspace/:workspaceId/inbox?channel=zalo',
+        permanent: false,
+      },
+      {
+        source: '/workspace/:workspaceId/email',
+        destination: '/workspace/:workspaceId/settings?tab=email',
+        permanent: false,
+      },
+    ];
+  },
   async rewrites() {
+    if (process.env.NODE_ENV === 'production') return [];
     return [
       {
         source: '/api/:path*',

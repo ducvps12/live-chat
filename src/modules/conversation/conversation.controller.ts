@@ -18,22 +18,26 @@ export const conversationController = {
     }),
 
     getMessages: asyncHandler(async (req: Request, res: Response) => {
-        const { page, limit } = req.query as any;
-        const result = await conversationService.getMessages(
+        const { page, limit, visitorId } = req.query as any;
+        await conversationService.assertVisitorAccess(req.params.conversationId as string, visitorId);
+        const safePage = Math.max(1, Number(page) || 1);
+        const safeLimit = Math.min(100, Math.max(1, Number(limit) || 50));
+        const result = await conversationService.getPublicMessages(
             req.params.conversationId as string,
-            { page: Number(page) || 1, limit: Number(limit) || 50 }
+            { page: safePage, limit: safeLimit }
         );
         res.status(200).json({ success: true, data: result });
     }),
 
     // Reconnect sync: get messages since a timestamp
     syncMessages: asyncHandler(async (req: Request, res: Response) => {
-        const { since } = req.query as any;
+        const { since, visitorId } = req.query as any;
         if (!since) {
             res.status(400).json({ success: false, error: 'Missing since parameter' });
             return;
         }
-        const messages = await conversationService.getMessagesSince(
+        await conversationService.assertVisitorAccess(req.params.conversationId as string, visitorId);
+        const messages = await conversationService.getPublicMessagesSince(
             req.params.conversationId as string, since
         );
         res.status(200).json({ success: true, data: messages });
@@ -41,6 +45,7 @@ export const conversationController = {
 
     sendMessage: asyncHandler(async (req: Request, res: Response) => {
         const { content, visitorId, type, attachments, clientMessageId, replyTo } = (req as any).validated.body;
+        await conversationService.assertVisitorAccess(req.params.conversationId as string, visitorId);
         const msg = await conversationService.addMessage(
             req.params.conversationId as string,
             { type: 'visitor', id: visitorId, name: '' },
@@ -98,14 +103,66 @@ export const conversationController = {
 
     updateConversationMetadata: asyncHandler(async (req: Request, res: Response) => {
         const convId = req.params.conversationId as string;
-        const { leadStage, isStarred } = req.body;
+        if (Object.prototype.hasOwnProperty.call(req.body, 'autoReplyEnabled')) {
+            if (typeof req.body.autoReplyEnabled !== 'boolean') {
+                throw new (require('../../middlewares/errorHandler').AppError)(
+                    'autoReplyEnabled phải là boolean',
+                    400,
+                    'VALIDATION_ERROR',
+                );
+            }
+            const updated = await conversationService.setAutoReplyMode(
+                convId,
+                req.body.autoReplyEnabled,
+                { id: (req as any).user?.id, name: (req as any).user?.name },
+                req.params.workspaceId as string,
+            );
+            res.status(200).json({ success: true, data: updated });
+            return;
+        }
+
         const conv = await prisma.conversation.findUnique({ where: { id: convId } });
         if (!conv) {
             throw new (require('../../middlewares/errorHandler').AppError)('Conversation not found', 404, 'NOT_FOUND');
         }
-        const metadata = (conv.metadata as any) || {};
-        if (leadStage !== undefined) metadata.leadStage = leadStage;
-        if (isStarred !== undefined) metadata.isStarred = isStarred;
+        const metadata = { ...((conv.metadata as any) || {}) };
+        const allowedMetadataKeys = [
+            'leadStage',
+            'isStarred',
+            'primaryIssue',
+            'customerGoal',
+            'nextAction',
+            'issuePriority',
+            'autoReplyEnabled',
+            'humanTakeover',
+            'aiPaused',
+            'botPaused',
+            'autoReplyDisabled',
+            'aiMode',
+        ] as const;
+
+        for (const key of allowedMetadataKeys) {
+            if (Object.prototype.hasOwnProperty.call(req.body, key)) {
+                metadata[key] = req.body[key];
+            }
+        }
+
+        if (req.body.autoReplyEnabled === true) {
+            metadata.autoReplyEnabled = true;
+            metadata.humanTakeover = false;
+            metadata.aiPaused = false;
+            metadata.botPaused = false;
+            metadata.autoReplyDisabled = false;
+            metadata.aiMode = 'auto';
+            metadata.autoReplyResumedAt = new Date().toISOString();
+        } else if (req.body.autoReplyEnabled === false) {
+            metadata.autoReplyEnabled = false;
+            metadata.humanTakeover = true;
+            metadata.aiPaused = true;
+            metadata.autoReplyDisabled = true;
+            metadata.aiMode = 'manual';
+            metadata.autoReplyPausedAt = new Date().toISOString();
+        }
         const updated = await prisma.conversation.update({
             where: { id: convId },
             data: { metadata },
@@ -177,17 +234,19 @@ export const conversationController = {
         // ── Zalo Integration: Push message to Zalo if applicable ──
         const convMetadata = (conv?.metadata as any) || {};
         if (conv?.channel === 'zalo') {
-            const zaloUserId = convMetadata.zaloUserId;
-            if (zaloUserId) {
+            const zaloThreadId = convMetadata.zaloUserId || String(conv.visitorId || '').replace(/^zalo_/, '');
+            const accountId = convMetadata.accountId;
+            if (zaloThreadId) {
                 try {
                     // Lazy load to avoid circular dependency if any
                     const { zaloService } = require('../zalo/zalo.service'); 
                     await zaloService.sendMessage(
                         conv.workspaceId,
-                        zaloUserId,
+                        zaloThreadId,
                         content || '',
                         type || 'text',
-                        attachments?.[0]?.data || undefined 
+                        attachments?.[0]?.data || undefined,
+                        accountId
                     );
                 } catch (e) {
                     console.error('[ConversationController] Failed to send Zalo message:', e);
@@ -504,10 +563,13 @@ export const conversationController = {
 
     resetMessages: asyncHandler(async (req: Request, res: Response) => {
         const workspaceId = req.params.workspaceId as string;
-        const result = await conversationService.resetWorkspaceMessages(workspaceId);
+        const deleteConversations = req.query.deleteConversations === 'true';
+        const result = await conversationService.resetWorkspaceMessages(workspaceId, { deleteConversations });
         res.status(200).json({
             success: true,
-            message: `Đã xóa ${result.deletedMessages} tin nhắn, ${result.deletedZaloMessages} tin Zalo, reset ${result.resetConversations} cuộc hội thoại.`,
+            message: deleteConversations
+                ? `Đã xóa ${result.deletedConversations} cuộc hội thoại và toàn bộ tin nhắn liên quan.`
+                : `Đã xóa ${result.deletedMessages} tin nhắn, ${result.deletedZaloMessages} tin Zalo, reset ${result.resetConversations} cuộc hội thoại.`,
             data: result,
         });
     }),

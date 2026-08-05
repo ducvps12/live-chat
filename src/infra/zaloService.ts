@@ -44,6 +44,10 @@ export interface StoredCredentials {
     lastUsedAt: string;
 }
 
+export interface ZaloTransportOptions {
+    agent?: any;
+}
+
 export interface ZaloUndoEvent {
     msgId: string;
     cliMsgId: string;
@@ -252,6 +256,13 @@ export interface ZaloConversationItem {
 
 // ── Stores ──
 const sessions = new Map<string, ZaloSession>();
+const sessionTransports = new Map<string, ZaloTransportOptions>();
+
+export function clearZaloSessionTransport(sessionId: string): void {
+    const transport = sessionTransports.get(sessionId);
+    try { transport?.agent?.destroy?.(); } catch { /* best effort */ }
+    sessionTransports.delete(sessionId);
+}
 const messageCache = new Map<string, ZaloIncomingMessage[]>();
 // Track recent conversation activity for sorting (like phone app)
 const recentConvActivity = new Map<string, { threadId: string; lastMsgAt: number; lastMsg: string; senderName: string }>();
@@ -465,8 +476,10 @@ export async function createZaloSession(
     onError: (error: string) => void,
     onUndo?: (undoEvent: ZaloUndoEvent) => void,
     onReaction?: (reactionEvent: ZaloReactionEvent) => void,
+    transport?: ZaloTransportOptions,
 ): Promise<void> {
     try {
+        if (transport) sessionTransports.set(sessionId, transport);
         if (sessions.has(sessionId)) {
             await destroyZaloSession(sessionId);
         }
@@ -477,14 +490,14 @@ export async function createZaloSession(
         const zalo = new Zalo({
             logging: false,
             selfListen: true, // Capture self-sent messages (from Zalo app) — webSentMsgIds dedup handles web-sent
+            ...(transport?.agent ? { agent: transport.agent } : {}),
             imageMetadataGetter: async (filePath: string) => {
                 const data = fs.readFileSync(filePath);
-                // Simple PNG/JPEG dimension parser (no sharp dependency)
                 let width = 0, height = 0;
-                if (data[0] === 0x89 && data[1] === 0x50) { // PNG
+                if (data[0] === 0x89 && data[1] === 0x50) {
                     width = data.readUInt32BE(16);
                     height = data.readUInt32BE(20);
-                } else if (data[0] === 0xFF && data[1] === 0xD8) { // JPEG
+                } else if (data[0] === 0xFF && data[1] === 0xD8) {
                     let offset = 2;
                     while (offset < data.length) {
                         if (data[offset] !== 0xFF) break;
@@ -615,7 +628,10 @@ export async function restoreZaloSession(
     onError: (error: string) => void,
     onUndo?: (undoEvent: ZaloUndoEvent) => void,
     onReaction?: (reactionEvent: ZaloReactionEvent) => void,
+    transport?: ZaloTransportOptions,
 ): Promise<boolean> {
+    if (transport) sessionTransports.set(sessionId, transport);
+    const activeTransport = transport || sessionTransports.get(sessionId);
     const creds = readCredentials(sessionId);
     loadActivityFromDisk(sessionId);
     if (!creds) {
@@ -640,6 +656,7 @@ export async function restoreZaloSession(
         const zalo = new Zalo({
             logging: false,
             selfListen: true, // Capture self-sent messages (from Zalo app) — webSentMsgIds dedup handles web-sent
+            ...(activeTransport?.agent ? { agent: activeTransport.agent } : {}),
             imageMetadataGetter: async (filePath: string) => {
                 const data = fs.readFileSync(filePath);
                 let width = 0, height = 0;
@@ -695,15 +712,15 @@ export async function restoreZaloSession(
 
     } catch (err: any) {
         console.error(`[ZaloService] Session ${sessionId} restore failed:`, err);
-        // Only clear credentials if the error indicates they are truly invalid
-        // (auth errors, expired tokens). Don't clear on network/timeout errors.
         const errMsg = (err.message || '').toLowerCase();
-        const isAuthError = errMsg.includes('invalid') || errMsg.includes('expired')
-            || errMsg.includes('unauthorized') || errMsg.includes('permission')
-            || errMsg.includes('access denied') || errMsg.includes('login')
-            || errMsg.includes('credential') || errMsg.includes('token')
-            || errMsg.includes('đăng nhập') || errMsg.includes('thất bại')
-            || errMsg.includes('hết hạn') || errMsg.includes('bị khoá');
+        const isAuthError = errMsg.includes('invalid_session')
+            || errMsg.includes('session expired')
+            || errMsg.includes('hết hạn phiên')
+            || errMsg.includes('unauthorized')
+            || errMsg.includes('logged_out')
+            || errMsg.includes('đã đăng xuất')
+            || errMsg.includes('tài khoản bị khóa')
+            || errMsg.includes('account_locked');
         if (isAuthError) {
             clearCredentials(sessionId);
             console.warn(`[ZaloService] Credentials cleared for ${sessionId} (auth error: ${errMsg})`);
@@ -725,34 +742,25 @@ function startMessageListener(sessionId: string): void {
 
     try {
         session.lastWatchdogTickAt = Date.now();
-        // Reset reconnect counter on successful start
         reconnectAttempts.set(sessionId, 0);
 
         const onMessage = async (message: any) => {
             try {
-                session.lastWatchdogTickAt = Date.now(); // only reset on actual message
+                session.lastWatchdogTickAt = Date.now();
                 const rawContent = message.data?.content;
-                const dataMsgType = message.data?.msgType; // Zalo's own msgType field
+                const dataMsgType = message.data?.msgType;
                 const propertyExt = message.data?.propertyExt;
-
-                // Enhanced debug logging for sticker/media detection
-                if (rawContent && typeof rawContent === 'object') {
-                    const keys = Object.keys(rawContent);
-                    console.log(`[ZaloService] RAW MSG type=${dataMsgType}, propertyExt=${JSON.stringify(propertyExt)}, contentKeys=[${keys.join(',')}], content=${JSON.stringify(rawContent).substring(0, 200)}`);
-                } else if (rawContent && typeof rawContent === 'string' && rawContent.startsWith('{')) {
-                    console.log(`[ZaloService] RAW MSG type=${dataMsgType}, propertyExt=${JSON.stringify(propertyExt)}, stringContent=${rawContent.substring(0, 200)}`);
-                }
 
                 const content = normalizeMessageContent(rawContent);
                 const isPlainText = typeof rawContent === 'string' && !rawContent.startsWith('{');
                 const threadType = message.type === ThreadType.User ? 'user' : 'group';
 
-                // Extract image/media URLs from structured content
                 let attachmentUrl = '';
                 let thumbUrl = '';
                 let stickerUrl = '';
                 let msgType: string = isPlainText ? 'text' : 'media';
-                
+
+
                 // ── Sticker detection helper ──
                 const extractStickerInfo = (obj: any): { id: number; cateId: number; type: number } | null => {
                     if (!obj || typeof obj !== 'object') return null;
@@ -1043,7 +1051,6 @@ function cleanupListener(sessionId: string): void {
         clearInterval(session.watchdogTimer);
         session.watchdogTimer = undefined;
     }
-    try { session.api?.listener?.stop(); } catch { /* ignore */ }
     try {
         session.api?.listener?.removeAllListeners?.('message');
         session.api?.listener?.removeAllListeners?.('undo');
@@ -1051,6 +1058,10 @@ function cleanupListener(sessionId: string): void {
         session.api?.listener?.removeAllListeners?.('error');
         session.api?.listener?.removeAllListeners?.('closed');
     } catch { /* ignore */ }
+    // Detach the `closed` handler before stop(); some ZCA transports emit a
+    // normal-closure event synchronously from stop(), which otherwise calls
+    // cleanupListener recursively and schedules duplicate reconnects.
+    try { session.api?.listener?.stop(); } catch { /* ignore */ }
     session.listenerStarted = false;
 }
 
@@ -1103,7 +1114,8 @@ function scheduleReconnect(sessionId: string, reason: string): void {
                 onMessage,
                 onError || ((err) => console.error(`[ZaloService] Reconnected session ${sessionId} error:`, err)),
                 onUndo,
-                onReaction
+                onReaction,
+                sessionTransports.get(sessionId),
             );
 
             if (success) {

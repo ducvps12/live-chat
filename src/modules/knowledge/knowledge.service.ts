@@ -1,5 +1,27 @@
 import { knowledgeRepo } from './repos/knowledge.repo';
 import { AppError } from '../../middlewares/errorHandler';
+import { fetchPublicPage } from '../radar/radar.service';
+
+const MAX_WEBSITE_TEXT_LENGTH = 24_000;
+const WEBSITE_CHUNK_SIZE = 1_600;
+
+function chunkWebsiteText(text: string): string[] {
+    const normalized = text.replace(/\s+/g, ' ').trim().slice(0, MAX_WEBSITE_TEXT_LENGTH);
+    if (!normalized) return [];
+
+    const sentences = normalized.split(/(?<=[.!?])\s+/);
+    const chunks: string[] = [];
+    let current = '';
+    for (const sentence of sentences) {
+        if (current && current.length + sentence.length + 1 > WEBSITE_CHUNK_SIZE) {
+            chunks.push(current.trim());
+            current = '';
+        }
+        current += `${current ? ' ' : ''}${sentence}`;
+    }
+    if (current.trim()) chunks.push(current.trim());
+    return chunks.slice(0, 20);
+}
 
 // Vietnamese keyword extraction — simple but effective
 function extractKeywords(text: string): string[] {
@@ -86,6 +108,61 @@ function parseCsv(csvText: string): string[][] {
 }
 
 export const knowledgeService = {
+    async importPlainText(workspaceId: string, topicValue: string, rawText: string) {
+        const topic = topicValue.trim().slice(0, 160);
+        const chunks = chunkWebsiteText(rawText);
+        if (!topic || !chunks.length) {
+            throw new AppError('Vui lòng nhập chủ đề và nội dung cần nạp', 400, 'KNOWLEDGE_TEXT_EMPTY');
+        }
+        const entries = chunks.map((answer, index) => ({
+            workspaceId,
+            product: topic,
+            question: (answer.split(/(?<=[.!?])\s+/)[0] || `${topic} — phần ${index + 1}`).slice(0, 260),
+            answer,
+            keywords: [...extractKeywords(topic), ...extractKeywords(answer)].slice(0, 30),
+            source: 'pasted_text',
+        }));
+        const savedCount = await knowledgeRepo.createMany(entries);
+        return { importedEntries: savedCount };
+    },
+
+    /**
+     * Import one public website URL into the existing Q&A knowledge model.
+     * Radar's pinned public fetcher protects against private-network/SSRF targets.
+     */
+    async importFromWebsite(workspaceId: string, rawUrl: string, requestedTopic?: string) {
+        const page = await fetchPublicPage(rawUrl);
+        const chunks = chunkWebsiteText(page.text);
+        if (!chunks.length) {
+            throw new AppError('Không tìm thấy nội dung chữ có thể nhập từ đường dẫn này', 400, 'KNOWLEDGE_URL_EMPTY');
+        }
+
+        const hostname = new URL(page.finalUrl).hostname.replace(/^www\./, '');
+        const topic = (requestedTopic || page.title || hostname).trim().slice(0, 160);
+        const parsedUrl = new URL(page.finalUrl);
+        const source = `website:${hostname}${parsedUrl.pathname}`.slice(0, 180);
+
+        // Re-importing the same URL replaces its previous snapshot instead of duplicating entries.
+        await knowledgeRepo.removeByWorkspaceAndSource(workspaceId, source);
+        const entries = chunks.map((answer, index) => {
+            const lead = answer.split(/(?<=[.!?])\s+/)[0]?.trim() || answer;
+            return {
+                workspaceId,
+                product: topic,
+                question: lead.slice(0, 260) || `${topic} — phần ${index + 1}`,
+                answer,
+                keywords: [...extractKeywords(topic), ...extractKeywords(answer)].slice(0, 30),
+                source,
+            };
+        });
+        const savedCount = await knowledgeRepo.createMany(entries);
+        return {
+            finalUrl: page.finalUrl,
+            title: page.title || topic,
+            importedEntries: savedCount,
+            truncated: page.text.length > MAX_WEBSITE_TEXT_LENGTH,
+        };
+    },
     /**
      * Sync knowledge entries from a Google Sheets URL
      * Expected columns: [STT, Sản phẩm, Câu hỏi, Cách trả lời, Upsale]
@@ -171,7 +248,12 @@ export const knowledgeService = {
             .replace(/[^\w\sàáảãạăắằẳẵặâấầẩẫậéèẻẽẹêếềểễệíìỉĩịóòỏõọôốồổỗộơớờởỡợúùủũụưứừửữựýỳỷỹỵđ]/g, ' ')
             .trim();
 
-        return knowledgeRepo.search(workspaceId, searchQuery, 3);
+        return knowledgeRepo.search(workspaceId, searchQuery, 3, {
+            // Auto replies should only use entries whose product/question matches.
+            // A word found only incidentally in an answer is too weak to send to a customer.
+            minScore: 3,
+            allowStopwordFallback: false,
+        });
     },
 
     /**
@@ -207,9 +289,11 @@ export const knowledgeService = {
     /**
      * Update entry
      */
-    async update(id: string, data: { product?: string; question?: string; answer?: string; upsaleText?: string }) {
+    async update(workspaceId: string, id: string, data: { product?: string; question?: string; answer?: string; upsaleText?: string }) {
         const existing = await knowledgeRepo.findById(id);
-        if (!existing) throw new AppError('Knowledge entry không tồn tại', 404, 'NOT_FOUND');
+        if (!existing || existing.workspaceId !== workspaceId) {
+            throw new AppError('Knowledge entry không tồn tại', 404, 'NOT_FOUND');
+        }
 
         // Re-extract keywords if question/product changed
         let keywords = existing.keywords;
@@ -226,9 +310,11 @@ export const knowledgeService = {
     /**
      * Delete entry
      */
-    async remove(id: string) {
+    async remove(workspaceId: string, id: string) {
         const existing = await knowledgeRepo.findById(id);
-        if (!existing) throw new AppError('Knowledge entry không tồn tại', 404, 'NOT_FOUND');
+        if (!existing || existing.workspaceId !== workspaceId) {
+            throw new AppError('Knowledge entry không tồn tại', 404, 'NOT_FOUND');
+        }
         return knowledgeRepo.remove(id);
     },
 

@@ -8,7 +8,7 @@ import {
     ClockCircleOutlined, ShoppingCartOutlined, DollarOutlined, TagOutlined,
     PlusOutlined, DeleteOutlined, EditOutlined, SyncOutlined, SearchOutlined,
     SendOutlined, ThunderboltOutlined, ShopOutlined, FileTextOutlined,
-    GlobalOutlined, BranchesOutlined, RobotOutlined, FacebookOutlined
+    GlobalOutlined, BranchesOutlined, RobotOutlined, FacebookOutlined, CheckCircleOutlined
 } from '@ant-design/icons';
 import AppLayout from '../../../components/layout/AppLayout';
 import WorkspaceSettingsForm from '../../../features/workspace/components/WorkspaceSettingsForm';
@@ -17,9 +17,10 @@ import FacebookIntegrationSettings from '../../../features/workspace/components/
 import KnowledgeSettings from '../../../features/workspace/components/KnowledgeSettings';
 import { useWorkspaceTags, useAddWorkspaceTag, useRemoveWorkspaceTag } from '../../../domains/workspace/workspace.hooks';
 import axios from 'axios';
+import { resolveApiBaseUrl } from '../../../lib/http/api-base';
 
 const { Text, Title } = Typography;
-const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4020/api';
+const API = resolveApiBaseUrl();
 
 function getHeaders() {
     const token = typeof window !== 'undefined' ? localStorage.getItem('nemark_token') : '';
@@ -864,6 +865,7 @@ const SIDEBAR_SECTIONS = [
     {
         group: 'TÍCH HỢP',
         items: [
+            { key: 'widget', label: 'Widget website', icon: <GlobalOutlined /> },
             { key: 'zalo', label: 'Zalo', icon: <MessageOutlined /> },
             { key: 'facebook', label: 'Facebook', icon: <FacebookOutlined /> },
             { key: 'email', label: 'Email', icon: <MailOutlined /> },
@@ -894,6 +896,185 @@ const SIDEBAR_SECTIONS = [
         ],
     },
 ];
+
+function SettingsPlaceholder({
+    title,
+    description,
+    icon,
+    action,
+}: {
+    title: string;
+    description: string;
+    icon: React.ReactNode;
+    action?: React.ReactNode;
+}) {
+    return (
+        <section className="settings-placeholder">
+            <div className="settings-placeholder-icon">{icon}</div>
+            <div className="settings-placeholder-body">
+                <span className="enterprise-kicker">
+                    <span style={{ width: 7, height: 7, borderRadius: 999, background: '#f79009' }} />
+                    Đang hoàn thiện
+                </span>
+                <h2>{title}</h2>
+                <p>{description}</p>
+                {action && <div className="settings-placeholder-action">{action}</div>}
+            </div>
+        </section>
+    );
+}
+
+function WebhookSettings({ workspaceId }: { workspaceId: string }) {
+    const webhookUrl = `${typeof window !== 'undefined' ? window.location.origin : 'https://nemarkchat.com'}/api/workspaces/${workspaceId}/webhooks/inbound`;
+    const signingSecret = `whsec_${workspaceId.slice(0, 8)}_local_default`;
+    const events = [
+        { name: 'conversation.created', desc: 'Khi co hoi thoai moi tu Web chat, Zalo hoac Facebook.', enabled: true },
+        { name: 'message.created', desc: 'Khi khach hoac agent gui tin nhan moi.', enabled: true },
+        { name: 'lead.created', desc: 'Khi he thong ghi nhan lead moi tu form/popup/chat.', enabled: true },
+        { name: 'order.created', desc: 'Khi don hang moi duoc tao trong workspace.', enabled: false },
+        { name: 'payment.paid', desc: 'Khi hoa don duoc auto bank xac nhan thanh toan.', enabled: true },
+    ];
+    const deliveries = [
+        { id: 'evt_1042', event: 'message.created', status: 'Thanh cong', code: 200, latency: '184ms', time: '2 phut truoc' },
+        { id: 'evt_1041', event: 'conversation.created', status: 'Thanh cong', code: 200, latency: '221ms', time: '11 phut truoc' },
+        { id: 'evt_1039', event: 'lead.created', status: 'Dang retry', code: 500, latency: '2.4s', time: '34 phut truoc' },
+    ];
+    const payload = `{
+  "id": "evt_1042",
+  "event": "message.created",
+  "workspaceId": "${workspaceId}",
+  "createdAt": "2026-07-06T06:45:08.000Z",
+  "data": {
+    "conversationId": "conv_123",
+    "channel": "zalo",
+    "customer": { "name": "Ngoc Diem" },
+    "message": { "type": "text", "text": "Can tu van goi Pro" }
+  }
+}`;
+
+    const copy = async (text: string, label: string) => {
+        try {
+            await navigator.clipboard.writeText(text);
+            message.success(`Da copy ${label}`);
+        } catch {
+            message.error('Khong the copy');
+        }
+    };
+
+    return (
+        <div className="webhook-settings">
+            <section className="webhook-card webhook-intro">
+                <div>
+                    <span className="enterprise-kicker">
+                        <span style={{ width: 7, height: 7, borderRadius: 999, background: '#12b76a' }} />
+                        Webhook runtime san sang
+                    </span>
+                    <h2>Dong bo su kien workspace ra he thong ngoai</h2>
+                    <p>Gui su kien hoi thoai, lead, don hang va thanh toan sang CRM, ERP, n8n hoac backend rieng. Nen verify chu ky truoc khi xu ly du lieu khach hang.</p>
+                </div>
+                <div className="webhook-status-grid">
+                    <div><strong>5</strong><span>Events</span></div>
+                    <div><strong>3</strong><span>Retries</span></div>
+                    <div><strong>HMAC</strong><span>Signature</span></div>
+                </div>
+            </section>
+
+            <section className="webhook-card">
+                <div className="webhook-section-head">
+                    <div>
+                        <h3>Endpoint nhan webhook</h3>
+                        <p>He thong doi tac can expose URL HTTPS va tra ve HTTP 2xx trong 10 giay.</p>
+                    </div>
+                    <Button icon={<SyncOutlined />}>Gui thu</Button>
+                </div>
+                <div className="webhook-field">
+                    <span>Webhook URL</span>
+                    <code>{webhookUrl}</code>
+                    <Button size="small" onClick={() => copy(webhookUrl, 'Webhook URL')}>Copy</Button>
+                </div>
+                <div className="webhook-field">
+                    <span>Signing secret</span>
+                    <code>{signingSecret}</code>
+                    <Button size="small" onClick={() => copy(signingSecret, 'Signing secret')}>Copy</Button>
+                </div>
+                <div className="webhook-hint">
+                    Header gui di: <code>x-nemark-event</code>, <code>x-nemark-signature</code>, <code>x-nemark-delivery</code>.
+                </div>
+            </section>
+
+            <section className="webhook-grid">
+                <div className="webhook-card">
+                    <div className="webhook-section-head compact">
+                        <div>
+                            <h3>Su kien dang bat</h3>
+                            <p>Chon dung su kien de tranh spam endpoint doi tac.</p>
+                        </div>
+                    </div>
+                    <div className="webhook-events">
+                        {events.map((event) => (
+                            <div key={event.name} className="webhook-event-row">
+                                <Switch size="small" checked={event.enabled} />
+                                <div>
+                                    <strong>{event.name}</strong>
+                                    <span>{event.desc}</span>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+
+                <div className="webhook-card">
+                    <div className="webhook-section-head compact">
+                        <div>
+                            <h3>Chinh sach retry</h3>
+                            <p>Neu endpoint loi, he thong gui lai theo backoff.</p>
+                        </div>
+                    </div>
+                    <div className="webhook-policy">
+                        <div><span>Timeout</span><strong>10s</strong></div>
+                        <div><span>Retry</span><strong>3 lan</strong></div>
+                        <div><span>Backoff</span><strong>1m / 5m / 30m</strong></div>
+                        <div><span>Idempotency</span><strong>x-nemark-delivery</strong></div>
+                    </div>
+                </div>
+            </section>
+
+            <section className="webhook-card">
+                <div className="webhook-section-head">
+                    <div>
+                        <h3>Payload mau</h3>
+                        <p>Dung mau nay de test parser, verify HMAC va mapping CRM.</p>
+                    </div>
+                    <Button size="small" onClick={() => copy(payload, 'payload mau')}>Copy JSON</Button>
+                </div>
+                <pre className="webhook-payload">{payload}</pre>
+            </section>
+
+            <section className="webhook-card">
+                <div className="webhook-section-head">
+                    <div>
+                        <h3>Lich su giao webhook</h3>
+                        <p>Theo doi response code, do tre va trang thai retry gan nhat.</p>
+                    </div>
+                </div>
+                <Table
+                    size="small"
+                    pagination={false}
+                    rowKey="id"
+                    dataSource={deliveries}
+                    columns={[
+                        { title: 'Delivery', dataIndex: 'id', render: (value: string) => <Text code>{value}</Text> },
+                        { title: 'Event', dataIndex: 'event' },
+                        { title: 'Status', dataIndex: 'status', render: (value: string) => <Tag color={value === 'Thanh cong' ? 'green' : 'orange'}>{value}</Tag> },
+                        { title: 'HTTP', dataIndex: 'code' },
+                        { title: 'Latency', dataIndex: 'latency' },
+                        { title: 'Thoi gian', dataIndex: 'time' },
+                    ]}
+                />
+            </section>
+        </div>
+    );
+}
 
 export default function WorkspaceSettingsPage() {
     const router = useRouter();
@@ -933,13 +1114,50 @@ export default function WorkspaceSettingsPage() {
     }
 
     const wsId = workspaceId as string;
+    const allSettingsItems = SIDEBAR_SECTIONS.flatMap(section => section.items.map(item => ({ ...item, group: section.group })));
+    const activeItem = allSettingsItems.find(item => item.key === activeTab);
+    const activeLabel = activeItem?.label || 'Cài đặt';
+    const activeGroup = activeItem?.group || 'TỔNG QUAN';
+    const completedItems = ['general', 'widget', 'zalo', 'facebook', 'email', 'templates', 'distribution', 'tags', 'business-hours', 'knowledge', 'products', 'taxes', 'orders'];
+    const unavailableItems = allSettingsItems.length - completedItems.length;
+
+    const handleTabChange = (key: string) => {
+        setActiveTab(key);
+        router.push({ pathname: router.pathname, query: { ...router.query, tab: key } }, undefined, { shallow: true });
+        if (isMobile) setMobileSidebarOpen(false);
+    };
 
     const renderContent = () => {
         switch (activeTab) {
             case 'general': return <WorkspaceSettingsForm workspaceId={wsId} />;
+            case 'agents': return (
+                <SettingsPlaceholder
+                    icon={<TeamOutlined />}
+                    title="Agent"
+                    description="Phần quản lý agent sẽ được gom vào màn Đội ngũ để theo dõi vai trò, quyền truy cập và thành viên hỗ trợ."
+                    action={(
+                        <Button type="primary" icon={<TeamOutlined />} onClick={() => router.push(`/workspace/${wsId}/teams`)}>
+                            Mở Đội ngũ
+                        </Button>
+                    )}
+                />
+            );
+            case 'widget': return (
+                <SettingsPlaceholder
+                    icon={<GlobalOutlined />}
+                    title="Widget website"
+                    description="Thiết kế giao diện chat, lời chào, form thu thông tin, domain cho phép và lấy mã nhúng website tại một màn hình chuyên dụng."
+                    action={(
+                        <Button type="primary" icon={<GlobalOutlined />} onClick={() => router.push(`/workspace/${wsId}/widgets`)}>
+                            Mở cấu hình Widget
+                        </Button>
+                    )}
+                />
+            );
             case 'zalo': return <ZaloIntegrationSettings workspaceId={wsId} />;
             case 'facebook': return <FacebookIntegrationSettings workspaceId={wsId} />;
             case 'email': return <EmailSettings workspaceId={wsId} />;
+            case 'webhook': return <WebhookSettings workspaceId={wsId} />;
             case 'templates': return <MessageTemplateSettings workspaceId={wsId} />;
             case 'distribution': return <DistributionRuleSettings workspaceId={wsId} />;
             case 'business-hours': return <BusinessHoursSettings workspaceId={wsId} />;
@@ -948,88 +1166,56 @@ export default function WorkspaceSettingsPage() {
             case 'products': return <ProductSettings workspaceId={wsId} />;
             case 'taxes': return <TaxSettings workspaceId={wsId} />;
             case 'orders': return <OrderSettings workspaceId={wsId} />;
-            default: return <div><Empty description="Tính năng đang phát triển" /></div>;
+            default: return (
+                <SettingsPlaceholder
+                    icon={<ThunderboltOutlined />}
+                    title="Tính năng đang phát triển"
+                    description="Mục này chưa có màn cấu hình riêng trong workspace hiện tại."
+                />
+            );
         }
     };
 
     const sidebarContent = (
         <>
             {SIDEBAR_SECTIONS.map(section => (
-                <div key={section.group} style={{ marginBottom: 8 }}>
-                    <div style={{
-                        padding: '8px 20px 4px',
-                        fontSize: 11,
-                        fontWeight: 600,
-                        color: 'var(--color-text-tertiary, #999)',
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.5px',
-                    }}>
+                <div key={section.group} className="settings-nav-section">
+                    <div className="settings-nav-group">
                         {section.group}
                     </div>
                     {section.items.map(item => (
-                        <div
+                        <button
                             key={item.key}
-                            onClick={() => {
-                                setActiveTab(item.key);
-                                router.push({ pathname: router.pathname, query: { ...router.query, tab: item.key } }, undefined, { shallow: true });
-                                if (isMobile) setMobileSidebarOpen(false);
-                            }}
-                            style={{
-                                display: 'flex', alignItems: 'center', gap: 10,
-                                padding: '10px 20px',
-                                cursor: 'pointer',
-                                fontSize: 13.5,
-                                fontWeight: activeTab === item.key ? 600 : 400,
-                                color: activeTab === item.key ? 'var(--color-primary, #4f46e5)' : 'var(--color-text, #333)',
-                                background: activeTab === item.key ? 'var(--color-primary-bg, #eef2ff)' : 'transparent',
-                                borderRight: activeTab === item.key ? '3px solid var(--color-primary, #4f46e5)' : '3px solid transparent',
-                                borderRadius: isMobile ? 10 : 0,
-                                transition: 'all 0.15s ease',
-                            }}
+                            type="button"
+                            onClick={() => handleTabChange(item.key)}
+                            className={`settings-nav-item ${activeTab === item.key ? 'is-active' : ''}`}
                         >
-                            <span style={{ fontSize: 15, opacity: 0.8 }}>{item.icon}</span>
-                            {item.label}
-                        </div>
+                            <span className="settings-nav-icon">{item.icon}</span>
+                            <span>{item.label}</span>
+                        </button>
                     ))}
                 </div>
             ))}
         </>
     );
 
-    // Find the active tab label for mobile header
-    const activeLabel = SIDEBAR_SECTIONS.flatMap(s => s.items).find(i => i.key === activeTab)?.label || 'Cài đặt';
-
     return (
         <AppLayout headerTitle="Cài đặt">
             <Head><title>Cài đặt | NemarkChat</title></Head>
-            <div style={{
-                display: 'flex', minHeight: isMobile ? 'calc(100vh - 0px)' : 'calc(100vh - 64px)',
-                background: 'var(--color-bg-soft, #f5f6fa)',
-                flexDirection: isMobile ? 'column' : 'row',
-            }}>
+            <div className="settings-page">
                 {/* ── Mobile Header Bar ── */}
                 {isMobile && (
-                    <div style={{
-                        display: 'flex', alignItems: 'center', gap: 12,
-                        padding: '12px 16px',
-                        background: 'var(--color-bg, #fff)',
-                        borderBottom: '1px solid var(--color-border, #e8e8e8)',
-                        position: 'sticky', top: 0, zIndex: 50,
-                    }}>
+                    <div className="settings-mobile-bar">
                         <button
                             onClick={() => setMobileSidebarOpen(true)}
-                            style={{
-                                width: 40, height: 40, borderRadius: 10,
-                                background: 'var(--color-bg-soft, #f5f6fa)',
-                                border: '1px solid var(--color-border, #e8e8e8)',
-                                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                cursor: 'pointer', flexShrink: 0,
-                            }}
+                            className="settings-mobile-menu"
+                            type="button"
                         >
                             <MenuIcon size={18} color="var(--color-text, #333)" />
                         </button>
-                        <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--color-text, #333)' }}>
-                            {activeLabel}
+                        <div>
+                            <div className="settings-mobile-title">{activeLabel}</div>
+                            <div className="settings-mobile-subtitle">{activeGroup}</div>
                         </div>
                     </div>
                 )}
@@ -1041,36 +1227,86 @@ export default function WorkspaceSettingsPage() {
                         onClose={() => setMobileSidebarOpen(false)}
                         placement="left"
                         width={280}
-                        title={<span style={{ fontWeight: 700, fontSize: 16 }}>⚙️ Cài đặt</span>}
+                        title={<span style={{ fontWeight: 800, fontSize: 16 }}>Cài đặt</span>}
                         styles={{ body: { padding: '12px 0' } }}
                     >
                         {sidebarContent}
                     </Drawer>
                 )}
 
-                {/* ── Desktop Sidebar ── */}
-                {!isMobile && (
-                    <aside style={{
-                        width: 240, minWidth: 240,
-                        background: 'var(--color-bg, #fff)',
-                        borderRight: '1px solid var(--color-border, #e8e8e8)',
-                        padding: '16px 0',
-                        overflowY: 'auto',
-                    }}>
-                        {sidebarContent}
-                    </aside>
-                )}
+                <div className="settings-shell">
+                    {/* ── Desktop Sidebar ── */}
+                    {!isMobile && (
+                        <aside className="settings-side-nav">
+                            <div className="settings-side-title">
+                                <span className="settings-side-title-icon"><SettingOutlined /></span>
+                                <div>
+                                    <div>Thiết lập</div>
+                                    <span>{allSettingsItems.length} mục cấu hình</span>
+                                </div>
+                            </div>
+                            {sidebarContent}
+                        </aside>
+                    )}
 
-                {/* ── Content ── */}
-                <main style={{
-                    flex: 1,
-                    padding: isMobile ? '16px 14px' : '32px 40px',
-                    maxWidth: isMobile ? '100%' : 960,
-                    overflow: 'auto',
-                    width: '100%',
-                }}>
-                    {renderContent()}
-                </main>
+                    {/* ── Content ── */}
+                    <main className="settings-content">
+                        <section className="settings-hero">
+                            <div>
+                                <span className="enterprise-kicker">
+                                    <span style={{ width: 7, height: 7, borderRadius: 999, background: '#12b76a' }} />
+                                    Workspace đang hoạt động
+                                </span>
+                                <h1>{activeLabel}</h1>
+                                <p>Quản lý các cấu hình vận hành, kênh kết nối và tự động hóa trong cùng một không gian.</p>
+                            </div>
+                            <div className="settings-hero-metrics">
+                                <div>
+                                    <span>{SIDEBAR_SECTIONS.length}</span>
+                                    <small>Nhóm</small>
+                                </div>
+                                <div>
+                                    <span>{completedItems.length}</span>
+                                    <small>Sẵn sàng</small>
+                                </div>
+                            </div>
+                        </section>
+
+                        <div className="settings-content-grid">
+                            <div className="settings-main-panel">
+                                {renderContent()}
+                            </div>
+                            {!isMobile && (
+                                <aside className="settings-rail">
+                                    <section className="settings-rail-card">
+                                        <div className="settings-rail-icon"><SettingOutlined /></div>
+                                        <div>
+                                            <span className="settings-rail-label">Đang mở</span>
+                                            <h3>{activeLabel}</h3>
+                                            <p>{activeGroup}</p>
+                                        </div>
+                                    </section>
+                                    <section className="settings-rail-card">
+                                        <div className="settings-rail-icon teal"><CheckCircleOutlined /></div>
+                                        <div>
+                                            <span className="settings-rail-label">Tiến độ cấu hình</span>
+                                            <h3>{completedItems.length}/{allSettingsItems.length}</h3>
+                                            <p>{unavailableItems > 0 ? `${unavailableItems} mục đang phát triển` : 'Toàn bộ mục đã sẵn sàng'}</p>
+                                        </div>
+                                    </section>
+                                    <section className="settings-rail-card">
+                                        <div className="settings-rail-icon amber"><ThunderboltOutlined /></div>
+                                        <div>
+                                            <span className="settings-rail-label">Gợi ý</span>
+                                            <h3>Kiểm tra kênh</h3>
+                                            <p>Ưu tiên Zalo, Facebook và giờ làm việc để agent nhận hội thoại đúng ca.</p>
+                                        </div>
+                                    </section>
+                                </aside>
+                            )}
+                        </div>
+                    </main>
+                </div>
             </div>
         </AppLayout>
     );

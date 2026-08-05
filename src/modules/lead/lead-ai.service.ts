@@ -1,13 +1,12 @@
 import axios from 'axios';
 import prisma from '../../infra/prisma';
-import { ConversationModel } from '../conversation/repos/conversation.model';
-import { MessageModel } from '../conversation/repos/message.model';
-import mongoose from 'mongoose';
+import { getAIAPIKey, getAIBaseUrl, getAIModel } from '../../config/ai';
+
 
 // ── AI API configuration ──
-const AI_API_URL = process.env.AI_API_URL || 'https://rk674rm.9router.com/v1';
-const AI_API_KEY = process.env.AI_API_KEY || 'sk-9aab752cd2d2aaf7-shwqj4-1ec380e6';
-const AI_MODEL = process.env.AI_MODEL || 'gpt-5';
+const AI_API_URL = getAIBaseUrl();
+const AI_API_KEY = getAIAPIKey();
+const AI_MODEL = getAIModel();
 
 // ── Analysis result interface ──
 export interface AIAnalysisResult {
@@ -94,7 +93,7 @@ async function callAIAnalysis(conversationText: string): Promise<AIAnalysisResul
             {
                 headers: {
                     'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${AI_API_KEY}`,
+                    ...(AI_API_KEY ? { 'Authorization': `Bearer ${AI_API_KEY}` } : {}),
                 },
                 timeout: 60000,
             }
@@ -134,8 +133,10 @@ function formatConversationForAI(messages: any[]): string {
     return messages
         .filter(m => !m.isDeleted && m.content && m.type === 'text')
         .map(m => {
-            const role = m.sender?.type === 'visitor' ? 'Khách' : (m.sender?.type === 'agent' ? 'Nhân viên' : 'Hệ thống');
-            const name = m.sender?.name ? ` (${m.sender.name})` : '';
+            const senderType = m.senderType || m.sender?.type || 'system';
+            const senderName = m.senderName || m.sender?.name || '';
+            const role = senderType === 'visitor' ? 'Khách' : (senderType === 'agent' ? 'Nhân viên' : 'Hệ thống');
+            const name = senderName ? ` (${senderName})` : '';
             return `[${role}${name}]: ${m.content}`;
         })
         .join('\n');
@@ -153,17 +154,20 @@ export const leadAIService = {
     ): Promise<{ analysis: AIAnalysisResult | null; lead: any | null; conversationId: string }> {
         const { autoCreateLead = true } = options || {};
 
-        // 1. Get conversation (Mongoose)
-        const conversation = await ConversationModel.findById(conversationId).lean();
+        // 1. Get conversation (Prisma)
+        const conversation = await prisma.conversation.findUnique({
+            where: { id: conversationId }
+        });
         if (!conversation) {
             throw new Error('Cuộc hội thoại không tồn tại');
         }
 
-        // 2. Get messages (Mongoose)
-        const messages = await MessageModel.find({ conversationId: new mongoose.Types.ObjectId(conversationId) })
-            .sort({ createdAt: 1 })
-            .limit(50)
-            .lean();
+        // 2. Get messages (Prisma)
+        const messages = await prisma.message.findMany({
+            where: { conversationId },
+            orderBy: { createdAt: 'asc' },
+            take: 50
+        });
 
         if (messages.length < 2) {
             console.log(`[LeadAI] Conversation ${conversationId} has too few messages (${messages.length}), skipping`);
@@ -181,15 +185,20 @@ export const leadAIService = {
             return { analysis: null, lead: null, conversationId };
         }
 
-        // 4. Store analysis result in conversation metadata (Mongoose)
-        await ConversationModel.findByIdAndUpdate(conversationId, {
-            $set: {
-                'metadata.aiAnalysis': {
-                    ...analysis,
-                    analyzedAt: new Date(),
-                    messageCount: messages.length,
-                },
-            },
+        // 4. Store analysis result in conversation metadata (Prisma)
+        const currentMetadata = (conversation.metadata as any) || {};
+        await prisma.conversation.update({
+            where: { id: conversationId },
+            data: {
+                metadata: {
+                    ...currentMetadata,
+                    aiAnalysis: {
+                        ...analysis,
+                        analyzedAt: new Date().toISOString(),
+                        messageCount: messages.length,
+                    }
+                }
+            }
         });
 
         // 5. Auto-create/update Lead if enabled (Prisma)
@@ -330,22 +339,22 @@ export const leadAIService = {
         const { limit = 50, forceReanalyze = false } = options || {};
         const cutoffDate = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
-        const filter: any = {
-            workspaceId: new mongoose.Types.ObjectId(workspaceId),
-        };
-
-        if (!forceReanalyze) {
-            filter.$or = [
-                { 'metadata.aiAnalysis': { $exists: false } },
-                { 'metadata.aiAnalysis.analyzedAt': { $lt: cutoffDate } },
-            ];
-        }
-
-        const conversations = await ConversationModel.find(filter)
-            .sort({ lastMessageAt: -1 })
-            .limit(limit)
-            .select('_id visitorId visitorInfo channel metadata')
-            .lean();
+        const candidates = await prisma.conversation.findMany({
+            where: { workspaceId },
+            orderBy: { lastMessageAt: 'desc' },
+            take: forceReanalyze ? limit : Math.max(limit * 3, limit),
+        });
+        const conversations = candidates.filter((conversation) => {
+            if (forceReanalyze) return true;
+            const metadata = conversation.metadata && typeof conversation.metadata === 'object' && !Array.isArray(conversation.metadata)
+                ? conversation.metadata as Record<string, unknown>
+                : {};
+            const analysis = metadata.aiAnalysis && typeof metadata.aiAnalysis === 'object' && !Array.isArray(metadata.aiAnalysis)
+                ? metadata.aiAnalysis as Record<string, unknown>
+                : null;
+            const analyzedAt = analysis && typeof analysis.analyzedAt === 'string' ? new Date(analysis.analyzedAt) : null;
+            return !analyzedAt || analyzedAt < cutoffDate;
+        }).slice(0, limit);
 
         let analyzed = 0;
         let skipped = 0;
@@ -356,14 +365,14 @@ export const leadAIService = {
             try {
                 const result = await this.analyzeConversation(
                     workspaceId,
-                    (conv._id as any).toString(),
+                    conv.id,
                     { autoCreateLead: true }
                 );
 
                 if (result.analysis) {
                     analyzed++;
                     results.push({
-                        conversationId: (conv._id as any).toString(),
+                        conversationId: conv.id,
                         status: 'analyzed',
                         intent: result.analysis.intent,
                         score: result.analysis.score,
@@ -371,7 +380,7 @@ export const leadAIService = {
                 } else {
                     skipped++;
                     results.push({
-                        conversationId: (conv._id as any).toString(),
+                        conversationId: conv.id,
                         status: 'skipped',
                     });
                 }
@@ -381,10 +390,10 @@ export const leadAIService = {
             } catch (err: any) {
                 failed++;
                 results.push({
-                    conversationId: (conv._id as any).toString(),
+                    conversationId: conv.id,
                     status: 'failed',
                 });
-                console.error(`[LeadAI] Failed to analyze conv ${(conv._id as any).toString()}:`, err.message);
+                console.error(`[LeadAI] Failed to analyze conv ${conv.id}:`, err.message);
             }
         }
 
@@ -413,17 +422,19 @@ export const leadAIService = {
 
             if (!phoneMatch && !emailMatch) return;
 
-            const conversation = await ConversationModel.findById(conversationId).lean();
+            const conversation = await prisma.conversation.findUnique({ where: { id: conversationId } });
             if (!conversation) return;
 
-            const channel = (conversation as any).channel || 'widget';
+            const channel = conversation.channel || 'widget';
             let lead = null;
 
             if (channel === 'zalo') {
-                const zaloUserId = (conversation as any).metadata?.zaloUserId || conversation.visitorId.replace('zalo_', '');
+                const metadata = conversation.metadata && typeof conversation.metadata === 'object' && !Array.isArray(conversation.metadata) ? conversation.metadata as Record<string, unknown> : {};
+                const zaloUserId = (typeof metadata.zaloUserId === 'string' && metadata.zaloUserId) || conversation.visitorId.replace('zalo_', '');
                 lead = await prisma.lead.findFirst({ where: { workspaceId, zaloUserId } });
             } else if (channel === 'facebook') {
-                const fbUserId = (conversation as any).metadata?.fbUserId || conversation.visitorId.replace('fb_', '');
+                const metadata = conversation.metadata && typeof conversation.metadata === 'object' && !Array.isArray(conversation.metadata) ? conversation.metadata as Record<string, unknown> : {};
+                const fbUserId = (typeof metadata.fbUserId === 'string' && metadata.fbUserId) || conversation.visitorId.replace('fb_', '');
                 lead = await prisma.lead.findFirst({ where: { workspaceId, fbUserId } });
             }
 
@@ -446,8 +457,9 @@ export const leadAIService = {
      * Get AI analysis for a conversation (from cache/metadata)
      */
     async getAnalysis(conversationId: string): Promise<AIAnalysisResult | null> {
-        const conv = await ConversationModel.findById(conversationId).select('metadata').lean();
-        return (conv as any)?.metadata?.aiAnalysis || null;
+        const conv = await prisma.conversation.findUnique({ where: { id: conversationId }, select: { metadata: true } });
+        const metadata = conv?.metadata && typeof conv.metadata === 'object' && !Array.isArray(conv.metadata) ? conv.metadata as Record<string, unknown> : {};
+        return metadata.aiAnalysis && typeof metadata.aiAnalysis === 'object' ? metadata.aiAnalysis as AIAnalysisResult : null;
     },
 
     /**
@@ -475,13 +487,11 @@ export const leadAIService = {
         const lookupId = lead.zaloUserId || lead.fbUserId || '';
         if (lookupId) {
             const prefix = lead.source === 'facebook' ? 'fb_' : 'zalo_';
-            const conversations = await ConversationModel.find({
-                visitorId: `${prefix}${lookupId}`,
-            })
-                .select('_id status lastMessageAt visitorInfo metadata createdAt')
-                .sort({ lastMessageAt: -1 })
-                .limit(10)
-                .lean();
+            const conversations = await prisma.conversation.findMany({
+                where: { workspaceId, visitorId: `${prefix}${lookupId}` },
+                orderBy: { lastMessageAt: 'desc' },
+                take: 10,
+            });
 
             for (const conv of conversations) {
                 // Add conversation start event
@@ -489,28 +499,25 @@ export const leadAIService = {
                     type: 'conversation',
                     content: `Cuộc hội thoại ${conv.status === 'closed' ? '(đã đóng)' : '(đang mở)'}`,
                     createdAt: conv.createdAt,
-                    conversationId: (conv._id as any).toString(),
+                    conversationId: conv.id,
                     status: conv.status,
                     icon: 'message',
                 });
 
                 // Get last 3 messages from this conversation
-                const messages = await MessageModel.find({
-                    conversationId: conv._id,
-                    isDeleted: { $ne: true },
-                    'sender.type': 'visitor',
-                })
-                    .sort({ createdAt: -1 })
-                    .limit(3)
-                    .lean();
+                const messages = await prisma.message.findMany({
+                    where: { conversationId: conv.id, isDeleted: false, senderType: 'visitor' },
+                    orderBy: { createdAt: 'desc' },
+                    take: 3,
+                });
 
                 messages.reverse().forEach(msg => {
                     timeline.push({
                         type: 'message',
                         content: msg.content?.substring(0, 200) || '[Đính kèm]',
                         createdAt: msg.createdAt,
-                        conversationId: (conv._id as any).toString(),
-                        senderName: msg.sender?.name,
+                        conversationId: conv.id,
+                        senderName: msg.senderName,
                         icon: 'chat',
                     });
                 });
@@ -548,16 +555,15 @@ export const leadAIService = {
             const prefix = lead.source === 'facebook' ? 'fb_' : 'zalo_';
             
             // Count conversations and messages for this lead
-            const conversations = await ConversationModel.find({
-                visitorId: `${prefix}${lookupId}`,
-            }).select('_id lastMessageAt').lean();
+            const conversations = await prisma.conversation.findMany({
+                where: { workspaceId, visitorId: `${prefix}${lookupId}` },
+                select: { id: true, lastMessageAt: true },
+            });
 
             let totalMessages = 0;
             for (const conv of conversations) {
-                const msgCount = await MessageModel.countDocuments({
-                    conversationId: conv._id,
-                    'sender.type': 'visitor',
-                    isDeleted: { $ne: true },
+                const msgCount = await prisma.message.count({
+                    where: { conversationId: conv.id, senderType: 'visitor', isDeleted: false },
                 });
                 totalMessages += msgCount;
             }

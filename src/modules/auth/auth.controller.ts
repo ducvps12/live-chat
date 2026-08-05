@@ -5,6 +5,12 @@ import { sessionRepo } from './repos/session.repo';
 import { userRepo } from './repos/user.repo';
 
 export const authController = {
+    register: asyncHandler(async (req: Request, res: Response) => {
+        const { email, password, name } = (req as any).validated?.body || req.body;
+        const user = await authService.register(email, password, name);
+        res.status(201).json({ success: true, message: 'Đăng ký thành công', data: user });
+    }),
+
     login: asyncHandler(async (req: Request, res: Response) => {
         const { email, password } = (req as any).validated?.body || req.body;
         const ipAddress = req.ip || req.socket.remoteAddress;
@@ -56,7 +62,12 @@ export const authController = {
         if (refreshToken) {
             await authService.logout(refreshToken);
         }
-        res.clearCookie('refreshToken');
+        res.clearCookie('refreshToken', {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'lax',
+            path: '/',
+        });
         res.status(200).json({ success: true, message: 'Đăng xuất thành công' });
     }),
 

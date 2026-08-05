@@ -6,8 +6,12 @@ export const connectDB = async () => {
         await prisma.$connect();
         console.log(`[DB] MySQL Connected via Prisma`);
     } catch (error) {
-        console.error(`[DB] MySQL Connection Error: ${(error as Error).message}`);
-        process.exit(1);
+        const name = error instanceof Error ? error.name : 'database_connection_error';
+        // Do not log driver messages here: connection strings or credentials
+        // can be embedded in provider errors. The bootstrap reports a safe
+        // degraded event and owns the process exit policy.
+        console.error(`[DB] MySQL Connection Error (${name})`);
+        throw error;
     }
 };
 

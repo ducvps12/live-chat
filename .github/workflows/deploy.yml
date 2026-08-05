@@ -1,28 +1,48 @@
-name: Deploy to Production
+name: Deploy NemarkChat to Linux VPS
 
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: nemarkchat-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
   deploy:
-    name: Deploy to Server
+    name: Deploy and verify production
     runs-on: ubuntu-latest
-
+    environment: production
     steps:
-      - name: Checkout code
+      - name: Check out release
         uses: actions/checkout@v4
 
-      - name: Deploy via SSH
+      - name: Validate deployment secrets
         env:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
           SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
-          FB_APP_ID: ${{ secrets.FB_APP_ID }}
-          FB_APP_SECRET: ${{ secrets.FB_APP_SECRET }}
+        shell: bash
         run: |
-          test -n "$FB_APP_ID"
-          test -n "$FB_APP_SECRET"
-          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
-          printf 'FB_APP_ID=%s\nFB_APP_SECRET=%s\nFB_REDIRECT_URI=https://api.nemarkchat.com/api/facebook/callback\n' "$FB_APP_ID" "$FB_APP_SECRET" |
-            sshpass -p "$SERVER_PASSWORD" ssh -o StrictHostKeyChecking=no "$SERVER_USER@$SERVER_HOST" "cd /www/live_chat_nemark && umask 077 && touch .env.production && sed -i '/^FB_APP_ID=/d; /^FB_APP_SECRET=/d; /^FB_REDIRECT_URI=/d' .env.production && cat >> .env.production && sed -i 's/\r$//' deploy.sh && bash deploy.sh"
+          test -n "$SERVER_HOST" || { echo 'Missing SERVER_HOST'; exit 1; }
+          test -n "$SERVER_USER" || { echo 'Missing SERVER_USER'; exit 1; }
+          test -n "$SERVER_PASSWORD" || { echo 'Missing SERVER_PASSWORD'; exit 1; }
+
+      - name: Deploy through SSH
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+          sshpass -p "$SERVER_PASSWORD" ssh \
+            -o StrictHostKeyChecking=accept-new \
+            -o ConnectTimeout=20 \
+            "$SERVER_USER@$SERVER_HOST" \
+            "cd /www/live_chat_nemark && git fetch origin main && git checkout main && git pull --ff-only origin main && sed -i 's/\r$//' deploy.sh && bash deploy.sh"

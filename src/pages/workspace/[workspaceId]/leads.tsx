@@ -54,6 +54,19 @@ interface Lead {
     conversationCount: number;
     zaloUserId?: string;
     fbUserId?: string;
+    widgetVisitorId?: string;
+    marketingConsent?: boolean;
+    consentAt?: string | null;
+    consentSource?: string | null;
+    metadata?: {
+        pageUrl?: string;
+        referrer?: string;
+        utm_source?: string;
+        utm_medium?: string;
+        utm_campaign?: string;
+        latestConversationId?: string;
+        [key: string]: unknown;
+    };
     createdAt: string;
     updatedAt: string;
 }
@@ -308,6 +321,19 @@ export default function LeadsPage() {
 
     const totalLeads = leads.length;
     const conversionRate = totalLeads > 0 ? Math.round(((leadsByStage['khách_hàng']?.length || 0) / totalLeads) * 100) : 0;
+    const scoredLeadCount = leads.filter(lead => lead.score > 0).length;
+    const hotLeadCount = stats?.hotLeads ?? leads.filter(lead => lead.score >= 70).length;
+    const avgLeadScore = stats?.scoring?.avg ?? (scoredLeadCount > 0
+        ? Math.round(leads.reduce((sum, lead) => sum + (lead.score || 0), 0) / scoredLeadCount)
+        : 0);
+    const todayLeadCount = stats?.activity?.today ?? leads.filter(lead => dayjs(lead.createdAt).isSame(dayjs(), 'day')).length;
+    const recentLeadCount = stats?.activity?.last7Days ?? leads.filter(lead => dayjs(lead.createdAt).isAfter(dayjs().subtract(7, 'day'))).length;
+    const stageCounts = STAGES.map(stage => ({
+        ...stage,
+        count: stats?.byStage?.[stage.key] ?? leadsByStage[stage.key]?.length ?? 0,
+    }));
+    const strongestStage = stageCounts.reduce((best, stage) => stage.count > best.count ? stage : best, stageCounts[0]);
+    const activeFilterCount = (search.trim() ? 1 : 0) + (filterSource ? 1 : 0);
 
     if (!ready || !workspaceId) {
         return <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc' }}><Spin size="large" /></div>;
@@ -316,151 +342,87 @@ export default function LeadsPage() {
     return (
         <AppLayout headerTitle="Khách hàng tiềm năng">
             <Head><title>Leads | NemarkChat</title></Head>
-            <div style={{ padding: '20px 24px 64px', maxWidth: 1600, margin: '0 auto', width: '100%' }}>
+            <div className="leads-page-shell">
 
                 {/* ── Hero Summary Section ── */}
-                <div style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-                    gap: 16,
-                    marginBottom: 24,
-                }}>
-                    {/* Total Leads Card */}
-                    <div style={{
-                        background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
-                        borderRadius: 16,
-                        padding: '20px 22px',
-                        color: 'white',
-                        position: 'relative',
-                        overflow: 'hidden',
-                        minHeight: 110,
-                    }}>
-                        <div style={{ position: 'absolute', right: -10, top: -10, width: 80, height: 80, background: 'rgba(255,255,255,0.08)', borderRadius: '50%' }} />
-                        <div style={{ position: 'absolute', right: 30, bottom: -15, width: 50, height: 50, background: 'rgba(255,255,255,0.06)', borderRadius: '50%' }} />
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-                            <Users size={16} style={{ opacity: 0.9 }} />
-                            <span style={{ fontSize: 12, fontWeight: 500, opacity: 0.85, letterSpacing: 0.5 }}>TỔNG LEAD</span>
+                <section className="leads-command">
+                    <div className="leads-command-main">
+                        <div>
+                            <div className="leads-eyebrow">
+                                <Activity size={15} />
+                                Pipeline đang mở
+                            </div>
+                            <h1 className="leads-title">Khách hàng tiềm năng</h1>
+                            <div className="leads-live-meta">
+                                <span>Hôm nay +{todayLeadCount}</span>
+                                <span>{recentLeadCount} lead trong 7 ngày</span>
+                                <span>Avg score {avgLeadScore}</span>
+                            </div>
                         </div>
-                        <div style={{ fontSize: 32, fontWeight: 800, lineHeight: 1, marginBottom: 4 }}>{totalLeads}</div>
-                        <div style={{ fontSize: 11, opacity: 0.7 }}>
-                            {stats?.activity?.today > 0 && <span>+{stats.activity.today} hôm nay · </span>}
-                            {stats?.activity?.last7Days || 0} tuần qua
-                        </div>
-                    </div>
 
-                    {/* Conversion Card */}
-                    <div style={{
-                        background: 'white',
-                        borderRadius: 16,
-                        padding: '20px 22px',
-                        border: '1px solid #e2e8f0',
-                        minHeight: 110,
-                    }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-                            <TrendingUp size={16} color="#10b981" />
-                            <span style={{ fontSize: 12, fontWeight: 500, color: '#64748b', letterSpacing: 0.5 }}>TỶ LỆ CHUYỂN ĐỔI</span>
-                        </div>
-                        <div style={{ fontSize: 32, fontWeight: 800, color: '#0f172a', lineHeight: 1, marginBottom: 8 }}>{conversionRate}%</div>
-                        <Progress percent={conversionRate} strokeColor="#10b981" trailColor="#ecfdf5" showInfo={false} size="small" />
-                    </div>
-
-                    {/* Hot Leads Card */}
-                    <div style={{
-                        background: 'linear-gradient(135deg, #f59e0b 0%, #ef4444 100%)',
-                        borderRadius: 16,
-                        padding: '20px 22px',
-                        color: 'white',
-                        position: 'relative',
-                        overflow: 'hidden',
-                        minHeight: 110,
-                    }}>
-                        <div style={{ position: 'absolute', right: -10, top: -10, width: 70, height: 70, background: 'rgba(255,255,255,0.1)', borderRadius: '50%' }} />
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-                            <Target size={16} style={{ opacity: 0.9 }} />
-                            <span style={{ fontSize: 12, fontWeight: 500, opacity: 0.85, letterSpacing: 0.5 }}>HOT LEADS</span>
-                        </div>
-                        <div style={{ fontSize: 32, fontWeight: 800, lineHeight: 1, marginBottom: 4 }}>{stats?.hotLeads || 0}</div>
-                        <div style={{ fontSize: 11, opacity: 0.7 }}>Score ≥ 70 · Avg: {stats?.scoring?.avg || 0}</div>
-                    </div>
-
-                    {/* Score Distribution Card */}
-                    <div style={{
-                        background: 'white',
-                        borderRadius: 16,
-                        padding: '20px 22px',
-                        border: '1px solid #e2e8f0',
-                        minHeight: 110,
-                    }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-                            <BarChart3 size={16} color="#6366f1" />
-                            <span style={{ fontSize: 12, fontWeight: 500, color: '#64748b', letterSpacing: 0.5 }}>PHÂN BỐ ĐIỂM</span>
-                        </div>
-                        <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end', height: 40, marginBottom: 6 }}>
-                            {[
-                                { label: 'Thấp', count: stats?.scoring?.distribution?.low || 0, color: '#fecaca', textColor: '#991b1b' },
-                                { label: 'TB', count: stats?.scoring?.distribution?.mid || 0, color: '#fde68a', textColor: '#92400e' },
-                                { label: 'Cao', count: stats?.scoring?.distribution?.high || 0, color: '#a7f3d0', textColor: '#166534' },
-                            ].map(b => {
-                                const maxCount = Math.max(b.count, 1);
-                                const totalAll = (stats?.scoring?.distribution?.low || 0) + (stats?.scoring?.distribution?.mid || 0) + (stats?.scoring?.distribution?.high || 0);
-                                const pct = totalAll > 0 ? Math.max(8, (b.count / totalAll) * 100) : 33;
+                        <div className="lead-stage-strip" aria-label="Tổng quan pipeline">
+                            {stageCounts.map(stage => {
+                                const pct = totalLeads > 0 ? Math.round((stage.count / totalLeads) * 100) : 0;
                                 return (
-                                    <div key={b.label} style={{ flex: 1, textAlign: 'center' }}>
-                                        <div style={{
-                                            height: `${pct}%`, minHeight: 8,
-                                            background: b.color, borderRadius: 4,
-                                            marginBottom: 4, transition: 'height 0.3s',
-                                        }} />
-                                        <div style={{ fontSize: 9, color: b.textColor, fontWeight: 600 }}>{b.label} ({b.count})</div>
+                                    <div key={stage.key} className="lead-stage-pill">
+                                        <span className="lead-stage-dot" style={{ background: stage.color }} />
+                                        <span className="lead-stage-name">{stage.label}</span>
+                                        <strong>{stage.count}</strong>
+                                        <div className="lead-stage-track">
+                                            <span style={{ width: `${pct}%`, background: stage.color }} />
+                                        </div>
                                     </div>
                                 );
                             })}
                         </div>
                     </div>
 
-                    {/* Stage Mini-Cards */}
-                    {STAGES.slice(0, 2).map(s => (
-                        <div key={s.key} style={{
-                            background: 'white',
-                            borderRadius: 16,
-                            padding: '20px 22px',
-                            border: '1px solid #e2e8f0',
-                            position: 'relative',
-                            overflow: 'hidden',
-                            transition: 'all 0.2s',
-                            cursor: 'default',
-                            minHeight: 110,
-                        }}>
-                            <div style={{
-                                position: 'absolute', top: 0, left: 0, right: 0, height: 3,
-                                background: s.gradient,
-                            }} />
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-                                <span style={{ fontSize: 14 }}>{s.icon}</span>
-                                <span style={{ fontSize: 12, fontWeight: 500, color: '#64748b', letterSpacing: 0.3 }}>{s.label.toUpperCase()}</span>
+                    <div className="leads-kpi-grid">
+                        <div className="lead-kpi-card lead-kpi-primary">
+                            <div className="lead-kpi-top">
+                                <span><Users size={16} /> Tổng lead</span>
+                                <Badge count={activeFilterCount} size="small" style={{ background: '#14b8a6' }} />
                             </div>
-                            <div style={{ fontSize: 28, fontWeight: 800, color: s.color, lineHeight: 1 }}>
-                                {stats?.byStage?.[s.key] || 0}
-                            </div>
+                            <div className="lead-kpi-value">{totalLeads}</div>
+                            <div className="lead-kpi-note">+{todayLeadCount} hôm nay, {recentLeadCount} tuần này</div>
                         </div>
-                    ))}
-                </div>
+
+                        <div className="lead-kpi-card">
+                            <div className="lead-kpi-top">
+                                <span><TrendingUp size={16} /> Tỷ lệ chốt</span>
+                            </div>
+                            <div className="lead-kpi-value">{conversionRate}%</div>
+                            <Progress percent={conversionRate} strokeColor="#10b981" railColor="#e6f7ef" showInfo={false} size="small" />
+                        </div>
+
+                        <div className="lead-kpi-card">
+                            <div className="lead-kpi-top">
+                                <span><Target size={16} /> Hot leads</span>
+                            </div>
+                            <div className="lead-kpi-value lead-kpi-warm">{hotLeadCount}</div>
+                            <div className="lead-kpi-note">Score ≥ 70 · Avg {avgLeadScore}</div>
+                        </div>
+
+                        <div className="lead-kpi-card">
+                            <div className="lead-kpi-top">
+                                <span><BarChart3 size={16} /> Giai đoạn đông nhất</span>
+                            </div>
+                            <div className="lead-kpi-value" style={{ color: strongestStage?.color }}>{strongestStage?.count || 0}</div>
+                            <div className="lead-kpi-note">{strongestStage?.label || 'Chưa có dữ liệu'}</div>
+                        </div>
+                    </div>
+                </section>
 
                 {/* ── Toolbar ── */}
-                <div style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 12,
-                    marginBottom: 20,
-                    flexWrap: 'wrap',
-                }}>
+                <section className="leads-toolbar">
+                    <div className="leads-filter-row">
                     {/* Search */}
-                    <div style={{ position: 'relative', flex: '1 1 280px', maxWidth: 400 }}>
+                    <div className="lead-search-field">
                         <Search size={16} style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: '#94a3b8', pointerEvents: 'none' }} />
                         <input
                             value={search}
                             onChange={e => setSearch(e.target.value)}
-                            placeholder="Tìm kiếm theo tên, SĐT, email..."
+                            placeholder="Tìm theo tên, SĐT, email..."
                             style={{
                                 width: '100%',
                                 height: 42,
@@ -481,28 +443,22 @@ export default function LeadsPage() {
 
                     {/* Source Filter */}
                     <Select
+                        className="lead-source-select"
                         value={filterSource || undefined}
                         onChange={v => setFilterSource(v || '')}
                         allowClear
-                        placeholder="🔍 Nguồn"
-                        style={{ minWidth: 140, height: 42 }}
+                        placeholder="Nguồn"
+                        style={{ minWidth: 150, height: 40 }}
                         options={[
-                            { value: 'zalo', label: '💬 Zalo' },
-                            { value: 'facebook', label: '📘 Facebook' },
-                            { value: 'widget', label: '🌐 Widget' },
-                            { value: 'manual', label: '✋ Thủ công' },
+                            { value: 'zalo', label: 'Zalo' },
+                            { value: 'facebook', label: 'Facebook' },
+                            { value: 'widget', label: 'Widget' },
+                            { value: 'manual', label: 'Thủ công' },
                         ]}
                     />
 
                     {/* View Toggle */}
-                    <div style={{
-                        display: 'flex',
-                        borderRadius: 10,
-                        overflow: 'hidden',
-                        border: '1.5px solid #e2e8f0',
-                        marginLeft: 'auto',
-                        background: 'white',
-                    }}>
+                    <div className="lead-view-toggle">
                         {[{ v: 'kanban', icon: <LayoutGrid size={15} /> }, { v: 'list', icon: <List size={15} /> }].map(({ v, icon }) => (
                             <button key={v} onClick={() => setView(v as any)} style={{
                                 padding: '8px 14px',
@@ -516,9 +472,11 @@ export default function LeadsPage() {
                             }}>{icon}</button>
                         ))}
                     </div>
+                    </div>
 
+                    <div className="leads-action-row">
                     {/* Import from Group Button */}
-                    <button onClick={async () => {
+                    <button className="lead-action-btn lead-action-ghost" onClick={async () => {
                         setGroupImportOpen(true);
                         setSelectedGroup(null);
                         setGroupMembers([]);
@@ -529,29 +487,13 @@ export default function LeadsPage() {
                             setGroups(res?.data?.items || []);
                         } catch { message.error('Lỗi tải danh sách nhóm Zalo'); }
                         finally { setGroupsLoading(false); }
-                    }} style={{
-                        height: 42,
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: 8,
-                        borderRadius: 12,
-                        padding: '0 18px',
-                        fontSize: 13,
-                        fontWeight: 600,
-                        color: '#6366f1',
-                        background: 'white',
-                        border: '1.5px solid #c7d2fe',
-                        cursor: 'pointer',
-                        transition: 'all 0.2s',
-                    }}
-                    onMouseEnter={e => { (e.currentTarget as any).style.background = '#eef2ff'; (e.currentTarget as any).style.borderColor = '#818cf8'; }}
-                    onMouseLeave={e => { (e.currentTarget as any).style.background = 'white'; (e.currentTarget as any).style.borderColor = '#c7d2fe'; }}
-                    >
+                    }}>
                         <Users size={15} /> Import từ Nhóm
                     </button>
 
                     {/* Bulk Sync All Groups → Leads Button */}
                     <button
+                        className="lead-action-btn lead-action-success"
                         disabled={bulkSyncing}
                         onClick={async () => {
                             if (bulkSyncing) return;
@@ -578,27 +520,6 @@ export default function LeadsPage() {
                                 setBulkSyncing(false);
                             }
                         }}
-                        style={{
-                            height: 42,
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: 8,
-                            borderRadius: 12,
-                            padding: '0 18px',
-                            fontSize: 13,
-                            fontWeight: 600,
-                            color: 'white',
-                            background: bulkSyncing
-                                ? 'linear-gradient(135deg, #94a3b8 0%, #64748b 100%)'
-                                : 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
-                            border: 'none',
-                            cursor: bulkSyncing ? 'not-allowed' : 'pointer',
-                            boxShadow: bulkSyncing ? 'none' : '0 4px 14px rgba(16,185,129,0.3)',
-                            transition: 'all 0.2s',
-                            opacity: bulkSyncing ? 0.8 : 1,
-                        }}
-                        onMouseEnter={e => { if (!bulkSyncing) { (e.currentTarget as any).style.transform = 'translateY(-1px)'; (e.currentTarget as any).style.boxShadow = '0 6px 20px rgba(16,185,129,0.4)'; } }}
-                        onMouseLeave={e => { (e.currentTarget as any).style.transform = 'translateY(0)'; (e.currentTarget as any).style.boxShadow = bulkSyncing ? 'none' : '0 4px 14px rgba(16,185,129,0.3)'; }}
                     >
                         {bulkSyncing ? (
                             <>
@@ -614,6 +535,7 @@ export default function LeadsPage() {
 
                     {/* AI Bulk Analyze Button */}
                     <button
+                        className="lead-action-btn lead-action-ai"
                         disabled={aiAnalyzingBulk}
                         onClick={async () => {
                             if (aiAnalyzingBulk) return;
@@ -630,27 +552,6 @@ export default function LeadsPage() {
                                 setAiAnalyzingBulk(false);
                             }
                         }}
-                        style={{
-                            height: 42,
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: 8,
-                            borderRadius: 12,
-                            padding: '0 18px',
-                            fontSize: 13,
-                            fontWeight: 600,
-                            color: 'white',
-                            background: aiAnalyzingBulk
-                                ? 'linear-gradient(135deg, #94a3b8 0%, #64748b 100%)'
-                                : 'linear-gradient(135deg, #f59e0b 0%, #f97316 100%)',
-                            border: 'none',
-                            cursor: aiAnalyzingBulk ? 'not-allowed' : 'pointer',
-                            boxShadow: aiAnalyzingBulk ? 'none' : '0 4px 14px rgba(245,158,11,0.3)',
-                            transition: 'all 0.2s',
-                            opacity: aiAnalyzingBulk ? 0.8 : 1,
-                        }}
-                        onMouseEnter={e => { if (!aiAnalyzingBulk) { (e.currentTarget as any).style.transform = 'translateY(-1px)'; (e.currentTarget as any).style.boxShadow = '0 6px 20px rgba(245,158,11,0.4)'; } }}
-                        onMouseLeave={e => { (e.currentTarget as any).style.transform = 'translateY(0)'; (e.currentTarget as any).style.boxShadow = aiAnalyzingBulk ? 'none' : '0 4px 14px rgba(245,158,11,0.3)'; }}
                     >
                         {aiAnalyzingBulk ? (
                             <>
@@ -659,13 +560,14 @@ export default function LeadsPage() {
                             </>
                         ) : (
                             <>
-                                <Brain size={15} /> 🤖 AI Phân Tích
+                                <Brain size={15} /> AI Phân Tích
                             </>
                         )}
                     </button>
 
                     {/* Auto-Score Button */}
                     <button
+                        className="lead-action-btn lead-action-ghost"
                         onClick={async () => {
                             try {
                                 message.loading({ content: 'Đang tính điểm lead...', key: 'score' });
@@ -676,64 +578,31 @@ export default function LeadsPage() {
                                 message.error({ content: `Lỗi: ${err?.message || 'Không thể tính điểm'}`, key: 'score' });
                             }
                         }}
-                        style={{
-                            height: 42,
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: 8,
-                            borderRadius: 12,
-                            padding: '0 16px',
-                            fontSize: 13,
-                            fontWeight: 600,
-                            color: '#6366f1',
-                            background: 'white',
-                            border: '1.5px solid #c7d2fe',
-                            cursor: 'pointer',
-                            transition: 'all 0.2s',
-                        }}
-                        onMouseEnter={e => { (e.currentTarget as any).style.background = '#eef2ff'; (e.currentTarget as any).style.borderColor = '#818cf8'; }}
-                        onMouseLeave={e => { (e.currentTarget as any).style.background = 'white'; (e.currentTarget as any).style.borderColor = '#c7d2fe'; }}
                     >
                         <Target size={15} /> Tính điểm
                     </button>
 
                     {/* Add Lead Button */}
-                    <button onClick={() => setCreateModalOpen(true)} style={{
-                        height: 42,
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: 8,
-                        borderRadius: 12,
-                        padding: '0 20px',
-                        fontSize: 13,
-                        fontWeight: 600,
-                        color: 'white',
-                        background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
-                        border: 'none',
-                        cursor: 'pointer',
-                        boxShadow: '0 4px 14px rgba(99,102,241,0.3)',
-                        transition: 'all 0.2s',
-                    }}
-                    onMouseEnter={e => { (e.target as any).style.transform = 'translateY(-1px)'; (e.target as any).style.boxShadow = '0 6px 20px rgba(99,102,241,0.4)'; }}
-                    onMouseLeave={e => { (e.target as any).style.transform = 'translateY(0)'; (e.target as any).style.boxShadow = '0 4px 14px rgba(99,102,241,0.3)'; }}
-                    >
+                    <button className="lead-action-btn lead-action-primary" onClick={() => setCreateModalOpen(true)}>
                         <Plus size={16} /> Thêm Lead
                     </button>
-                </div>
+                    </div>
+                </section>
 
                 {/* ── Content  ── */}
                 {loading ? (
-                    <div style={{ display: 'flex', minHeight: '45vh', alignItems: 'center', justifyContent: 'center' }}>
+                    <div className="leads-loading-state">
                         <Spin size="large" />
                     </div>
                 ) : view === 'kanban' ? (
                     /* ═══ Kanban View ═══ */
-                    <div style={{ display: 'flex', gap: 14, overflowX: 'auto', paddingBottom: 16, minHeight: '60vh' }}>
+                    <div className="lead-board-shell">
                         {STAGES.map(stage => {
                             const stageLeads = leadsByStage[stage.key] || [];
                             return (
                                 <div
                                     key={stage.key}
+                                    className={`lead-column ${dragOverStage === stage.key ? 'is-over' : ''}`}
                                     onDragOver={e => {
                                         e.preventDefault();
                                         e.dataTransfer.dropEffect = 'move';
@@ -754,8 +623,8 @@ export default function LeadsPage() {
                                     }}
                                     style={{
                                         flexShrink: 0,
-                                        width: 280,
-                                        borderRadius: 16,
+                                        width: 292,
+                                        borderRadius: 8,
                                         background: dragOverStage === stage.key ? stage.bgColor : '#fafbfc',
                                         border: dragOverStage === stage.key ? `2px dashed ${stage.color}` : '1px solid #e8ecf0',
                                         display: 'flex',
@@ -764,14 +633,14 @@ export default function LeadsPage() {
                                     }}
                                 >
                                     {/* Column Header */}
-                                    <div style={{
+                                    <div className="lead-column-header" style={{
                                         padding: '14px 16px',
                                         borderBottom: '1px solid #e8ecf0',
                                         display: 'flex',
                                         alignItems: 'center',
                                         gap: 10,
                                         background: 'white',
-                                        borderRadius: '16px 16px 0 0',
+                                        borderRadius: '8px 8px 0 0',
                                     }}>
                                         <div style={{
                                             width: 8, height: 8, borderRadius: '50%',
@@ -792,10 +661,11 @@ export default function LeadsPage() {
                                     </div>
 
                                     {/* Cards */}
-                                    <div style={{ padding: 8, flex: 1, maxHeight: '55vh', overflowY: 'auto' }}>
+                                    <div className="lead-column-body" style={{ padding: 10, flex: 1, maxHeight: '64vh', overflowY: 'auto' }}>
                                         {stageLeads.map((lead, idx) => (
                                             <div
                                                 key={lead._id}
+                                                className={`lead-card ${selectedLeadIds.has(lead._id) ? 'is-selected' : ''}`}
                                                 draggable
                                                 onDragStart={e => {
                                                     e.dataTransfer.setData('text/plain', lead._id);
@@ -814,10 +684,10 @@ export default function LeadsPage() {
                                                 onClick={() => openDetail(lead)}
                                                 style={{
                                                     background: selectedLeadIds.has(lead._id) ? '#eef2ff' : (draggingLeadId === lead._id ? '#f8fafc' : 'white'),
-                                                    borderRadius: 12,
+                                                    borderRadius: 8,
                                                     border: selectedLeadIds.has(lead._id) ? '1.5px solid #818cf8' : '1px solid #eef0f4',
                                                     padding: '14px',
-                                                    marginBottom: 8,
+                                                    marginBottom: 10,
                                                     cursor: 'grab',
                                                     transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
                                                     position: 'relative',
@@ -833,11 +703,15 @@ export default function LeadsPage() {
                                                 onMouseLeave={e => {
                                                     (e.currentTarget as any).style.boxShadow = 'none';
                                                     (e.currentTarget as any).style.transform = 'translateY(0)';
-                                                    (e.currentTarget as any).style.borderColor = '#eef0f4';
+                                                    (e.currentTarget as any).style.borderColor = selectedLeadIds.has(lead._id) ? '#818cf8' : '#eef0f4';
                                                 }}
                                             >
+                                                <span className="lead-card-accent" style={{ background: stage.gradient }} />
                                                 {/* Selection checkbox */}
-                                                <div
+                                                <button
+                                                    type="button"
+                                                    aria-label={selectedLeadIds.has(lead._id) ? 'Bỏ chọn lead' : 'Chọn lead'}
+                                                    className={`lead-card-select ${selectedLeadIds.has(lead._id) ? 'is-active' : ''}`}
                                                     onClick={e => toggleLeadSelection(lead._id, e)}
                                                     style={{
                                                         position: 'absolute', top: 8, right: 8, zIndex: 2,
@@ -851,18 +725,14 @@ export default function LeadsPage() {
                                                     onMouseEnter={e => { (e.currentTarget as HTMLElement).style.opacity = '1'; }}
                                                     onMouseLeave={e => { if (!selectedLeadIds.has(lead._id)) (e.currentTarget as HTMLElement).style.opacity = '0.4'; }}
                                                 >
-                                                    {selectedLeadIds.has(lead._id) && (
-                                                        <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                                                            <path d="M2.5 6L5 8.5L9.5 3.5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                                                        </svg>
-                                                    )}
-                                                </div>
+                                                    {selectedLeadIds.has(lead._id) ? <CheckSquare size={13} /> : <Square size={13} />}
+                                                </button>
                                                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
                                                     {lead.avatar ? (
-                                                        <img src={lead.avatar} alt="" style={{ width: 36, height: 36, borderRadius: 10, objectFit: 'cover' }} />
+                                                        <img className="lead-avatar" src={lead.avatar} alt="" style={{ width: 40, height: 40, borderRadius: 8, objectFit: 'cover' }} />
                                                     ) : (
-                                                        <div style={{
-                                                            width: 36, height: 36, borderRadius: 10,
+                                                        <div className="lead-avatar" style={{
+                                                            width: 40, height: 40, borderRadius: 8,
                                                             background: stage.gradient,
                                                             display: 'flex', alignItems: 'center', justifyContent: 'center',
                                                             color: 'white', fontWeight: 700, fontSize: 14,
@@ -870,7 +740,7 @@ export default function LeadsPage() {
                                                         }}>{lead.name.charAt(0).toUpperCase()}</div>
                                                     )}
                                                     <div style={{ flex: 1, minWidth: 0 }}>
-                                                        <div style={{ fontSize: 13.5, fontWeight: 600, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{lead.name}</div>
+                                                        <div style={{ fontSize: 14, fontWeight: 750, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 26 }}>{lead.name}</div>
                                                         {lead.phone && <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: 1 }}>{lead.phone}</div>}
                                                     </div>
                                                 </div>
@@ -887,6 +757,18 @@ export default function LeadsPage() {
                                                     }}>
                                                         {SOURCE_ICONS[lead.source] || '📌'} {SOURCE_LABELS[lead.source] || lead.source}
                                                     </span>
+                                                    {lead.email && (
+                                                        <span style={{
+                                                            display: 'inline-flex', alignItems: 'center', gap: 4,
+                                                            fontSize: 10.5, fontWeight: 650,
+                                                            padding: '2px 8px', borderRadius: 6,
+                                                            background: lead.marketingConsent ? '#ecfdf5' : '#fffbeb',
+                                                            color: lead.marketingConsent ? '#047857' : '#a16207',
+                                                            border: `1px solid ${lead.marketingConsent ? '#a7f3d0' : '#fde68a'}`,
+                                                        }}>
+                                                            <Mail size={10} /> {lead.marketingConsent ? 'Email opt-in' : 'Chưa opt-in'}
+                                                        </span>
+                                                    )}
                                                     {lead.tags?.slice(0, 2).map(tag => (
                                                         <span key={tag} style={{
                                                             fontSize: 10.5, fontWeight: 500,
@@ -908,35 +790,37 @@ export default function LeadsPage() {
                                                     )}
                                                     {lead.score > 0 && (
                                                         <span style={{
+                                                            display: 'inline-flex', alignItems: 'center', gap: 3,
                                                             fontSize: 10, fontWeight: 700,
                                                             padding: '1px 6px', borderRadius: 4,
                                                             background: lead.score >= 70 ? '#dcfce7' : lead.score >= 40 ? '#fef3c7' : '#fee2e2',
                                                             color: lead.score >= 70 ? '#166534' : lead.score >= 40 ? '#92400e' : '#991b1b',
-                                                        }}>🎯 {lead.score}</span>
+                                                        }}><Target size={10} /> {lead.score}</span>
                                                     )}
                                                     <span style={{ fontSize: 11, color: '#cbd5e1', marginLeft: 'auto' }}>
                                                         {dayjs(lead.createdAt).fromNow()}
                                                     </span>
                                                 </div>
+                                                {lead.score > 0 && (
+                                                    <div className="lead-score-track">
+                                                        <span
+                                                            style={{
+                                                                width: `${Math.min(100, lead.score)}%`,
+                                                                background: lead.score >= 70 ? '#10b981' : lead.score >= 40 ? '#f59e0b' : '#ef4444',
+                                                            }}
+                                                        />
+                                                    </div>
+                                                )}
                                             </div>
                                         ))}
 
                                         {stageLeads.length === 0 && (
-                                            <div style={{
-                                                textAlign: 'center',
-                                                padding: '40px 16px',
-                                                color: '#94a3b8',
-                                            }}>
-                                                <div style={{
-                                                    width: 48, height: 48,
-                                                    borderRadius: 14,
-                                                    background: '#f1f5f9',
-                                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                                    margin: '0 auto 12px',
-                                                    fontSize: 20,
-                                                }}>{stage.icon}</div>
-                                                <div style={{ fontSize: 12.5, fontWeight: 500 }}>Trống</div>
-                                                <div style={{ fontSize: 11, color: '#cbd5e1', marginTop: 4 }}>Kéo lead vào đây</div>
+                                            <div className="lead-column-empty">
+                                                <div className="lead-empty-icon" style={{ color: stage.color, background: stage.bgColor }}>
+                                                    <Radio size={18} />
+                                                </div>
+                                                <div className="lead-empty-title">Đang trống</div>
+                                                <div className="lead-empty-copy">Sẵn sàng nhận lead mới</div>
                                             </div>
                                         )}
                                     </div>
@@ -946,14 +830,14 @@ export default function LeadsPage() {
                     </div>
                 ) : (
                     /* ═══ List View ═══ */
-                    <div style={{
-                        borderRadius: 16,
+                    <div className="lead-list-panel" style={{
+                        borderRadius: 8,
                         border: '1px solid #e2e8f0',
                         background: 'white',
-                        overflow: 'hidden',
+                        overflow: 'auto',
                         boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
                     }}>
-                        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                        <table className="lead-list-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
                             <thead>
                                 <tr style={{ borderBottom: '1px solid #f1f5f9', background: '#fafbfd' }}>
                                     {['', 'Khách hàng', 'Liên hệ', 'Nguồn', 'Giai đoạn', 'Ngày tạo', ''].map((h, i) => (
@@ -968,7 +852,10 @@ export default function LeadsPage() {
                                             width: i === 0 ? 40 : 'auto',
                                         }}>
                                             {i === 0 ? (
-                                                <div
+                                                <button
+                                                    type="button"
+                                                    aria-label={selectedLeadIds.size === leads.length && leads.length > 0 ? 'Bỏ chọn tất cả' : 'Chọn tất cả'}
+                                                    className={`lead-row-select ${selectedLeadIds.size === leads.length && leads.length > 0 ? 'is-active' : ''}`}
                                                     onClick={selectAllLeads}
                                                     style={{
                                                         width: 20, height: 20, borderRadius: 5,
@@ -978,12 +865,8 @@ export default function LeadsPage() {
                                                         cursor: 'pointer', margin: '0 auto',
                                                     }}
                                                 >
-                                                    {selectedLeadIds.size === leads.length && leads.length > 0 && (
-                                                        <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                                                            <path d="M2.5 6L5 8.5L9.5 3.5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                                                        </svg>
-                                                    )}
-                                                </div>
+                                                    {selectedLeadIds.size === leads.length && leads.length > 0 ? <CheckSquare size={12} /> : <Square size={12} />}
+                                                </button>
                                             ) : h}
                                         </th>
                                     ))}
@@ -1006,7 +889,10 @@ export default function LeadsPage() {
                                             onMouseLeave={e => { if (!selectedLeadIds.has(lead._id)) (e.currentTarget as any).style.background = 'transparent'; }}
                                         >
                                             <td style={{ padding: '12px 8px 12px 16px', width: 40, textAlign: 'center' }}>
-                                                <div
+                                                <button
+                                                    type="button"
+                                                    aria-label={selectedLeadIds.has(lead._id) ? 'Bỏ chọn lead' : 'Chọn lead'}
+                                                    className={`lead-row-select ${selectedLeadIds.has(lead._id) ? 'is-active' : ''}`}
                                                     onClick={e => toggleLeadSelection(lead._id, e)}
                                                     style={{
                                                         width: 20, height: 20, borderRadius: 5,
@@ -1016,12 +902,8 @@ export default function LeadsPage() {
                                                         cursor: 'pointer', margin: '0 auto',
                                                     }}
                                                 >
-                                                    {selectedLeadIds.has(lead._id) && (
-                                                        <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                                                            <path d="M2.5 6L5 8.5L9.5 3.5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                                                        </svg>
-                                                    )}
-                                                </div>
+                                                    {selectedLeadIds.has(lead._id) ? <CheckSquare size={12} /> : <Square size={12} />}
+                                                </button>
                                             </td>
                                             <td style={{ padding: '12px 16px' }}>
                                                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -1099,7 +981,7 @@ export default function LeadsPage() {
                 open={drawerOpen}
                 onClose={() => { setDrawerOpen(false); setSelectedLead(null); }}
                 title={null}
-                width={460}
+                size={460}
                 closable={false}
                 styles={{ body: { padding: 0, background: '#fafbfc' } }}
             >
@@ -1203,6 +1085,41 @@ export default function LeadsPage() {
                                             </div>
                                         </div>
                                     </div>
+                                    {selectedLead.email && (
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                                            <div style={{
+                                                width: 34, height: 34, borderRadius: 10,
+                                                background: selectedLead.marketingConsent ? '#ecfdf5' : '#fffbeb',
+                                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                            }}>
+                                                <CheckSquare size={15} color={selectedLead.marketingConsent ? '#059669' : '#d97706'} />
+                                            </div>
+                                            <div>
+                                                <div style={{ fontSize: 10.5, color: '#94a3b8', fontWeight: 500 }}>Email marketing</div>
+                                                <div style={{ fontSize: 13.5, fontWeight: 650, color: selectedLead.marketingConsent ? '#047857' : '#a16207' }}>
+                                                    {selectedLead.marketingConsent ? 'Đã đồng ý nhận email' : 'Chưa có sự đồng ý'}
+                                                </div>
+                                                {selectedLead.marketingConsent && selectedLead.consentAt && (
+                                                    <div style={{ fontSize: 10.5, color: '#94a3b8', marginTop: 2 }}>
+                                                        {dayjs(selectedLead.consentAt).format('DD/MM/YYYY HH:mm')} · {selectedLead.consentSource || 'widget'}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    )}
+                                    {(selectedLead.metadata?.utm_source || selectedLead.metadata?.utm_campaign || selectedLead.metadata?.pageUrl) && (
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                                            <div style={{ width: 34, height: 34, borderRadius: 10, background: '#f0f9ff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                                <ArrowUpRight size={15} color="#0284c7" />
+                                            </div>
+                                            <div style={{ minWidth: 0 }}>
+                                                <div style={{ fontSize: 10.5, color: '#94a3b8', fontWeight: 500 }}>Nguồn truy cập</div>
+                                                <div title={selectedLead.metadata?.pageUrl} style={{ fontSize: 12.5, fontWeight: 600, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 290 }}>
+                                                    {[selectedLead.metadata?.utm_source, selectedLead.metadata?.utm_campaign].filter(Boolean).join(' / ') || selectedLead.metadata?.pageUrl}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             </div>
 
@@ -1949,7 +1866,7 @@ export default function LeadsPage() {
                 open={!!analysisDrawer}
                 onClose={() => setAnalysisDrawer(null)}
                 title={null}
-                width={400}
+                size={400}
                 closable={false}
                 styles={{ body: { padding: 0, background: '#fafbfc' } }}
             >
@@ -2307,6 +2224,513 @@ Ví dụ: Xin chào! Bên mình đang có chương trình khuyến mãi đặc b
                     </div>
                 </div>
             </Modal>
+            <style jsx global>{`
+                .leads-page-shell {
+                    width: 100%;
+                    max-width: 1500px;
+                    margin: 0 auto;
+                    padding: 22px 24px 72px;
+                }
+
+                .leads-command {
+                    display: grid;
+                    grid-template-columns: minmax(380px, 1.15fr) minmax(480px, 0.85fr);
+                    gap: 14px;
+                    margin-bottom: 14px;
+                }
+
+                .leads-command-main,
+                .lead-kpi-card,
+                .leads-toolbar,
+                .lead-list-panel {
+                    border: 1px solid #dfe7f2;
+                    background: rgba(255, 255, 255, 0.94);
+                    box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 12px 28px rgba(16, 24, 40, 0.06);
+                }
+
+                .leads-command-main {
+                    min-height: 174px;
+                    border-radius: 8px;
+                    padding: 18px;
+                    display: flex;
+                    flex-direction: column;
+                    justify-content: space-between;
+                    gap: 18px;
+                    background:
+                        linear-gradient(135deg, rgba(37, 99, 235, 0.08), rgba(20, 184, 166, 0.08)),
+                        #ffffff;
+                }
+
+                .leads-eyebrow {
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 8px;
+                    height: 30px;
+                    padding: 0 10px;
+                    border-radius: 999px;
+                    border: 1px solid #bfdbfe;
+                    background: #eff6ff;
+                    color: #1d4ed8;
+                    font-size: 12px;
+                    font-weight: 800;
+                    letter-spacing: 0;
+                }
+
+                .leads-title {
+                    margin: 12px 0 8px;
+                    color: #0f172a;
+                    font-size: 28px;
+                    line-height: 1.15;
+                    font-weight: 850;
+                    letter-spacing: 0;
+                }
+
+                .leads-live-meta {
+                    display: flex;
+                    flex-wrap: wrap;
+                    gap: 8px;
+                    color: #475569;
+                    font-size: 12.5px;
+                    font-weight: 650;
+                }
+
+                .leads-live-meta span {
+                    min-height: 28px;
+                    display: inline-flex;
+                    align-items: center;
+                    padding: 0 10px;
+                    border-radius: 999px;
+                    background: rgba(255, 255, 255, 0.7);
+                    border: 1px solid #e2e8f0;
+                }
+
+                .lead-stage-strip {
+                    display: grid;
+                    grid-template-columns: repeat(3, minmax(0, 1fr));
+                    gap: 8px;
+                }
+
+                .lead-stage-pill {
+                    min-width: 0;
+                    border-radius: 8px;
+                    border: 1px solid rgba(148, 163, 184, 0.24);
+                    background: rgba(255, 255, 255, 0.72);
+                    padding: 9px 10px;
+                    display: grid;
+                    grid-template-columns: auto minmax(0, 1fr) auto;
+                    align-items: center;
+                    gap: 7px;
+                }
+
+                .lead-stage-dot {
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 999px;
+                }
+
+                .lead-stage-name {
+                    min-width: 0;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    white-space: nowrap;
+                    color: #334155;
+                    font-size: 12px;
+                    font-weight: 750;
+                }
+
+                .lead-stage-pill strong {
+                    color: #0f172a;
+                    font-size: 12px;
+                    font-weight: 850;
+                }
+
+                .lead-stage-track {
+                    grid-column: 1 / -1;
+                    height: 4px;
+                    border-radius: 999px;
+                    background: #edf2f7;
+                    overflow: hidden;
+                }
+
+                .lead-stage-track span {
+                    display: block;
+                    height: 100%;
+                    border-radius: inherit;
+                }
+
+                .leads-kpi-grid {
+                    display: grid;
+                    grid-template-columns: repeat(2, minmax(0, 1fr));
+                    gap: 10px;
+                }
+
+                .lead-kpi-card {
+                    border-radius: 8px;
+                    padding: 16px;
+                    min-height: 82px;
+                }
+
+                .lead-kpi-primary {
+                    background: linear-gradient(135deg, #1e40af, #0f766e);
+                    color: #ffffff;
+                    border-color: transparent;
+                }
+
+                .lead-kpi-top {
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    gap: 10px;
+                    color: #64748b;
+                    font-size: 12px;
+                    font-weight: 800;
+                }
+
+                .lead-kpi-primary .lead-kpi-top,
+                .lead-kpi-primary .lead-kpi-note {
+                    color: rgba(255, 255, 255, 0.78);
+                }
+
+                .lead-kpi-top span {
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 7px;
+                    min-width: 0;
+                }
+
+                .lead-kpi-value {
+                    margin-top: 10px;
+                    color: #0f172a;
+                    font-size: 28px;
+                    line-height: 1;
+                    font-weight: 900;
+                    letter-spacing: 0;
+                }
+
+                .lead-kpi-primary .lead-kpi-value {
+                    color: #ffffff;
+                }
+
+                .lead-kpi-warm {
+                    color: #f97316;
+                }
+
+                .lead-kpi-note {
+                    margin-top: 8px;
+                    color: #64748b;
+                    font-size: 12px;
+                    font-weight: 650;
+                }
+
+                .leads-toolbar {
+                    position: sticky;
+                    top: 82px;
+                    z-index: 80;
+                    display: grid;
+                    grid-template-columns: minmax(0, 1fr);
+                    gap: 10px;
+                    margin-bottom: 14px;
+                    padding: 12px;
+                    border-radius: 8px;
+                    backdrop-filter: blur(14px);
+                }
+
+                .leads-filter-row,
+                .leads-action-row {
+                    display: flex;
+                    align-items: center;
+                    gap: 10px;
+                    flex-wrap: wrap;
+                    min-width: 0;
+                }
+
+                .leads-action-row {
+                    justify-content: flex-end;
+                }
+
+                .lead-search-field {
+                    position: relative;
+                    flex: 1 1 300px;
+                    max-width: 430px;
+                    min-width: 240px;
+                }
+
+                .lead-search-field input,
+                .lead-source-select .ant-select-selector {
+                    border-radius: 8px !important;
+                }
+
+                .lead-view-toggle {
+                    display: inline-flex;
+                    height: 40px;
+                    margin-left: auto;
+                    border: 1px solid #dfe7f2;
+                    border-radius: 8px;
+                    overflow: hidden;
+                    background: #ffffff;
+                }
+
+                .lead-view-toggle button {
+                    width: 42px;
+                    justify-content: center;
+                }
+
+                .lead-action-btn {
+                    height: 40px;
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 8px;
+                    padding: 0 14px;
+                    border-radius: 8px;
+                    border: 1px solid transparent;
+                    font-size: 13px;
+                    font-weight: 750;
+                    cursor: pointer;
+                    transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease, background 160ms ease;
+                    white-space: nowrap;
+                }
+
+                .lead-action-btn:hover:not(:disabled) {
+                    transform: translateY(-1px);
+                }
+
+                .lead-action-btn:disabled {
+                    cursor: not-allowed;
+                    opacity: 0.68;
+                    transform: none;
+                    box-shadow: none;
+                }
+
+                .lead-action-ghost {
+                    color: #334155;
+                    background: #ffffff;
+                    border-color: #dfe7f2;
+                }
+
+                .lead-action-ghost:hover:not(:disabled) {
+                    border-color: #b9c7dc;
+                    background: #f8fafc;
+                }
+
+                .lead-action-success {
+                    color: #ffffff;
+                    background: #0f766e;
+                    box-shadow: 0 8px 18px rgba(15, 118, 110, 0.18);
+                }
+
+                .lead-action-ai {
+                    color: #ffffff;
+                    background: #f97316;
+                    box-shadow: 0 8px 18px rgba(249, 115, 22, 0.18);
+                }
+
+                .lead-action-primary {
+                    color: #ffffff;
+                    background: #4f46e5;
+                    box-shadow: 0 8px 18px rgba(79, 70, 229, 0.2);
+                }
+
+                .leads-loading-state {
+                    min-height: 45vh;
+                    display: grid;
+                    place-items: center;
+                    border: 1px dashed #d8e1ee;
+                    border-radius: 8px;
+                    background: rgba(255, 255, 255, 0.68);
+                }
+
+                .lead-board-shell {
+                    min-height: 64vh;
+                    display: flex;
+                    gap: 12px;
+                    overflow-x: auto;
+                    padding: 2px 2px 16px;
+                    scroll-snap-type: x proximity;
+                }
+
+                .lead-board-shell::-webkit-scrollbar,
+                .lead-column-body::-webkit-scrollbar {
+                    height: 8px;
+                    width: 7px;
+                }
+
+                .lead-board-shell::-webkit-scrollbar-thumb,
+                .lead-column-body::-webkit-scrollbar-thumb {
+                    background: #cbd8e8;
+                    border-radius: 999px;
+                }
+
+                .lead-column {
+                    min-height: 64vh;
+                    max-height: 68vh;
+                    scroll-snap-align: start;
+                    overflow: hidden;
+                    box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+                }
+
+                .lead-column.is-over {
+                    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.08), 0 18px 36px rgba(16, 24, 40, 0.08);
+                }
+
+                .lead-column-header {
+                    position: sticky;
+                    top: 0;
+                    z-index: 3;
+                }
+
+                .lead-column-body {
+                    min-height: 0;
+                }
+
+                .lead-card {
+                    box-shadow: 0 1px 1px rgba(16, 24, 40, 0.03);
+                }
+
+                .lead-card.is-selected {
+                    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+                }
+
+                .lead-card-accent {
+                    position: absolute;
+                    left: 0;
+                    top: 10px;
+                    bottom: 10px;
+                    width: 3px;
+                    border-radius: 0 999px 999px 0;
+                }
+
+                .lead-avatar {
+                    flex: 0 0 auto;
+                }
+
+                .lead-card-select,
+                .lead-row-select {
+                    padding: 0;
+                    color: #94a3b8;
+                    appearance: none;
+                }
+
+                .lead-card-select.is-active,
+                .lead-row-select.is-active {
+                    color: #ffffff;
+                }
+
+                .lead-score-track {
+                    height: 4px;
+                    margin-top: 10px;
+                    border-radius: 999px;
+                    background: #eef2f7;
+                    overflow: hidden;
+                }
+
+                .lead-score-track span {
+                    display: block;
+                    height: 100%;
+                    border-radius: inherit;
+                }
+
+                .lead-column-empty {
+                    min-height: 210px;
+                    display: grid;
+                    place-items: center;
+                    align-content: center;
+                    gap: 7px;
+                    text-align: center;
+                    color: #64748b;
+                    border: 1px dashed #d8e1ee;
+                    border-radius: 8px;
+                    background: rgba(255, 255, 255, 0.58);
+                }
+
+                .lead-empty-icon {
+                    width: 44px;
+                    height: 44px;
+                    border-radius: 8px;
+                    display: grid;
+                    place-items: center;
+                }
+
+                .lead-empty-title {
+                    color: #334155;
+                    font-size: 13px;
+                    font-weight: 800;
+                }
+
+                .lead-empty-copy {
+                    color: #94a3b8;
+                    font-size: 12px;
+                    font-weight: 650;
+                }
+
+                .lead-list-panel {
+                    max-width: 100%;
+                }
+
+                .lead-list-table {
+                    min-width: 860px;
+                }
+
+                .lead-list-table th {
+                    letter-spacing: 0 !important;
+                }
+
+                @media (max-width: 1180px) {
+                    .leads-command {
+                        grid-template-columns: 1fr;
+                    }
+
+                    .leads-action-row {
+                        justify-content: flex-start;
+                    }
+
+                    .lead-view-toggle {
+                        margin-left: 0;
+                    }
+                }
+
+                @media (max-width: 760px) {
+                    .leads-page-shell {
+                        padding: 16px 12px 72px;
+                    }
+
+                    .leads-command-main {
+                        padding: 14px;
+                    }
+
+                    .leads-title {
+                        font-size: 22px;
+                    }
+
+                    .lead-stage-strip,
+                    .leads-kpi-grid {
+                        grid-template-columns: 1fr;
+                    }
+
+                    .leads-toolbar {
+                        position: static;
+                    }
+
+                    .lead-search-field {
+                        max-width: none;
+                        flex-basis: 100%;
+                    }
+
+                    .lead-source-select,
+                    .lead-action-btn {
+                        flex: 1 1 auto;
+                    }
+
+                    .lead-view-toggle {
+                        margin-left: 0;
+                    }
+
+                    .lead-column {
+                        width: min(86vw, 292px) !important;
+                        min-height: 58vh;
+                    }
+                }
+            `}</style>
         </AppLayout>
     );
 }

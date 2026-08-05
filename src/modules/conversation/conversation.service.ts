@@ -7,6 +7,34 @@ import { AppError } from '../../middlewares/errorHandler';
 import { security } from '../../infra/security';
 import { sanitizeMessage, sanitizeFilename } from '../../infra/sanitize';
 import { emitToConversation, emitToWorkspace, emitToUser } from '../../infra/socket';
+import { presenceStore } from '../../infra/presence';
+import {
+    buildAutoReplyHistory,
+    createLatestOnlyWorker,
+    evaluateAutoReplyPolicy,
+    guardAutoReplyOutput,
+    isHumanAgentSender,
+    isZaloGroupConversation,
+    type LatestOnlyWorkerResult,
+} from '../chatbot/auto-reply.helpers';
+import type { AutoReplyResult } from '../chatbot/chatbot.service';
+import type { Conversation, Message } from '@prisma/client';
+import {
+    buildZaloConversationIdentity,
+    isCompatibleLegacyZaloConversation,
+    type ZaloConversationIdentity,
+    type ZaloThreadType,
+} from './zalo-identity.helpers';
+import {
+    buildAutoReplyTypingPayload,
+    type AutoReplyTypingActor,
+    waitForAutoReplyDelivery,
+} from './auto-reply-typing';
+import {
+    captureLeadFromWidget,
+    normalizeWidgetVisitorInfo,
+} from '../lead/lead-auto-capture.service';
+import { runMessageWorkflows } from '../automation/automation-runtime.service';
 
 /** Safely get ID string from both Prisma (id) and Mongoose (_id) records */
 function getId(obj: any): string {
@@ -20,8 +48,386 @@ function getId(obj: any): string {
  * Maps conversationId → last bot reply timestamp.
  */
 const _botReplyTimestamps = new Map<string, number>();
-const BOT_REPLY_COOLDOWN_MS = 10_000; // 10 seconds between bot replies per conversation
-const AGENT_REPLY_SUPPRESS_MS = 60_000; // If human agent replied within 60s, skip bot
+// Coalesce quick visitor bubbles and keep only a short inter-reply guard. The
+// previous 10s cooldown made a legitimate follow-up feel like the bot stalled.
+const BOT_REPLY_COOLDOWN_MS = 900;
+const AUTO_REPLY_DEBOUNCE_MS = 700;
+
+interface ActiveAutoReplyTyping {
+    targetMessageId: string;
+    actor: AutoReplyTypingActor;
+}
+
+const _activeAutoReplyTyping = new Map<string, ActiveAutoReplyTyping>();
+
+function emitAutoReplyTypingEvent(
+    conversationId: string,
+    targetMessageId: string,
+    state: 'start' | 'stop',
+    actor: AutoReplyTypingActor,
+): void {
+    try {
+        emitToConversation(
+            conversationId,
+            state === 'start' ? 'typing:start' : 'typing:stop',
+            buildAutoReplyTypingPayload(conversationId, targetMessageId, state, actor),
+        );
+    } catch (error) {
+        // Realtime is an enhancement: a missing socket gateway must never make
+        // the durable auto-reply worker fail or retry the same customer message.
+        console.warn(`[Chatbot] Could not emit typing:${state} for conv ${conversationId}`, error);
+    }
+}
+
+function startAutoReplyTyping(
+    conversationId: string,
+    targetMessageId: string,
+    actor: AutoReplyTypingActor,
+): void {
+    const previous = _activeAutoReplyTyping.get(conversationId);
+    if (previous && previous.targetMessageId !== targetMessageId) {
+        emitAutoReplyTypingEvent(
+            conversationId,
+            previous.targetMessageId,
+            'stop',
+            previous.actor,
+        );
+    }
+    _activeAutoReplyTyping.set(conversationId, { targetMessageId, actor });
+    emitAutoReplyTypingEvent(conversationId, targetMessageId, 'start', actor);
+}
+
+function stopAutoReplyTyping(
+    conversationId: string,
+    targetMessageId?: string,
+): void {
+    const active = _activeAutoReplyTyping.get(conversationId);
+    if (!active) return;
+    // An older worker must never hide a newer worker's composing state.
+    if (targetMessageId && active.targetMessageId !== targetMessageId) return;
+    _activeAutoReplyTyping.delete(conversationId);
+    emitAutoReplyTypingEvent(
+        conversationId,
+        active.targetMessageId,
+        'stop',
+        active.actor,
+    );
+}
+
+function jsonRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === 'object' && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : {};
+}
+
+function serializePublicMessage(message: Message) {
+    const recalled = Boolean(message.isDeleted);
+    return {
+        id: message.id,
+        clientMessageId: message.clientMessageId,
+        senderType: message.senderType,
+        senderName: message.senderName,
+        content: recalled ? '' : message.content,
+        type: message.type,
+        status: message.status,
+        attachments: recalled ? [] : message.attachments,
+        replyToMessageId: message.replyToMessageId,
+        replyToContent: recalled ? '' : message.replyToContent,
+        replyToSenderName: message.replyToSenderName,
+        isEdited: Boolean(message.editedAt),
+        editedAt: message.editedAt,
+        isDeleted: recalled,
+        isRecalled: recalled,
+        createdAt: message.createdAt,
+        updatedAt: message.updatedAt,
+    };
+}
+
+function isReplyableVisitorMessage(message: Message | null): message is Message {
+    return Boolean(
+        message
+        && message.senderType === 'visitor'
+        && message.type === 'text'
+        && !message.isDeleted
+        && !message.isInternal
+        && message.content.trim().length > 0,
+    );
+}
+
+function buildHumanTakeoverMetadata(
+    metadata: unknown,
+    sender: { id: string; name?: string },
+): Record<string, unknown> {
+    return {
+        ...jsonRecord(metadata),
+        humanTakeover: true,
+        aiPaused: true,
+        autoReplyEnabled: false,
+        autoReplyDisabled: true,
+        aiMode: 'manual',
+        lastHumanReplyAt: new Date().toISOString(),
+        lastHumanAgentId: sender.id,
+        lastHumanAgentName: sender.name || 'Agent',
+    };
+}
+
+function latestVisitorResult(
+    latestVisitor: Message | null,
+    targetMessageId: string,
+): void | LatestOnlyWorkerResult<string> {
+    if (!latestVisitor || getId(latestVisitor) === targetMessageId) return;
+    if (isReplyableVisitorMessage(latestVisitor)) {
+        return { replacement: getId(latestVisitor) };
+    }
+    return {}; // A newer non-text visitor message suppresses the stale text reply.
+}
+
+function autoReplyClientMessageId(incomingMessageId: string): string {
+    return `ai-auto-reply:${incomingMessageId}`;
+}
+
+async function loadFreshAutoReplyState(conversationId: string): Promise<{
+    conversation: Conversation | null;
+    latestVisitor: Message | null;
+}> {
+    const [conversation, latestVisitor] = await Promise.all([
+        conversationRepo.findById(conversationId),
+        messageRepo.findLatestVisitor(conversationId),
+    ]);
+    return { conversation, latestVisitor };
+}
+
+function conversationAllowsAutoReply(
+    conversation: Conversation,
+    agentCondition: string,
+): boolean {
+    if (isZaloGroupConversation(conversation)) return false;
+    return evaluateAutoReplyPolicy({
+        agentCondition,
+        assignedTo: conversation.assignedTo,
+        metadata: conversation.metadata,
+        onlineAgentCount: presenceStore.countOnlineAgents(conversation.workspaceId),
+    }).allowed;
+}
+
+async function sendAutoReplyToExternal(
+    conversation: Conversation,
+    botResult: AutoReplyResult,
+): Promise<void> {
+    const channel = String(conversation.channel || 'website').toLowerCase();
+    const metadata = jsonRecord(conversation.metadata);
+
+    if (channel === 'facebook' || channel === 'messenger') {
+        const fbUserId = typeof metadata.fbUserId === 'string' ? metadata.fbUserId : '';
+        const pageId = typeof metadata.pageId === 'string' ? metadata.pageId : '';
+        if (!fbUserId || !pageId) return;
+        const { facebookService } = await import('../facebook/facebook.service');
+        await facebookService.sendMessage(conversation.workspaceId, fbUserId, botResult.response, pageId);
+        console.log(`[Chatbot] ✅ Bot reply sent to Facebook user ${fbUserId}`);
+        return;
+    }
+
+    if (channel === 'zalo' && !isZaloGroupConversation(conversation)) {
+        const metadataUserId = typeof metadata.zaloUserId === 'string' ? metadata.zaloUserId : '';
+        const zaloThreadId = metadataUserId || String(conversation.visitorId || '').replace(/^zalo_/, '');
+        const accountId = typeof metadata.accountId === 'string' ? metadata.accountId : undefined;
+        if (!zaloThreadId) return;
+        const { zaloService } = await import('../zalo/zalo.service');
+        await zaloService.sendMessage(
+            conversation.workspaceId,
+            zaloThreadId,
+            botResult.response,
+            'text',
+            undefined,
+            accountId,
+        );
+        console.log(`[Chatbot] ✅ Bot reply sent to Zalo user ${zaloThreadId}`);
+    }
+}
+
+async function findZaloConversationForIdentity(
+    widgetId: string,
+    identity: ZaloConversationIdentity,
+): Promise<Conversation | null> {
+    if (identity.scopedVisitorId) {
+        const scoped = await conversationRepo.findLatestByVisitor(identity.scopedVisitorId, widgetId);
+        if (scoped && isCompatibleLegacyZaloConversation(scoped.metadata, identity)) return scoped;
+    }
+
+    const legacy = await conversationRepo.findLatestByVisitor(identity.legacyVisitorId, widgetId);
+    if (legacy && isCompatibleLegacyZaloConversation(legacy.metadata, identity)) return legacy;
+    return null;
+}
+
+async function processQueuedAutoReply(
+    conversationId: string,
+    targetMessageId: string,
+    isLatestJob: () => boolean,
+): Promise<void | LatestOnlyWorkerResult<string>> {
+    const initial = await loadFreshAutoReplyState(conversationId);
+    if (!initial.conversation || !initial.latestVisitor) return;
+
+    const initialReplacement = latestVisitorResult(initial.latestVisitor, targetMessageId);
+    if (initialReplacement) return initialReplacement;
+    if (!isReplyableVisitorMessage(initial.latestVisitor)) return;
+    if (!conversationAllowsAutoReply(initial.conversation, 'no_condition')) return;
+
+    // A deterministic id makes a retried worker a no-op after the local bot row exists.
+    const botClientMessageId = autoReplyClientMessageId(targetMessageId);
+    const existingBotMessage = await messageRepo.findByClientMessageId(conversationId, botClientMessageId);
+    if (existingBotMessage) {
+        _botReplyTimestamps.set(conversationId, new Date(existingBotMessage.createdAt).getTime());
+        return;
+    }
+
+    const lastBotReply = _botReplyTimestamps.get(conversationId);
+    if (lastBotReply) {
+        const cooldownRemaining = BOT_REPLY_COOLDOWN_MS - (Date.now() - lastBotReply);
+        if (cooldownRemaining > 0) return { retryAfterMs: cooldownRemaining };
+    }
+
+    // Read one chronological snapshot. If a newer visitor is already present,
+    // never build the invalid sequence "newer B in history, then current A".
+    const recentMessages = await messageRepo.getLatest(
+        conversationId,
+        36,
+        { excludeInternal: true },
+    );
+    const snapshotLatestVisitor = [...recentMessages]
+        .reverse()
+        .find(item => item.senderType === 'visitor' && !item.isDeleted && !item.isInternal) || null;
+    const snapshotReplacement = latestVisitorResult(snapshotLatestVisitor, targetMessageId);
+    if (snapshotReplacement) return snapshotReplacement;
+    if (!isLatestJob()) return;
+
+    const conversationHistory = buildAutoReplyHistory(recentMessages, targetMessageId, 12);
+
+    try {
+        const { chatbotService: botService } = await import('../chatbot/chatbot.service');
+        const botResult = await botService.processIncomingMessage(
+            initial.conversation.workspaceId,
+            initial.latestVisitor.content,
+            initial.conversation.channel || 'website',
+            conversationHistory,
+            {
+                assignedTo: initial.conversation.assignedTo,
+                metadata: initial.conversation.metadata,
+                onlineAgentCount: presenceStore.countOnlineAgents(initial.conversation.workspaceId),
+            },
+            {
+                onProcessingStart: event => {
+                    if (!event.typingIndicator || !isLatestJob()) return;
+                    startAutoReplyTyping(conversationId, targetMessageId, {
+                        senderId: `bot_${event.botId}`,
+                        senderName: event.botName,
+                        label: event.typingLabel,
+                    });
+                },
+            },
+        );
+        if (!botResult || !isLatestJob()) return;
+
+        // The bot service already accounts for model/RAG time and persona pace.
+        // Polling keeps human takeover and newer visitor turns responsive.
+        const stillCurrent = await waitForAutoReplyDelivery(
+            botResult.deliveryDelayMs,
+            isLatestJob,
+        );
+        if (!stillCurrent) return;
+
+        // Defense in depth: never persist or deliver an unsafe reply even if a
+        // future response source bypasses the chatbot service's own guard.
+        const outboundGuard = guardAutoReplyOutput({
+            candidate: botResult.response,
+            currentMessage: initial.latestVisitor.content,
+            // Deterministic identity/fallback messages are already bounded and safe;
+            // repeating one is preferable to silently ignoring a repeated customer
+            // question. Duplicate suppression is for generated/retrieved content.
+            history: botResult.source === 'ai' || botResult.source === 'knowledge'
+                ? conversationHistory
+                : [],
+        });
+        if (!outboundGuard.allowed) {
+            console.warn(`[Chatbot] Auto-reply suppressed by final output guard (${outboundGuard.reason})`);
+            return;
+        }
+        botResult.response = outboundGuard.response;
+        const normalizedResponse = botResult.response.replace(/\s+/g, ' ').trim();
+        const configuredParts = (botResult.responseParts || [])
+            .map(part => part.replace(/\s+/g, ' ').trim())
+            .filter(Boolean);
+        const responseParts = configuredParts.length > 1
+            && configuredParts.join(' ') === normalizedResponse
+            ? configuredParts
+            : [botResult.response];
+
+        for (let partIndex = 0; partIndex < responseParts.length; partIndex += 1) {
+            const responsePart = responseParts[partIndex];
+
+            // Re-read before every bubble. A customer follow-up or human takeover
+            // cancels the remainder of the burst instead of sending stale text.
+            const beforeSave = await loadFreshAutoReplyState(conversationId);
+            if (!beforeSave.conversation || !beforeSave.latestVisitor) return;
+            const saveReplacement = latestVisitorResult(beforeSave.latestVisitor, targetMessageId);
+            if (saveReplacement) return saveReplacement;
+            if (!conversationAllowsAutoReply(beforeSave.conversation, botResult.agentCondition)) return;
+            if (!isLatestJob()) return;
+
+            const partClientMessageId = partIndex === 0
+                ? botClientMessageId
+                : `${botClientMessageId}:${partIndex + 1}`;
+            await conversationService.addMessage(
+                conversationId,
+                { type: 'agent', id: `bot_${botResult.botId}`, name: botResult.botName },
+                responsePart,
+                'text',
+                undefined,
+                partClientMessageId,
+            );
+            _botReplyTimestamps.set(conversationId, Date.now());
+            console.log(`[Chatbot] Auto-replied part ${partIndex + 1}/${responseParts.length} in conv ${conversationId}`);
+
+            const channel = String(beforeSave.conversation.channel || 'website').toLowerCase();
+            if (channel === 'facebook' || channel === 'messenger' || channel === 'zalo') {
+                // External delivery gets its own final freshness check. We do not
+                // retry an ambiguous send without a durable delivery/outbox table.
+                const beforeSend = await loadFreshAutoReplyState(conversationId);
+                if (!beforeSend.conversation || !beforeSend.latestVisitor) return;
+                const sendReplacement = latestVisitorResult(beforeSend.latestVisitor, targetMessageId);
+                if (sendReplacement) return sendReplacement;
+                if (!conversationAllowsAutoReply(beforeSend.conversation, botResult.agentCondition)) return;
+                if (!isLatestJob()) return;
+
+                try {
+                    await sendAutoReplyToExternal(beforeSend.conversation, {
+                        ...botResult,
+                        response: responsePart,
+                    });
+                } catch (error) {
+                    console.error(`[Chatbot] External auto-reply part ${partIndex + 1} failed after local save:`, error);
+                }
+            }
+
+            if (partIndex < responseParts.length - 1) {
+                const continueBurst = await waitForAutoReplyDelivery(
+                    botResult.interMessageDelayMs || 0,
+                    isLatestJob,
+                );
+                if (!continueBurst) return;
+            }
+        }
+    } finally {
+        stopAutoReplyTyping(conversationId, targetMessageId);
+    }
+}
+
+const _autoReplyWorker = createLatestOnlyWorker<string>(processQueuedAutoReply, {
+    debounceMs: AUTO_REPLY_DEBOUNCE_MS,
+    errorRetryMs: 1_500,
+    onError: (error, conversationId) => {
+        console.error(`[Chatbot] Auto-reply worker failed for conv ${conversationId}; retrying`, error);
+    },
+});
 
 /**
  * Debounce map for lead auto-sync.
@@ -38,6 +444,7 @@ export const conversationService = {
      */
     async findOrCreate(widgetId: string, visitorId: string, visitorInfo: Record<string, any> = {}, metadata: Record<string, any> = {}, forceNew: boolean = false) {
         const widget = await widgetRepo.findById(widgetId);
+        const safeVisitorInfo = normalizeWidgetVisitorInfo(visitorInfo);
         if (!widget || !widget.isActive) throw new AppError('Widget không tồn tại', 404, 'NOT_FOUND');
 
         // Upsert visitor profile
@@ -45,20 +452,23 @@ export const conversationService = {
             visitorId,
             widgetId,
             (widget.workspaceId as any).toString(),
-            visitorInfo
+            safeVisitorInfo
         );
 
         // Try to find existing conversation (any status) unless forceNew is true
         // This prevents creating duplicate conversations when a closed conversation gets a new session
         let conversation = forceNew ? null : await conversationRepo.findLatestByVisitor(visitorId, widgetId);
+        if (conversation && !['widget', 'website'].includes(String(conversation.channel || ''))) {
+            conversation = null;
+        }
         let isNew = false;
 
         if (!conversation) {
             conversation = await conversationRepo.create({
                 workspaceId: widget.workspaceId,
-                widgetId: widget._id as any,
+                widgetId: widget.id as any,
                 visitorId,
-                visitorInfo,
+                visitorInfo: safeVisitorInfo,
                 status: 'open',
                 lastMessageAt: new Date(),
                 metadata,
@@ -71,7 +481,31 @@ export const conversationService = {
             conversation.status = 'open';
         }
 
-        const msgResult = await messageRepo.findByConversation(conversation._id.toString(), { limit: 30, excludeInternal: true });
+        // Returning visitors can fill the pre-chat form after their first
+        // session. Merge only normalized public fields and preserve previously
+        // collected identity/consent data.
+        const currentVisitorInfo = jsonRecord(conversation.visitorInfo);
+        const nextVisitorInfo = {
+            ...currentVisitorInfo,
+            ...(safeVisitorInfo.name ? { name: safeVisitorInfo.name } : {}),
+            ...(safeVisitorInfo.email ? { email: safeVisitorInfo.email } : {}),
+            ...(safeVisitorInfo.phone ? { phone: safeVisitorInfo.phone } : {}),
+            ...(safeVisitorInfo.avatar ? { avatar: safeVisitorInfo.avatar } : {}),
+            ...(safeVisitorInfo.marketingConsent ? {
+                marketingConsent: true,
+                consentText: safeVisitorInfo.consentText,
+                consentAt: new Date().toISOString(),
+            } : {}),
+        };
+        if (JSON.stringify(nextVisitorInfo) !== JSON.stringify(currentVisitorInfo)) {
+            const refreshed = await prisma.conversation.update({
+                where: { id: getId(conversation) },
+                data: { visitorInfo: nextVisitorInfo },
+            });
+            conversation.visitorInfo = refreshed.visitorInfo;
+        }
+
+        const msgResult = await messageRepo.findByConversation(getId(conversation), { limit: 30, excludeInternal: true });
         const messages = msgResult.items;
 
         // Generate visitor token for socket auth
@@ -81,12 +515,26 @@ export const conversationService = {
         if (isNew) {
             try {
                 emitToWorkspace((widget.workspaceId as any).toString(), 'conversation:new', {
-                    conversation, visitor, visitorInfo,
+                    conversation, visitor, visitorInfo: nextVisitorInfo,
                 });
             } catch { /* socket may not be initialized yet */ }
         }
 
-        return { conversation, messages, totalMessages: msgResult.total, visitor, visitorToken, isNew };
+        return {
+            conversation: {
+                id: getId(conversation),
+                status: conversation.status,
+                updatedAt: conversation.updatedAt,
+                lastMessageAt: conversation.lastMessageAt,
+            },
+            messages: messages.map(serializePublicMessage),
+            totalMessages: msgResult.total,
+            visitor: {
+                visitorId: visitor.visitorId,
+            },
+            visitorToken,
+            isNew,
+        };
     },
 
     /**
@@ -105,6 +553,7 @@ export const conversationService = {
         groupSenderName?: string, // For group messages: the individual sender's name
         zaloAccountId?: string,
         zaloAccountName?: string,
+        zaloThreadType?: ZaloThreadType,
     ) {
         // Find a widget to associate the visitor with (we use the first active widget, or auto-create one for Zalo)
         let widgetList = await widgetRepo.findByWorkspace(workspaceId);
@@ -136,19 +585,32 @@ export const conversationService = {
             targetWidget = widgetList[0];
         }
         const widgetId = getId(targetWidget);
-        const visitorId = `zalo_${zaloUserId}`;
+        const threadType: ZaloThreadType = zaloThreadType || (groupSenderName ? 'group' : 'user');
+        const identity = buildZaloConversationIdentity(zaloUserId, zaloAccountId, threadType);
+
+        // Prefer the account-scoped identity. Existing legacy history is adopted
+        // only while unclaimed or already owned by this exact Zalo account.
+        let conversation = await findZaloConversationForIdentity(widgetId, identity);
+        const visitorId = conversation?.visitorId || identity.preferredVisitorId;
 
         // Upsert visitor profile
         const { visitor } = await visitorRepo.findOrCreate(
             visitorId,
             widgetId,
             workspaceId,
-            { name: zaloUserName, avatar: zaloAvatar, attributes: { channel: 'zalo', zaloUserId, ...(zaloAccountName ? { pageName: zaloAccountName } : {}) } }
+            {
+                name: zaloUserName,
+                avatar: zaloAvatar,
+                attributes: {
+                    channel: 'zalo',
+                    zaloUserId,
+                    threadType,
+                    ...(identity.accountId ? { accountId: identity.accountId } : {}),
+                    ...(zaloAccountName ? { pageName: zaloAccountName } : {}),
+                },
+            }
         );
 
-        // Find the LATEST conversation for this Zalo visitor (regardless of status)
-        // This prevents creating duplicate conversations when a closed conversation gets a new message
-        let conversation = await conversationRepo.findLatestByVisitor(visitorId, widgetId);
         let isNew = false;
 
         if (!conversation) {
@@ -162,9 +624,10 @@ export const conversationService = {
                 status: 'open',
                 lastMessageAt: new Date(),
                 metadata: { 
-                    zaloUserId, 
-                    ...(groupSenderName ? { threadType: 'group' } : {}),
-                    ...(zaloAccountName ? { pageName: zaloAccountName, accountId: zaloAccountId } : {})
+                    zaloUserId,
+                    threadType,
+                    ...(identity.accountId ? { accountId: identity.accountId } : {}),
+                    ...(zaloAccountName ? { pageName: zaloAccountName } : {}),
                 },
             });
             isNew = true;
@@ -189,8 +652,9 @@ export const conversationService = {
 
         // Update visitorInfo avatar/name if we have them now (always overwrite to keep fresh)
         if (conversation && !isNew && zaloAvatar) {
-            const currentAvatar = conversation.visitorInfo?.avatar || '';
-            const currentName = conversation.visitorInfo?.name || '';
+            const currentVisitorInfo = jsonRecord(conversation.visitorInfo);
+            const currentAvatar = typeof currentVisitorInfo.avatar === 'string' ? currentVisitorInfo.avatar : '';
+            const currentName = typeof currentVisitorInfo.name === 'string' ? currentVisitorInfo.name : '';
             const needsUpdate = (zaloAvatar && zaloAvatar !== currentAvatar)
                 || (zaloUserName && zaloUserName !== currentName);
             if (needsUpdate) {
@@ -202,31 +666,38 @@ export const conversationService = {
                     updateFields['visitorInfo.name'] = zaloUserName;
                 }
                 try {
-                    const ConvModel = (await import('./repos/conversation.model')).ConversationModel;
-                    await ConvModel.updateOne({ _id: conversation._id }, { $set: updateFields });
+                    const newVisitorInfo = {
+                        ...currentVisitorInfo,
+                        ...(zaloAvatar ? { avatar: zaloAvatar } : {}),
+                        ...(zaloUserName ? { name: zaloUserName } : {}),
+                    };
+                    await prisma.conversation.update({
+                        where: { id: getId(conversation) },
+                        data: { visitorInfo: newVisitorInfo }
+                    });
                     // Also update in-memory object
-                    if (!conversation.visitorInfo) (conversation as any).visitorInfo = {};
-                    if (zaloAvatar) (conversation.visitorInfo as any).avatar = zaloAvatar;
-                    if (zaloUserName) conversation.visitorInfo.name = zaloUserName;
+                    conversation.visitorInfo = newVisitorInfo;
                 } catch { /* silent */ }
             }
         }
 
-        // Backfill metadata.accountId on existing conversations that don't have it
-        if (conversation && !isNew && zaloAccountId && zaloAccountName) {
-            const existingAccountId = (conversation as any).metadata?.accountId;
-            if (!existingAccountId) {
+        // Backfill routing metadata. Marking an existing group before addMessage
+        // also guarantees the auto-reply hook treats it as human-only.
+        if (conversation && !isNew) {
+            const currentMetadata = ((conversation as any).metadata || {}) as Record<string, any>;
+            const metadataPatch: Record<string, any> = {};
+            if (!currentMetadata.threadType) metadataPatch.threadType = threadType;
+            if (identity.accountId && !currentMetadata.accountId) metadataPatch.accountId = identity.accountId;
+            if (zaloAccountName && !currentMetadata.pageName) metadataPatch.pageName = zaloAccountName;
+
+            if (Object.keys(metadataPatch).length > 0) {
+                const nextMetadata = { ...currentMetadata, ...metadataPatch };
                 try {
                     await prisma.conversation.update({
                         where: { id: getId(conversation) },
-                        data: {
-                            metadata: {
-                                ...((conversation as any).metadata || {}),
-                                accountId: zaloAccountId,
-                                pageName: zaloAccountName,
-                            }
-                        }
+                        data: { metadata: nextMetadata },
                     });
+                    (conversation as any).metadata = nextMetadata;
                 } catch { /* silent - metadata update is best-effort */ }
             }
         }
@@ -266,21 +737,35 @@ export const conversationService = {
         clientMessageId?: string,
         zaloAccountId?: string,
         zaloAccountName?: string,
+        zaloThreadType: ZaloThreadType = 'user',
     ) {
         // Find the existing conversation for this thread — don't create new one for self-messages
-        const visitorId = `zalo_${zaloThreadId}`;
         const widgetList = await widgetRepo.findByWorkspace(workspaceId);
         if (!widgetList || widgetList.length === 0) return; // no widget = no conversation possible
 
         const widgetId = getId(widgetList[0]);
-        const conversation = await conversationRepo.findLatestByVisitor(visitorId, widgetId);
+        const identity = buildZaloConversationIdentity(zaloThreadId, zaloAccountId, zaloThreadType);
+        const conversation = await findZaloConversationForIdentity(widgetId, identity);
         if (!conversation) {
-            console.log(`[ConvService] No existing conversation for self-msg thread ${zaloThreadId}, skipping`);
+            console.log(`[ConvService] No existing conversation for self-msg thread ${zaloThreadId} on account ${identity.accountId || 'legacy'}, skipping`);
             return;
         }
 
+        // Claim unscoped legacy history for this account so another personal
+        // account with the same contact/thread can no longer merge into it.
+        const currentMetadata = ((conversation as any).metadata || {}) as Record<string, any>;
+        const metadataPatch: Record<string, any> = {};
+        if (!currentMetadata.threadType) metadataPatch.threadType = zaloThreadType;
+        if (identity.accountId && !currentMetadata.accountId) metadataPatch.accountId = identity.accountId;
+        if (zaloAccountName && !currentMetadata.pageName) metadataPatch.pageName = zaloAccountName;
+        if (Object.keys(metadataPatch).length > 0) {
+            const nextMetadata = { ...currentMetadata, ...metadataPatch };
+            await conversationRepo.updateMetadata(getId(conversation), nextMetadata);
+            (conversation as any).metadata = nextMetadata;
+        }
+
         // Reopen if closed so the message can be added
-        if (conversation.status === 'closed') {
+        if (conversation.status === 'closed' || conversation.status === 'resolved') {
             await conversationRepo.updateStatus(getId(conversation), 'open');
             conversation.status = 'open';
         }
@@ -390,8 +875,11 @@ export const conversationService = {
 
         // Update visitorInfo on existing conversation if we now have avatar/name
         if (conversation && !isNew) {
-            const hasNewAvatar = fbAvatar && (!conversation.visitorInfo?.avatar || conversation.visitorInfo.avatar === '');
-            const hasNewName = fbUserName && conversation.visitorInfo?.name !== fbUserName && fbUserName !== `FB User ${fbUserId.slice(-4)}`;
+            const currentVisitorInfo = jsonRecord(conversation.visitorInfo);
+            const currentAvatar = typeof currentVisitorInfo.avatar === 'string' ? currentVisitorInfo.avatar : '';
+            const currentName = typeof currentVisitorInfo.name === 'string' ? currentVisitorInfo.name : '';
+            const hasNewAvatar = Boolean(fbAvatar && !currentAvatar);
+            const hasNewName = Boolean(fbUserName && currentName !== fbUserName && fbUserName !== `FB User ${fbUserId.slice(-4)}`);
             if (hasNewAvatar || hasNewName) {
                 try {
                     await conversationRepo.updateVisitorInfo(getId(conversation), {
@@ -489,7 +977,7 @@ export const conversationService = {
         if (!conversation) throw new AppError('Cuộc hội thoại không tồn tại', 404, 'NOT_FOUND');
         if (conversation.visitorId !== visitorId) throw new AppError('Không có quyền', 403, 'FORBIDDEN');
 
-        const msgResult = await messageRepo.findByConversation(conversation._id.toString(), { limit: 30, excludeInternal: true });
+        const msgResult = await messageRepo.findByConversation(getId(conversation), { limit: 30, excludeInternal: true });
         return { conversation, messages: msgResult.items, totalMessages: msgResult.total };
     },
 
@@ -497,7 +985,38 @@ export const conversationService = {
      * Get all conversations for a specific visitor
      */
     async getByVisitor(visitorId: string, widgetId: string) {
-        return conversationRepo.findByVisitor(visitorId, widgetId);
+        const conversations = await conversationRepo.findByVisitor(visitorId, widgetId);
+
+        // This response is consumed by the unauthenticated widget. Never return
+        // workspace-only fields such as assignment, tags, lead/AI metadata or
+        // the complete visitor profile. Build the preview from a public message
+        // as system events and internal notes must not leak into the launcher.
+        return Promise.all(conversations.map(async conversation => {
+            const messages = await messageRepo.getLatest(getId(conversation), 30, { excludeInternal: true });
+            let previewMessage: Message | undefined;
+            for (let index = messages.length - 1; index >= 0; index -= 1) {
+                if (messages[index].senderType !== 'system') {
+                    previewMessage = messages[index];
+                    break;
+                }
+            }
+
+            const preview = previewMessage
+                ? previewMessage.type === 'image'
+                    ? '📷 Hình ảnh'
+                    : previewMessage.type === 'file'
+                        ? '📎 Tệp đính kèm'
+                        : previewMessage.content.slice(0, 120)
+                : '';
+
+            return {
+                id: getId(conversation),
+                status: conversation.status,
+                updatedAt: conversation.updatedAt,
+                lastMessageAt: conversation.lastMessageAt,
+                lastMessageSnippet: preview,
+            };
+        }));
     },
 
     /**
@@ -518,7 +1037,14 @@ export const conversationService = {
         // ── Idempotency check ──
         if (clientMessageId) {
             const existing = await messageRepo.findByClientMessageId(conversationId, clientMessageId);
-            if (existing) return existing; // already processed — return same message
+            if (existing) {
+                // Recover the narrow save-before-enqueue crash window. The worker's
+                // deterministic bot id makes replaying an old inbound event harmless.
+                if (isReplyableVisitorMessage(existing) && !isZaloGroupConversation(conversation)) {
+                    _autoReplyWorker.enqueue(conversationId, getId(existing));
+                }
+                return existing;
+            }
         }
 
         // ── Visitor checks ──
@@ -557,6 +1083,50 @@ export const conversationService = {
             url: att.url || undefined,
         }));
 
+        // A reply quote is only a pointer supplied by the client. Derive the
+        // quoted copy and author from the durable message so visitors cannot
+        // forge a staff quote or reference another workspace's conversation.
+        let verifiedReply: { messageId: string; content: string; senderName: string } | undefined;
+        if (replyTo?.messageId) {
+            const sourceMessage = await messageRepo.findById(replyTo.messageId);
+            if (
+                !sourceMessage
+                || sourceMessage.conversationId !== conversationId
+                || sourceMessage.isInternal
+                || sourceMessage.isDeleted
+            ) {
+                throw new AppError('Tin nhắn được trả lời không còn khả dụng', 400, 'REPLY_MESSAGE_UNAVAILABLE');
+            }
+            const sourceAttachments = Array.isArray(sourceMessage.attachments)
+                ? sourceMessage.attachments as Array<{ filename?: unknown }>
+                : [];
+            const quotedContent = sourceMessage.content.trim()
+                || (sourceMessage.type === 'image' ? 'Ảnh' : '')
+                || (sourceMessage.type === 'file'
+                    ? String(sourceAttachments[0]?.filename || 'Tệp đính kèm')
+                    : 'Tin nhắn');
+            verifiedReply = {
+                messageId: sourceMessage.id,
+                content: quotedContent.slice(0, 500),
+                senderName: String(
+                    sourceMessage.senderName
+                    || (sourceMessage.senderType === 'visitor' ? 'Khách hàng' : 'Hỗ trợ'),
+                ).slice(0, 120),
+            };
+        }
+
+        // A real agent reply is an explicit takeover. Only transition after the
+        // payload passes validation. clientMessageId is client-supplied and must
+        // never be trusted as an automation-origin signal.
+        const humanAgentMessage = isHumanAgentSender(sender.type, sender.id);
+        if (humanAgentMessage) {
+            const takeoverMetadata = buildHumanTakeoverMetadata(conversation.metadata, sender);
+            await conversationRepo.updateMetadata(conversationId, takeoverMetadata);
+            (conversation as any).metadata = takeoverMetadata;
+            stopAutoReplyTyping(conversationId);
+            _autoReplyWorker.clear(conversationId);
+        }
+
         const message = await messageRepo.create({
             conversationId: getId(conversation),
             clientMessageId: clientMessageId || undefined,
@@ -567,8 +1137,29 @@ export const conversationService = {
             type: msgType,
             attachments: safeAttachments,
             sanitizeFlags: sanitizeFlags.length > 0 ? sanitizeFlags : undefined,
-            ...(replyTo ? { replyToMessageId: replyTo.messageId, replyToContent: replyTo.content, replyToSenderName: replyTo.senderName } : {}),
+            ...(verifiedReply ? {
+                replyToMessageId: verifiedReply.messageId,
+                replyToContent: verifiedReply.content,
+                replyToSenderName: verifiedReply.senderName,
+            } : {}),
         });
+
+        // Promote identified web visitors only after a real inbound message.
+        // Abandoned or anonymous widget opens remain Visitor records.
+        if (sender.type === 'visitor' && ['widget', 'website'].includes(String(conversation.channel || ''))) {
+            void captureLeadFromWidget({
+                workspaceId: getId(conversation.workspaceId),
+                widgetId: getId(conversation.widgetId),
+                visitorId: conversation.visitorId,
+                conversationId: getId(conversation),
+                visitorInfo: conversation.visitorInfo,
+                conversationMetadata: conversation.metadata,
+                messageContent: sanitizedContent,
+            }).catch((error) => {
+                const code = typeof (error as any)?.code === 'string' ? (error as any).code : 'UNKNOWN';
+                console.warn(`[LeadCapture] Widget lead sync skipped (${code})`);
+            });
+        }
 
         // ── Build conversation summary snippet ──
         const snippet = msgType === 'image' ? '📷 Hình ảnh'
@@ -588,130 +1179,141 @@ export const conversationService = {
             emitToConversation(conversationId, 'message:new', message);
             emitToWorkspace(getId(conversation.workspaceId), 'conversation:updated', {
                 conversationId, lastMessage: { content: sanitizedContent, sender, type: msgType, createdAt: message.createdAt },
+                ...(humanAgentMessage ? { metadata: conversation.metadata } : {}),
             });
         } catch (e) { console.error('Socket emit error:', e); }
 
-        // ── Chatbot Auto-Reply Hook ──
-        // Only trigger for visitor messages (not agent/system/bot)
-        if (sender.type === 'visitor' && content && content.length > 1) {
-            try {
-                // ── Anti-spam Guard 1: Rate limiting per conversation ──
-                const lastBotReply = _botReplyTimestamps.get(conversationId);
-                if (lastBotReply && Date.now() - lastBotReply < BOT_REPLY_COOLDOWN_MS) {
-                    console.log(`[Chatbot] ⏳ Rate limited — skipping bot reply for conv ${conversationId} (cooldown ${BOT_REPLY_COOLDOWN_MS}ms)`);
-                } else {
+        // Workflow execution is deliberately detached from the request path. It
+        // may only create an internal draft or perform allow-listed safe actions.
+        if (sender.type === 'visitor' && msgType === 'text' && sanitizedContent.trim().length > 0) {
+            void runMessageWorkflows(conversation, message).catch((error) => {
+                console.warn('[Automation] Message workflow skipped', error?.message || error);
+            });
+        }
 
-                // ── Anti-spam Guard 2: Agent-awareness — skip if human agent replied recently ──
-                let shouldSkipForAgent = false;
-                try {
-                    const recentMsgs = await messageRepo.getLatest(conversationId, 5);
-                    // Check if a HUMAN agent (not bot) replied within the suppression window
-                    const humanAgentReply = recentMsgs.find(m =>
-                        m.senderType === 'agent'
-                        && !m.senderId?.startsWith('bot_')
-                        && m.senderId !== 'zalo_self'
-                        && m.senderId !== 'fb_page'
-                        && !m.isDeleted
-                        && (Date.now() - new Date(m.createdAt).getTime()) < AGENT_REPLY_SUPPRESS_MS
-                    );
-                    if (humanAgentReply) {
-                        shouldSkipForAgent = true;
-                        console.log(`[Chatbot] 👤 Human agent replied recently — skipping bot for conv ${conversationId}`);
-                    }
-
-                    // ── Anti-spam Guard 3: Duplicate prevention — skip if bot was the last sender ──
-                    if (!shouldSkipForAgent && recentMsgs.length > 0) {
-                        // recentMsgs is newest first, so [0] is the message we just created (visitor msg)
-                        // [1] would be the previous message — check if it was a bot reply
-                        const prevMsg = recentMsgs.find(m => m.senderType !== 'visitor' && !m.isDeleted);
-                        if (prevMsg && prevMsg.senderId?.startsWith('bot_')) {
-                            // Bot was the last non-visitor sender → only reply if visitor sent a NEW question
-                            // (we still allow because visitor may be asking a follow-up)
-                        }
-                    }
-                } catch { /* skip anti-spam checks if DB query fails, still try to reply */ }
-
-                if (!shouldSkipForAgent) {
-                const { chatbotService: botService } = await import('../chatbot/chatbot.service');
-                const wsId = getId(conversation.workspaceId);
-                const channel = (conversation as any).channel || 'website';
-
-                // Build conversation history for AI context
-                let conversationHistory: Array<{ role: string; content: string }> = [];
-                try {
-                    const recentMsgs = await messageRepo.getLatest(conversationId, 10);
-                    conversationHistory = recentMsgs
-                        .filter(m => !m.isDeleted && m.content && m.type === 'text')
-                        .reverse() // chronological order
-                        .map(m => ({
-                            role: m.senderType === 'visitor' ? 'user' : 'assistant',
-                            content: m.content,
-                        }));
-                    // Remove the last one (current message) since we pass it separately
-                    if (conversationHistory.length > 0 && conversationHistory[conversationHistory.length - 1].content === content) {
-                        conversationHistory.pop();
-                    }
-                } catch { /* skip history if not available */ }
-
-                const botResult = await botService.processIncomingMessage(wsId, content, channel, conversationHistory);
-
-                if (botResult) {
-                    // Update rate limit timestamp
-                    _botReplyTimestamps.set(conversationId, Date.now());
-
-                    // Send bot reply as a new message (async, non-blocking)
-                    setTimeout(async () => {
-                        try {
-                            await this.addMessage(
-                                conversationId,
-                                { type: 'agent', id: `bot_${botResult.botId}`, name: `🤖 ${botResult.botName}` },
-                                botResult.response,
-                                'text'
-                            );
-                            console.log(`[Chatbot] Auto-replied in conv ${conversationId} by bot ${botResult.botName}`);
-
-                            // Route bot reply to external platform
-                            if (channel === 'facebook') {
-                                try {
-                                    const { facebookService } = await import('../facebook/facebook.service');
-                                    const fbUserId = (conversation as any).metadata?.fbUserId;
-                                    const pageId = (conversation as any).metadata?.pageId;
-                                    if (fbUserId && pageId) {
-                                        await facebookService.sendMessage(wsId, fbUserId, botResult.response, pageId);
-                                        console.log(`[Chatbot] ✅ Bot reply sent to Facebook user ${fbUserId}`);
-                                    }
-                                } catch (fbErr) {
-                                    console.error('[Chatbot] Failed to send bot reply to Facebook:', fbErr);
-                                }
-                            } else if (channel === 'zalo') {
-                                try {
-                                    const { zaloService } = await import('../zalo/zalo.service');
-                                    const zaloUserId = (conversation as any).visitorId;
-                                    if (zaloUserId) {
-                                        await zaloService.sendMessage(wsId, zaloUserId, botResult.response);
-                                        console.log(`[Chatbot] ✅ Bot reply sent to Zalo user ${zaloUserId}`);
-                                    }
-                                } catch (zaloErr) {
-                                    console.error('[Chatbot] Failed to send bot reply to Zalo:', zaloErr);
-                                }
-                            }
-                        } catch (err) {
-                            console.error('[Chatbot] Auto-reply failed:', err);
-                        }
-                    }, 1200); // Slightly longer delay for AI response natural feel
-                }
-                } // end if (!shouldSkipForAgent)
-                } // end else (rate limit check)
-            } catch (err) {
-                console.error('[Chatbot] Hook error:', err);
+        // Queue AI work after the inbound row is durable so webhook/socket callers
+        // are not held open by RAG or model latency. Bursts coalesce to the latest text.
+        if (sender.type === 'visitor' && msgType === 'text' && sanitizedContent.trim().length > 0) {
+            if (isZaloGroupConversation(conversation)) {
+                console.log(`[Chatbot] Zalo group is human-only — skipping auto-reply for conv ${conversationId}`);
+            } else {
+                _autoReplyWorker.enqueue(conversationId, getId(message));
             }
         }
 
         return message;
     },
 
-    async getMessages(conversationId: string, options?: { page?: number; limit?: number }) {
+    /**
+     * Ensure a Zalo thread appears in the unified inbox even when Zalo does not
+     * expose historical messages for that thread. This creates only the
+     * conversation/contact shell; it never invents a Message row.
+     */
+    async ensureZaloConversationShell(
+        workspaceId: string,
+        zaloThreadId: string,
+        zaloThreadName: string,
+        zaloAvatar = '',
+        zaloAccountId?: string,
+        zaloAccountName?: string,
+        zaloThreadType?: ZaloThreadType,
+    ) {
+        let widgetList = await widgetRepo.findByWorkspace(workspaceId);
+        let targetWidget = widgetList?.[0];
+        if (!targetWidget) {
+            targetWidget = await widgetRepo.create({
+                workspaceId: workspaceId as any,
+                name: 'Zalo',
+                isActive: true,
+                config: {
+                    primaryColor: '#0068ff',
+                    greeting: 'Xin chào! Chúng tôi có thể giúp gì cho bạn?',
+                    placeholder: 'Nhập tin nhắn...',
+                    position: 'bottom-right',
+                    language: 'vi',
+                    showBranding: false,
+                    offlineMessage: 'Hiện tại không có agent trực tuyến.',
+                    preChatForm: { enabled: false, title: '', fields: [] },
+                },
+                domainRules: { mode: 'allowlist', domains: [] },
+            } as any);
+        }
+
+        const widgetId = getId(targetWidget);
+        const threadType: ZaloThreadType = zaloThreadType || 'user';
+        const identity = buildZaloConversationIdentity(zaloThreadId, zaloAccountId, threadType);
+        let conversation = await findZaloConversationForIdentity(widgetId, identity);
+        const visitorId = conversation?.visitorId || identity.preferredVisitorId;
+
+        await visitorRepo.findOrCreate(
+            visitorId,
+            widgetId,
+            workspaceId,
+            {
+                name: zaloThreadName || `Zalo ${zaloThreadId}`,
+                avatar: zaloAvatar,
+                attributes: {
+                    channel: 'zalo',
+                    zaloUserId: zaloThreadId,
+                    threadType,
+                    historyUnavailable: true,
+                    ...(identity.accountId ? { accountId: identity.accountId } : {}),
+                    ...(zaloAccountName ? { pageName: zaloAccountName } : {}),
+                },
+            }
+        );
+
+        if (!conversation) {
+            conversation = await conversationRepo.create({
+                workspaceId: workspaceId as any,
+                widgetId: widgetId as any,
+                visitorId,
+                visitorInfo: { name: zaloThreadName || `Zalo ${zaloThreadId}`, avatar: zaloAvatar },
+                channel: 'zalo',
+                status: 'open',
+                lastMessageAt: new Date(),
+                metadata: {
+                    zaloUserId: zaloThreadId,
+                    threadType,
+                    historyUnavailable: true,
+                    syncPlaceholder: true,
+                    ...(identity.accountId ? { accountId: identity.accountId } : {}),
+                    ...(zaloAccountName ? { pageName: zaloAccountName } : {}),
+                },
+            });
+
+            try {
+                emitToWorkspace(workspaceId, 'conversation:new', {
+                    conversation,
+                    visitorInfo: { name: zaloThreadName || `Zalo ${zaloThreadId}`, avatar: zaloAvatar },
+                });
+            } catch { /* socket may not be initialized */ }
+        }
+
+        return conversation;
+    },
+
+    async getMessages(conversationId: string, options?: { page?: number; limit?: number; excludeInternal?: boolean }) {
         return messageRepo.findByConversation(conversationId, options);
+    },
+
+    async assertVisitorAccess(conversationId: string, visitorId: string) {
+        if (!visitorId) throw new AppError('Thiếu định danh khách truy cập', 401, 'UNAUTHORIZED');
+        const conversation = await conversationRepo.findById(conversationId);
+        if (!conversation) throw new AppError('Cuộc hội thoại không tồn tại', 404, 'NOT_FOUND');
+        if (conversation.visitorId !== visitorId) throw new AppError('Không có quyền', 403, 'FORBIDDEN');
+        if (!['widget', 'website'].includes(String(conversation.channel || ''))) {
+            throw new AppError('Kênh hội thoại không hỗ trợ truy cập công khai', 403, 'FORBIDDEN');
+        }
+        return conversation;
+    },
+
+    async getPublicMessages(conversationId: string, options?: { page?: number; limit?: number }) {
+        const result = await messageRepo.findByConversation(conversationId, {
+            ...options,
+            excludeInternal: true,
+        });
+        return { items: result.items.map(serializePublicMessage), total: result.total };
     },
 
     async editMessage(conversationId: string, messageId: string, newContent: string, agentId: string) {
@@ -814,8 +1416,13 @@ export const conversationService = {
         } catch { /* socket might be missing during testing */ }
     },
 
-    async getMessagesSince(conversationId: string, since: string) {
-        return messageRepo.findSince(conversationId, new Date(since));
+    async getMessagesSince(conversationId: string, since: string, excludeInternal: boolean = false) {
+        return messageRepo.findSince(conversationId, new Date(since), 50, excludeInternal);
+    },
+
+    async getPublicMessagesSince(conversationId: string, since: string) {
+        const messages = await messageRepo.findSince(conversationId, new Date(since), 50, true);
+        return messages.map(serializePublicMessage);
     },
 
     /**
@@ -1066,10 +1673,66 @@ export const conversationService = {
         return count;
     },
 
+    async setAutoReplyMode(
+        conversationId: string,
+        enabled: boolean,
+        actor?: { id?: string; name?: string },
+        workspaceId?: string,
+    ) {
+        const conversation = await conversationRepo.findById(conversationId);
+        if (!conversation) throw new AppError('Cuộc hội thoại không tồn tại', 404, 'NOT_FOUND');
+        if (workspaceId && getId(conversation.workspaceId) !== workspaceId) {
+            throw new AppError('Cuộc hội thoại không tồn tại', 404, 'NOT_FOUND');
+        }
+
+        const now = new Date().toISOString();
+        const metadata = jsonRecord(conversation.metadata);
+        const nextMetadata = enabled
+            ? {
+                ...metadata,
+                autoReplyEnabled: true,
+                humanTakeover: false,
+                aiPaused: false,
+                botPaused: false,
+                autoReplyDisabled: false,
+                aiMode: 'auto',
+                autoReplyResumedAt: now,
+            }
+            : {
+                ...buildHumanTakeoverMetadata(metadata, {
+                    id: actor?.id || 'manual-takeover',
+                    name: actor?.name || 'Agent',
+                }),
+                autoReplyPausedAt: now,
+            };
+
+        if (!enabled) {
+            stopAutoReplyTyping(conversationId);
+            _autoReplyWorker.clear(conversationId);
+        }
+        const updated = await conversationRepo.updateMetadata(conversationId, nextMetadata);
+        if (!enabled) {
+            stopAutoReplyTyping(conversationId);
+            _autoReplyWorker.clear(conversationId);
+        }
+
+        try {
+            emitToWorkspace(getId(conversation.workspaceId), 'conversation:updated', {
+                conversationId,
+                metadata: nextMetadata,
+            });
+        } catch { /* socket may not be initialized */ }
+
+        return updated;
+    },
+
     async updateTracking(conversationId: string, visitorId: string, tracking: Record<string, any>) {
         const conv = await conversationRepo.findById(conversationId);
         if (!conv) throw new AppError('Cuộc hội thoại không tồn tại', 404, 'NOT_FOUND');
         if (conv.visitorId !== visitorId) throw new AppError('Không có quyền', 403, 'FORBIDDEN');
+        if (!['widget', 'website'].includes(String(conv.channel || ''))) {
+            throw new AppError('Kênh hội thoại không hỗ trợ truy cập công khai', 403, 'FORBIDDEN');
+        }
 
         const merged = { ...((conv.metadata as any) || {}), ...tracking };
         return conversationRepo.updateMetadata(conversationId, merged);
@@ -1322,6 +1985,51 @@ export const conversationService = {
         return note;
     },
 
+    async forwardMessages(
+        workspaceId: string,
+        sender: { id: string; name?: string },
+        messageIds: string[],
+        targetConversationIds: string[],
+    ) {
+        const [messages, targets] = await Promise.all([
+            prisma.message.findMany({
+                where: { id: { in: messageIds }, conversation: { workspaceId } },
+                orderBy: { createdAt: 'asc' },
+            }),
+            prisma.conversation.findMany({
+                where: { id: { in: targetConversationIds }, workspaceId },
+                select: { id: true },
+            }),
+        ]);
+        if (messages.length !== new Set(messageIds).size) {
+            throw new AppError('Một hoặc nhiều tin nhắn không tồn tại', 404, 'MESSAGE_NOT_FOUND');
+        }
+        if (targets.length !== new Set(targetConversationIds).size) {
+            throw new AppError('Một hoặc nhiều hội thoại đích không tồn tại', 404, 'CONVERSATION_NOT_FOUND');
+        }
+
+        const created = [];
+        for (const target of targets) {
+            for (const source of messages) {
+                const forwarded = await this.addMessage(
+                    target.id,
+                    { type: 'agent', id: sender.id, name: sender.name || 'Agent' },
+                    source.content,
+                    (['text', 'image', 'file', 'system'].includes(source.type) ? source.type : 'text') as 'text' | 'image' | 'file' | 'system',
+                    Array.isArray(source.attachments) ? source.attachments as Array<{ data: string; url?: string; filename: string; mimeType: string; size: number }> : [],
+                    undefined,
+                    source.replyToMessageId ? {
+                        messageId: source.replyToMessageId,
+                        content: source.replyToContent || '',
+                        senderName: source.replyToSenderName || '',
+                    } : undefined,
+                );
+                created.push(forwarded);
+            }
+        }
+        return { forwardedCount: created.length, messages: created };
+    },
+
     /**
      * Reset toàn bộ tin nhắn của workspace.
      * - Xóa hết Message docs thuộc các conversations của workspace này.
@@ -1329,40 +2037,69 @@ export const conversationService = {
      * - Reset lastMessage, unreadCount trên Conversation docs.
      * - GIỮ NGUYÊN: Visitor profiles, Conversation metadata (visitorId, assignedTo, tags...).
      */
-    async resetWorkspaceMessages(workspaceId: string): Promise<{ deletedMessages: number; deletedZaloMessages: number; resetConversations: number }> {
-        // 1. Lấy tất cả conversationIds của workspace
-        const convs = await prisma.conversation.findMany({
-            where: { workspaceId },
-            select: { id: true },
-        });
-        const convIds = convs.map(c => c.id);
+    async resetWorkspaceMessages(
+        workspaceId: string,
+        options: { deleteConversations?: boolean } = {},
+    ): Promise<{
+        deletedMessages: number;
+        deletedZaloMessages: number;
+        resetConversations: number;
+        deletedConversations: number;
+    }> {
+        return prisma.$transaction(async transaction => {
+            const conversations = await transaction.conversation.findMany({
+                where: { workspaceId },
+                select: { id: true },
+            });
+            const conversationIds = conversations.map(conversation => conversation.id);
 
-        // 2. Xóa toàn bộ Messages thuộc các conversations này
-        const msgResult = await prisma.message.deleteMany({
-            where: { conversationId: { in: convIds } },
-        });
+            const messageResult = await transaction.message.deleteMany({
+                where: { conversationId: { in: conversationIds } },
+            });
+            const zaloMessageResult = await transaction.zaloMessage.deleteMany({
+                where: { workspaceId },
+            });
 
-        // 3. Xóa toàn bộ ZaloMessages của workspace
-        const zaloResult = await prisma.zaloMessage.deleteMany({
-            where: { workspaceId },
-        });
+            if (options.deleteConversations) {
+                // Giữ đơn hàng và lịch sử audit, nhưng không để đơn hàng trỏ
+                // tới một cuộc hội thoại đã bị xóa.
+                await transaction.order.updateMany({
+                    where: { workspaceId, conversationId: { in: conversationIds } },
+                    data: { conversationId: null },
+                });
+                const conversationResult = await transaction.conversation.deleteMany({
+                    where: { workspaceId },
+                });
+                await transaction.zaloContact.updateMany({
+                    where: { workspaceId },
+                    data: { totalMessages: 0, lastMessageAt: null, lastMessagePreview: '' },
+                });
 
-        // 4. Reset conversations: xóa lastMessage, unreadCount = 0 (giữ metadata khác)
-        const convResult = await prisma.conversation.updateMany({
-            where: { workspaceId },
-            data: {
-                lastMessageSnippet: null,
-                lastSenderType: null,
-                lastSenderName: null,
-                unreadCount: 0,
-            },
-        });
+                return {
+                    deletedMessages: messageResult.count || 0,
+                    deletedZaloMessages: zaloMessageResult.count || 0,
+                    resetConversations: 0,
+                    deletedConversations: conversationResult.count || 0,
+                };
+            }
 
-        return {
-            deletedMessages: msgResult.count || 0,
-            deletedZaloMessages: zaloResult.count || 0,
-            resetConversations: convResult.count || 0,
-        };
+            const conversationResult = await transaction.conversation.updateMany({
+                where: { workspaceId },
+                data: {
+                    lastMessageSnippet: null,
+                    lastSenderType: null,
+                    lastSenderName: null,
+                    unreadCount: 0,
+                },
+            });
+
+            return {
+                deletedMessages: messageResult.count || 0,
+                deletedZaloMessages: zaloMessageResult.count || 0,
+                resetConversations: conversationResult.count || 0,
+                deletedConversations: 0,
+            };
+        });
     },
 
     /**

@@ -1,0 +1,20 @@
+import LegalDocument, { type LegalSection } from '../components/legal/LegalDocument';
+import StaticPageLayout from '../components/layout/StaticPageLayout';
+
+const sections: LegalSection[] = [
+    { id: 'parties', title: 'Vai trò các bên', paragraphs: ['Đối với nội dung khách hàng cuối trong workspace, khách hàng doanh nghiệp là bên kiểm soát/quyết định mục đích xử lý và NemarkChat là bên xử lý theo chỉ dẫn. Với dữ liệu tài khoản, an ninh và thanh toán của chính dịch vụ, NemarkChat có thể là bên kiểm soát độc lập.'] },
+    { id: 'instructions', title: 'Chỉ dẫn xử lý', paragraphs: ['NemarkChat xử lý dữ liệu để cung cấp các tính năng đã bật, hỗ trợ, bảo mật, sao lưu và tuân thủ pháp luật. Cấu hình workspace, yêu cầu hỗ trợ và hợp đồng là chỉ dẫn được ghi nhận; chúng tôi sẽ thông báo nếu cho rằng chỉ dẫn vi phạm pháp luật áp dụng.'] },
+    { id: 'details', title: 'Đối tượng và loại dữ liệu', bullets: ['Chủ thể: thành viên workspace, khách hàng tiềm năng, người mua hàng và người nhắn tin.', 'Dữ liệu: định danh/liên hệ, nội dung hội thoại, tệp, sản phẩm/đơn hàng, lịch sử hỗ trợ và metadata kỹ thuật.', 'Mục đích: CSKH, bán hàng, routing, báo cáo, tự động hóa, AI/RAG và tích hợp do khách hàng cấu hình.', 'Thời hạn: trong thời gian cung cấp dịch vụ và giai đoạn lưu giữ/xóa đã công bố.'] },
+    { id: 'confidentiality', title: 'Bảo mật và nhân sự', paragraphs: ['Người được phép truy cập dữ liệu phải chịu nghĩa vụ bảo mật và chỉ truy cập trong phạm vi nhiệm vụ. NemarkChat duy trì các biện pháp tại trang Bảo mật và điều chỉnh theo rủi ro.'] },
+    { id: 'subprocessors', title: 'Nhà xử lý phụ', paragraphs: ['Khách hàng cho phép NemarkChat sử dụng nhà cung cấp hạ tầng, email, quan sát hệ thống, kênh tích hợp và AI cần thiết. Chúng tôi yêu cầu nghĩa vụ bảo vệ phù hợp và sẽ thông báo thay đổi quan trọng khi có cơ chế đăng ký thông báo.'] },
+    { id: 'transfer', title: 'Truyền và lưu trữ dữ liệu', paragraphs: ['Vị trí xử lý phụ thuộc máy chủ và provider được cấu hình. Khi có chuyển dữ liệu ra ngoài phạm vi pháp lý liên quan, các bên phối hợp thực hiện đánh giá, hồ sơ hoặc biện pháp bảo đảm theo yêu cầu áp dụng.'] },
+    { id: 'rights', title: 'Hỗ trợ quyền chủ thể dữ liệu', paragraphs: ['Trong phạm vi hợp lý và dựa trên tính năng sẵn có, NemarkChat hỗ trợ khách hàng tìm kiếm, xuất, sửa, hạn chế hoặc xóa dữ liệu để phản hồi yêu cầu hợp lệ của chủ thể. Khách hàng chịu trách nhiệm xác minh người yêu cầu và quyết định phản hồi.'] },
+    { id: 'incident', title: 'Sự cố dữ liệu cá nhân', paragraphs: ['NemarkChat sẽ thông báo cho đầu mối của khách hàng sau khi xác nhận sự cố ảnh hưởng dữ liệu do NemarkChat xử lý, cung cấp thông tin có sẵn về phạm vi, hậu quả và biện pháp khắc phục để hai bên thực hiện nghĩa vụ của mình.'] },
+    { id: 'deletion', title: 'Hoàn trả và xóa dữ liệu', paragraphs: ['Khi chấm dứt, khách hàng nên xuất dữ liệu trong thời hạn truy cập còn hiệu lực. Theo yêu cầu hợp lệ, NemarkChat xóa hoặc ẩn danh dữ liệu, trừ bản sao lưu luân chuyển và dữ liệu phải giữ theo pháp luật; dữ liệu đó tiếp tục được bảo vệ cho đến khi xóa.'] },
+    { id: 'audit', title: 'Thông tin tuân thủ', paragraphs: ['NemarkChat cung cấp tài liệu hợp lý để chứng minh việc tuân thủ trong phạm vi không làm lộ bí mật, dữ liệu khách hàng khác hoặc tạo rủi ro bảo mật. Audit tại chỗ, nếu cần, phải được thỏa thuận trước về phạm vi, chi phí và bảo mật.'] },
+    { id: 'contact', title: 'Liên hệ và thứ tự ưu tiên', paragraphs: ['Yêu cầu về xử lý dữ liệu gửi tới privacy@nemarkchat.com. Nếu hợp đồng doanh nghiệp hoặc DPA ký riêng có điều khoản khác, văn bản ký riêng được ưu tiên trong phạm vi mâu thuẫn.'] },
+];
+
+export default function DataProcessingPage() {
+    return <StaticPageLayout title="Xử lý dữ liệu" description="Phụ lục nguyên tắc xử lý dữ liệu giữa khách hàng doanh nghiệp và NemarkChat"><LegalDocument eyebrow="Data Processing" title="Phụ lục xử lý dữ liệu" summary="Mô tả vai trò, chỉ dẫn, biện pháp và trách nhiệm phối hợp khi NemarkChat xử lý dữ liệu hội thoại cho workspace doanh nghiệp." updatedAt="15/07/2026" sections={sections} /></StaticPageLayout>;
+}

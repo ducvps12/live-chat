@@ -97,6 +97,9 @@ export const googleCallback = asyncHandler(async (req: Request, res: Response) =
             return;
         }
 
+        const googleId = googleUser.id || googleUser.sub || undefined;
+        console.log(`[GoogleAuth] UserInfo received for ${googleUser.email} (googleId: ${googleId})`);
+
         // 3. Find or create user
         let user = await userRepo.findByEmail(googleUser.email);
 
@@ -106,16 +109,19 @@ export const googleCallback = asyncHandler(async (req: Request, res: Response) =
                 email: googleUser.email,
                 passwordHash: '', // No password for Google users
                 name: googleUser.name || googleUser.email.split('@')[0],
+                role: 'agent',
                 avatarUrl: googleUser.picture || undefined,
-                googleId: googleUser.id,
+                googleId,
             });
+            console.log(`[GoogleAuth] Created new user: ${user.email} (${user.id})`);
         } else {
             // Link Google ID if not already linked
-            if (!user.googleId && googleUser.id) {
+            if (!user.googleId && googleId) {
                 await userRepo.updateUser(user.id, {
-                    googleId: googleUser.id,
+                    googleId,
                     avatarUrl: user.avatarUrl || googleUser.picture || undefined,
                 });
+                console.log(`[GoogleAuth] Linked googleId for existing user: ${user.email}`);
             }
         }
 

@@ -2,7 +2,7 @@ import prisma from '../../../infra/prisma';
 import type { ExternalSession, SessionAuditLog } from '@prisma/client';
 
 export type SessionStatus = 'pending_login' | 'connected' | 'disconnected' | 'expired' | 'revoked';
-export type AuditAction = 'session_created' | 'qr_rendered' | 'login_success' | 'login_failed' | 'disconnected' | 'control_taken' | 'control_released' | 'viewer_joined' | 'viewer_left' | 'revoked';
+export type AuditAction = 'session_created' | 'qr_rendered' | 'login_success' | 'login_failed' | 'disconnected' | 'control_taken' | 'control_released' | 'viewer_joined' | 'viewer_left' | 'revoked' | 'session_reconnected' | 'session_revoked';
 
 export const externalSessionRepo = {
     create: async (data: {

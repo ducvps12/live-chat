@@ -4,7 +4,7 @@ import { WidgetPosition } from './common';
 export interface PreChatField {
     key: string;
     label: string;
-    type: 'text' | 'email' | 'tel' | 'textarea' | 'select';
+    type: 'text' | 'email' | 'tel' | 'textarea' | 'select' | 'checkbox';
     required: boolean;
     enabled: boolean;
     placeholder?: string;
@@ -25,12 +25,39 @@ export interface WidgetConfig {
     language: string;
     avatarUrl?: string;
     showBranding: boolean;
+    brandingMode?: 'nemark' | 'custom' | 'hidden';
+    brandingName?: string;
+    brandingUrl?: string;
+    themePreset?: 'modern' | 'minimal' | 'glass' | 'compact';
+    customCss?: string;
     offlineMessage: string;
     autoReply?: string;
+    headerAvatar?: string;
+    profileDisplay?: 'company' | 'agent';
+    showTypingIndicator?: boolean;
+    requestRating?: boolean;
+    autoOpen?: {
+        mode: 'none' | 'immediate' | '20s' | '5min' | 'custom';
+        customSeconds?: number;
+    };
+    greetingPopup?: {
+        enabled: boolean;
+        message: string;
+        ctaText: string;
+        delay: number;
+    };
+    urlRules?: {
+        domains: Array<{ type: 'include' | 'exclude'; value: string }>;
+        paths: Array<{ type: 'include' | 'exclude'; value: string }>;
+    };
     preChatForm: {
         enabled: boolean;
         title: string;
         fields: PreChatField[];
+        marketingConsent?: {
+            enabled: boolean;
+            text: string;
+        };
     };
 }
 

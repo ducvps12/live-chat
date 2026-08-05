@@ -3,6 +3,7 @@ import asyncHandler from 'express-async-handler';
 import { workspaceService, widgetService, offlineMessageService } from './workspace.service';
 import { presenceStore } from '../../infra/presence';
 import { popupRepo } from './repos/popup.repo';
+import { workspaceAnalyticsService } from './workspace.analytics';
 
 export const workspaceController = {
     create: asyncHandler(async (req: Request, res: Response) => {
@@ -23,9 +24,42 @@ export const workspaceController = {
         res.status(200).json({ success: true, data: workspace });
     }),
 
+    getSystemSupportWidget: asyncHandler(async (_req: Request, res: Response) => {
+        const widget = await workspaceService.getSystemSupportWidget();
+        res.status(200).json({ success: true, data: widget });
+    }),
+
     getDashboardStats: asyncHandler(async (req: Request, res: Response) => {
         const stats = await workspaceService.getDashboardStats(req.params.workspaceId as string);
         res.status(200).json({ success: true, data: stats });
+    }),
+
+    provisionStarterKit: asyncHandler(async (req: Request, res: Response) => {
+        const result = await workspaceService.provisionStarterKit(req.params.workspaceId as string);
+        res.status(200).json({ success: true, data: result });
+    }),
+
+    getAnalytics: asyncHandler(async (req: Request, res: Response) => {
+        const analytics = await workspaceAnalyticsService.getAnalytics(
+            req.params.workspaceId as string,
+            req.query.period,
+        );
+        res.status(200).json({ success: true, data: analytics });
+    }),
+
+    getAIRuntimeSettings: asyncHandler(async (req: Request, res: Response) => {
+        const settings = await workspaceService.getAIRuntimeSettings(req.params.workspaceId as string);
+        res.status(200).json({ success: true, data: settings });
+    }),
+
+    updateAIRuntimeSettings: asyncHandler(async (req: Request, res: Response) => {
+        const settings = await workspaceService.updateAIRuntimeSettings(req.params.workspaceId as string, req.body);
+        res.status(200).json({ success: true, data: settings });
+    }),
+
+    testAIRuntimeSettings: asyncHandler(async (req: Request, res: Response) => {
+        const result = await workspaceService.testAIRuntimeSettings(req.params.workspaceId as string, req.body);
+        res.status(200).json({ success: true, data: result });
     }),
 
     update: asyncHandler(async (req: Request, res: Response) => {
@@ -38,8 +72,51 @@ export const workspaceController = {
 
     addMember: asyncHandler(async (req: Request, res: Response) => {
         const { email, role } = (req as any).validated.body;
-        const workspace = await workspaceService.addMember(req.params.workspaceId as string, email, role);
+        const workspace = await workspaceService.addMember(req.params.workspaceId as string, email, role, (req as any).user.id);
         res.status(200).json({ success: true, data: workspace });
+    }),
+
+    updateMemberRole: asyncHandler(async (req: Request, res: Response) => {
+        const { role } = (req as any).validated.body;
+        const workspace = await workspaceService.updateMemberRole(
+            req.params.workspaceId as string,
+            req.params.userId as string,
+            role,
+            (req as any).user.id,
+        );
+        res.status(200).json({ success: true, data: workspace });
+    }),
+
+    getInvitation: asyncHandler(async (req: Request, res: Response) => {
+        const invitation = await workspaceService.getInvitation(req.params.token as string);
+        res.status(200).json({ success: true, data: invitation });
+    }),
+
+    acceptInvitation: asyncHandler(async (req: Request, res: Response) => {
+        const result = await workspaceService.acceptInvitation(req.params.token as string, (req as any).user.id);
+        res.status(200).json({ success: true, data: result });
+    }),
+
+    listInvitations: asyncHandler(async (req: Request, res: Response) => {
+        const invitations = await workspaceService.listInvitations(req.params.workspaceId as string);
+        res.status(200).json({ success: true, data: invitations });
+    }),
+
+    cancelInvitation: asyncHandler(async (req: Request, res: Response) => {
+        const result = await workspaceService.cancelInvitation(
+            req.params.workspaceId as string,
+            req.params.invitationId as string,
+        );
+        res.status(200).json({ success: true, data: result });
+    }),
+
+    resendInvitation: asyncHandler(async (req: Request, res: Response) => {
+        const result = await workspaceService.resendInvitation(
+            req.params.workspaceId as string,
+            req.params.invitationId as string,
+            (req as any).user.id,
+        );
+        res.status(200).json({ success: true, data: result });
     }),
 
     removeMember: asyncHandler(async (req: Request, res: Response) => {
@@ -148,7 +225,7 @@ export const widgetController = {
 
     update: asyncHandler(async (req: Request, res: Response) => {
         const data = (req as any).validated.body;
-        const widget = await widgetService.updateWidget(req.params.widgetId as string, data);
+        const widget = await widgetService.updateWidget(req.params.workspaceId as string, req.params.widgetId as string, data);
         res.status(200).json({ success: true, data: widget });
     }),
 
@@ -179,7 +256,7 @@ export const offlineMessageController = {
             req.params.widgetId as string,
             { name, email, message, visitorId }
         );
-        res.status(201).json({ success: true, data: { id: msg._id } });
+        res.status(201).json({ success: true, data: { id: msg.id } });
     }),
 
     // Authenticated: list offline messages for workspace

@@ -25,8 +25,13 @@ export const PERMISSIONS = {
 
     // Conversation
     CONVERSATION_READ: 'conversation:read',
+    CONVERSATION_REPLY: 'conversation:reply',
     CONVERSATION_ASSIGN: 'conversation:assign',
     CONVERSATION_CLOSE: 'conversation:close',
+
+    // Campaign
+    CAMPAIGN_READ: 'campaign:read',
+    CAMPAIGN_MANAGE: 'campaign:manage',
 
     // User / Admin
     USER_INVITE: 'user:invite',
@@ -54,24 +59,30 @@ const ALL_PERMISSIONS = Object.values(PERMISSIONS);
 
 export const ROLE_PERMISSIONS: Record<string, PermissionKey[]> = {
     admin: ALL_PERMISSIONS,
+    owner: ALL_PERMISSIONS,
 
     agent: [
+        PERMISSIONS.WORKSPACE_CREATE,
         PERMISSIONS.WORKSPACE_READ,
         PERMISSIONS.WIDGET_READ,
         PERMISSIONS.TEAM_READ,
         PERMISSIONS.CONVERSATION_READ,
+        PERMISSIONS.CONVERSATION_REPLY,
         PERMISSIONS.CONVERSATION_ASSIGN,
         PERMISSIONS.CONVERSATION_CLOSE,
+        PERMISSIONS.CAMPAIGN_READ,
         PERMISSIONS.SETTINGS_READ,
         PERMISSIONS.REMOTE_SESSION_VIEW,
         PERMISSIONS.REMOTE_SESSION_CONTROL,
     ],
 
     member: [
+        PERMISSIONS.WORKSPACE_CREATE,
         PERMISSIONS.WORKSPACE_READ,
         PERMISSIONS.WIDGET_READ,
         PERMISSIONS.TEAM_READ,
         PERMISSIONS.CONVERSATION_READ,
+        PERMISSIONS.CAMPAIGN_READ,
         PERMISSIONS.SETTINGS_READ,
         PERMISSIONS.REMOTE_SESSION_VIEW,
     ],
