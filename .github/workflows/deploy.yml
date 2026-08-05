@@ -1,4 +1,4 @@
-name: Deploy NemarkChat to Linux VPS
+name: Deploy NemarkChat to Windows VPS
 
 on:
   push:
@@ -19,7 +19,7 @@ jobs:
     environment: production
     steps:
       - name: Check out release
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Validate deployment secrets
         env:
@@ -45,4 +45,4 @@ jobs:
             -o StrictHostKeyChecking=accept-new \
             -o ConnectTimeout=20 \
             "$SERVER_USER@$SERVER_HOST" \
-            "cd /www/live_chat_nemark && git fetch origin main && git checkout main && git pull --ff-only origin main && sed -i 's/\r$//' deploy.sh && bash deploy.sh"
+            'cmd.exe /d /s /c "cd /d C:\Users\Administrator\Desktop\live-chat\live-chat && git fetch origin main && git diff --quiet && git diff --cached --quiet && git pull --ff-only origin main && powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\deploy-windows.ps1"'
