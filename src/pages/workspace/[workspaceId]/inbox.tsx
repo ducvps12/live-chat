@@ -976,6 +976,31 @@ export default function InboxPage() {
             }
         });
 
+        socket.on('connect_error', (error) => {
+            const latestToken = localStorage.getItem('nemark_token');
+            const socketToken = typeof socket.auth === 'object' && socket.auth
+                ? String((socket.auth as { token?: string }).token || '')
+                : '';
+
+            // REST requests can refresh an expired access token while Socket.IO is
+            // still retrying with the token captured when this effect started.
+            if (latestToken && latestToken !== socketToken) {
+                socket.auth = { token: latestToken };
+                setSocketStatus('connecting');
+                setLastRealtimeEvent('Đang xác thực lại realtime');
+                socket.connect();
+                return;
+            }
+
+            console.warn('[Inbox] Socket connection error:', error.message);
+            setSocketStatus('disconnected');
+            setLastRealtimeEvent(
+                error.message === 'INVALID_TOKEN' || error.message === 'UNAUTHORIZED'
+                    ? 'Phiên realtime hết hạn · tải lại trang để xác thực'
+                    : `Socket lỗi: ${error.message || 'không thể kết nối'}`,
+            );
+        });
+
         socket.on('disconnect', () => {
             setSocketStatus('disconnected');
             setLastRealtimeEvent(`Mất kết nối · ${new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}`);
