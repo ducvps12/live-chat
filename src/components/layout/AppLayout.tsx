@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import { useRouter } from 'next/router';
@@ -111,6 +111,16 @@ export default function AppLayout({ children, hideHeader = false, hideMobileNav 
             || currentMembership?.role === 'admin'
         )
     );
+
+    useEffect(() => {
+        if (!mobileOpen) return;
+
+        const previousOverflow = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+        return () => {
+            document.body.style.overflow = previousOverflow;
+        };
+    }, [mobileOpen]);
     const { data: radarEntitlements } = useQuery({
         queryKey: ['signal-radar', 'navigation-entitlements', workspaceId],
         queryFn: () => signalRadarAPI.entitlements(workspaceId || ''),
@@ -567,7 +577,7 @@ export default function AppLayout({ children, hideHeader = false, hideMobileNav 
                 <main>{children}</main>
             </div>
 
-            {!hideMobileNav && mobileBottomItems.length > 0 && (
+            {!hideMobileNav && !mobileOpen && mobileBottomItems.length > 0 && (
                 <nav className="app-mobile-bottom-nav" aria-label="Điều hướng nhanh trên mobile">
                     {mobileBottomItems.map((item) => {
                         const Icon = item.icon;
@@ -598,7 +608,12 @@ export default function AppLayout({ children, hideHeader = false, hideMobileNav 
                 @media (max-width: 900px) {
                     .desktop-sidebar { display: none; }
                     .mobile-sidebar { display: block; }
-                    .mobile-sidebar .app-sidebar-shell { width: min(86vw, 320px) !important; box-shadow: 18px 0 45px rgba(15, 23, 42, 0.28); }
+                    .mobile-sidebar .app-sidebar-shell {
+                        width: min(86vw, 320px) !important;
+                        height: 100dvh !important;
+                        z-index: 240 !important;
+                        box-shadow: 18px 0 45px rgba(15, 23, 42, 0.28);
+                    }
                     .mobile-sidebar-close { position: absolute; right: 14px; display: grid; width: 36px; height: 36px; place-items: center; border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; background: rgba(255,255,255,0.08); color: #fff; cursor: pointer; }
                     .enterprise-main { margin-left: 0 !important; padding-bottom: 86px; }
                     .mobile-menu-btn { display: inline-flex !important; }
