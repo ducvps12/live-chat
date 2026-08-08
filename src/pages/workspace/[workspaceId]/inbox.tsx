@@ -921,7 +921,10 @@ export default function InboxPage() {
         const socket = io(`${baseUrl}/agent`, {
             auth: { token },
             query: { workspaceId },
-            transports: ['websocket', 'polling'],
+            // Start with HTTP polling so realtime still connects through VPS/CDN
+            // proxies that reject the initial WebSocket upgrade. Socket.IO will
+            // upgrade to WebSocket automatically when the route supports it.
+            transports: ['polling', 'websocket'],
             reconnection: true,
             reconnectionDelay: 2000,
             reconnectionDelayMax: 30000,
