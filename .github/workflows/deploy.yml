@@ -45,4 +45,4 @@ jobs:
             -o StrictHostKeyChecking=accept-new \
             -o ConnectTimeout=20 \
             "$SERVER_USER@$SERVER_HOST" \
-            'cmd.exe /d /s /c "cd /d C:\Users\Administrator\Desktop\live-chat\live-chat && git fetch origin main && git status --short --untracked-files=no && git diff --quiet && git diff --cached --quiet && git pull --ff-only origin main && powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\deploy-windows.ps1"'
+            'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Set-Location ''C:\Users\Administrator\Desktop\live-chat\live-chat''; git fetch origin main; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; $dirty = @(git status --porcelain=v1 --untracked-files=no); Write-Output ''NEMARK_DIRTY_START''; $dirty; Write-Output ''NEMARK_DIRTY_END''; if ($dirty.Count -gt 0) { exit 17 }; git pull --ff-only origin main; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; & ''scripts\deploy-windows.ps1''"'
