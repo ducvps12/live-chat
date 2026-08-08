@@ -2058,20 +2058,111 @@ export default function InboxPage() {
     }
 
     return (
-        <AppLayout hideHeader={true}>
+        <AppLayout hideHeader={true} hideMobileNav={Boolean(selectedConvId)}>
             <Head>
                 <title>Inbox | NemarkChat</title>
             </Head>
 
             <style>{`
-                @media (min-width: 769px) {
-                    .inbox-sidebar { display: flex !important; flex-direction: column; }
-                    .inbox-chat-panel { display: flex !important; flex-direction: column; }
+                /* Desktop styling */
+                @media (min-width: 901px) {
+                    .inbox-sidebar { display: flex !important; flex-direction: column; width: 340px !important; min-width: 320px !important; }
+                    .inbox-chat-panel { display: flex !important; flex-direction: column; flex: 1 !important; }
+                    .mobile-back-btn { display: none !important; }
                 }
-                @media (max-width: 768px) {
-                    .inbox-sidebar.conv-selected { display: none !important; }
-                    .inbox-chat-panel:not(.conv-selected) { display: none !important; }
+
+                /* Mobile UX Responsive Overrides */
+                @media (max-width: 900px) {
+                    .enterprise-main {
+                        padding-bottom: 0 !important;
+                    }
+                    .inbox-workbench {
+                        height: 100dvh !important;
+                        height: calc(100vh) !important;
+                        width: 100% !important;
+                        position: relative !important;
+                        overflow: hidden !important;
+                    }
+
+                    /* 1. When NO conversation is selected (Conversation List View) */
+                    .inbox-sidebar:not(.conv-selected) {
+                        width: 100% !important;
+                        min-width: 100% !important;
+                        max-width: 100% !important;
+                        display: flex !important;
+                        flex-direction: column !important;
+                        height: calc(100dvh - 72px) !important;
+                        height: calc(100vh - 72px) !important;
+                        overflow-y: auto !important;
+                        border-right: none !important;
+                    }
+                    .inbox-chat-panel:not(.conv-selected) {
+                        display: none !important;
+                    }
+
+                    /* 2. When A conversation IS selected (Chat Detail View) */
+                    .inbox-sidebar.conv-selected {
+                        display: none !important;
+                    }
+                    .inbox-chat-panel.conv-selected {
+                        display: flex !important;
+                        flex-direction: column !important;
+                        width: 100% !important;
+                        min-width: 100% !important;
+                        max-width: 100% !important;
+                        height: 100dvh !important;
+                        height: 100vh !important;
+                        position: fixed !important;
+                        top: 0 !important;
+                        left: 0 !important;
+                        right: 0 !important;
+                        bottom: 0 !important;
+                        z-index: 999 !important;
+                        background: #ffffff !important;
+                    }
+
+                    /* Hide app mobile bottom nav bar when inside a conversation chat detail */
+                    body:has(.inbox-chat-panel.conv-selected) .app-mobile-bottom-nav,
+                    .inbox-workbench:has(.inbox-chat-panel.conv-selected) ~ .app-mobile-bottom-nav {
+                        display: none !important;
+                    }
+
+                    /* Sticky Top Chat Header on Mobile */
+                    .inbox-chat-header {
+                        position: sticky !important;
+                        top: 0 !important;
+                        z-index: 20 !important;
+                        background: #ffffff !important;
+                        padding: 8px 12px !important;
+                        min-height: 52px !important;
+                        border-bottom: 1px solid #e5e7eb !important;
+                        box-shadow: 0 1px 3px rgba(0,0,0,0.05) !important;
+                    }
+
+                    .mobile-back-btn {
+                        display: inline-flex !important;
+                        align-items: center !important;
+                        justify-content: center !important;
+                        width: 36px !important;
+                        height: 36px !important;
+                        border-radius: 10px !important;
+                        background: #f1f5f9 !important;
+                        color: #334155 !important;
+                        border: 1px solid #cbd5e1 !important;
+                        flex-shrink: 0 !important;
+                    }
+
+                    /* Floating Input Bar on Mobile */
+                    .inbox-chat-panel.conv-selected .inbox-composer-shell {
+                        position: sticky !important;
+                        bottom: 0 !important;
+                        z-index: 20 !important;
+                        background: #ffffff !important;
+                        padding: 8px 10px max(8px, env(safe-area-inset-bottom)) !important;
+                        border-top: 1px solid #e2e8f0 !important;
+                    }
                 }
+
                 @keyframes ai-composing-pulse {
                     0%, 60%, 100% { opacity: .35; transform: translateY(0); }
                     30% { opacity: 1; transform: translateY(-2px); }
@@ -3119,7 +3210,7 @@ export default function InboxPage() {
                                 </div>
                             </div>
 
-                            <div style={{
+                            <div className="inbox-ai-copilot-bar" style={{
                                 ...styles.aiCopilotBar,
                                 borderColor: !aiRuntimeMeta.enabled ? '#e2e8f0' : isConversationAiPaused ? '#fed7aa' : '#bbf7d0',
                                 background: !aiRuntimeMeta.enabled
@@ -3128,7 +3219,7 @@ export default function InboxPage() {
                                         ? 'linear-gradient(135deg, #fffbeb 0%, #fff7ed 55%, #fff 100%)'
                                         : 'linear-gradient(135deg, #f0fdf4 0%, #eff6ff 55%, #f8fafc 100%)',
                             }}>
-                                <div style={styles.aiCopilotLead}>
+                                <div className="inbox-ai-copilot-lead" style={styles.aiCopilotLead}>
                                     <div style={{
                                         ...styles.aiCopilotIcon,
                                         background: !aiRuntimeMeta.enabled
@@ -3141,7 +3232,7 @@ export default function InboxPage() {
                                         <Zap size={15} />
                                     </div>
                                     <div style={{ minWidth: 0 }}>
-                                        <div style={styles.aiCopilotTitle}>
+                                        <div className="inbox-ai-copilot-title" style={styles.aiCopilotTitle}>
                                             Nemark AI Copilot
                                             <span style={{
                                                 ...styles.aiCopilotStatus,
@@ -3157,7 +3248,7 @@ export default function InboxPage() {
                                                             : 'AI tự động đang bật'}
                                             </span>
                                         </div>
-                                        <div style={styles.aiCopilotText}>
+                                        <div className="inbox-ai-copilot-text" style={styles.aiCopilotText}>
                                             {!aiRuntimeMeta.enabled
                                                 ? 'Bật AI tại Trung tâm AI để sử dụng auto-reply.'
                                                 : isConversationAssigned
@@ -3170,9 +3261,9 @@ export default function InboxPage() {
                                         </div>
                                     </div>
                                 </div>
-                                <div style={styles.aiCopilotActions}>
-                                    <span style={styles.aiCopilotChip}><BookOpen size={12} /> RAG</span>
-                                    <span style={styles.aiCopilotChip}><MessageSquare size={12} /> Kịch bản</span>
+                                <div className="inbox-ai-copilot-actions" style={styles.aiCopilotActions}>
+                                    <span className="inbox-ai-copilot-chip" style={styles.aiCopilotChip}><BookOpen size={12} /> RAG</span>
+                                    <span className="inbox-ai-copilot-chip" style={styles.aiCopilotChip}><MessageSquare size={12} /> Kịch bản</span>
                                     <button
                                         onClick={handleToggleConversationAI}
                                         disabled={!aiRuntimeMeta.enabled}
@@ -3189,6 +3280,7 @@ export default function InboxPage() {
                                         {isConversationAssigned ? 'Trả về AI' : isConversationAiPaused ? 'Bật lại AI' : 'Agent tiếp quản'}
                                     </button>
                                     <button
+                                        className="inbox-ai-config-button"
                                         onClick={() => router.push(`/workspace/${workspaceId}/chatbot`)}
                                         style={styles.aiCopilotButton}
                                     >
@@ -4308,12 +4400,52 @@ export default function InboxPage() {
                         background: rgba(255, 255, 255, 0.96) !important;
                         backdrop-filter: blur(16px);
                     }
+                    .inbox-ai-copilot-bar {
+                        margin: 0 8px !important;
+                        padding: 8px 10px !important;
+                        min-height: 62px !important;
+                        flex-wrap: nowrap !important;
+                        gap: 8px !important;
+                        border-bottom-left-radius: 12px !important;
+                        border-bottom-right-radius: 12px !important;
+                    }
+                    .inbox-ai-copilot-lead {
+                        min-width: 0 !important;
+                        gap: 8px !important;
+                        overflow: hidden !important;
+                    }
+                    .inbox-ai-copilot-title {
+                        min-width: 0 !important;
+                        gap: 5px !important;
+                        font-size: 12px !important;
+                    }
+                    .inbox-ai-copilot-text {
+                        max-width: calc(100vw - 180px) !important;
+                        white-space: nowrap !important;
+                        overflow: hidden !important;
+                        text-overflow: ellipsis !important;
+                        font-size: 11px !important;
+                    }
+                    .inbox-ai-copilot-actions {
+                        flex: 0 0 auto !important;
+                        flex-wrap: nowrap !important;
+                        gap: 5px !important;
+                    }
+                    .inbox-ai-copilot-chip,
+                    .inbox-ai-config-button {
+                        display: none !important;
+                    }
                     .mobile-back-btn {
                         display: inline-flex !important;
                     }
                     .visitor-profile-sidebar {
                         display: none !important;
                     }
+                }
+
+                @media (max-width: 380px) {
+                    .inbox-ai-copilot-text { max-width: calc(100vw - 166px) !important; }
+                    .inbox-ai-copilot-title > span { display: none !important; }
                 }
             `}</style>
 

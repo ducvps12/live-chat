@@ -3,7 +3,7 @@ import Head from 'next/head';
 import { useRouter } from 'next/router';
 import { useEffect, useState } from 'react';
 import { Alert, Button, Card, Checkbox, Col, Form, Input, InputNumber, Row, Select, Space, Spin, Steps, Tag, message } from 'antd';
-import { Bot, CheckCircle2, FlaskConical, Network, ShieldCheck } from 'lucide-react';
+import { Bot, CheckCircle2, FlaskConical, Megaphone, Network, ShieldCheck, Users, Zap } from 'lucide-react';
 import AppLayout from '../../../components/layout/AppLayout';
 import { chatbotService } from '../../../services/chatbot.service';
 import { zaloService } from '../../../services/zalo.service';
@@ -96,8 +96,41 @@ export default function ZaloBotStudioPage() {
                     { title: 'Kết nối kênh' }, { title: 'Cấu hình template' }, { title: 'Kiểm thử' }, { title: 'Bật bot' },
                 ]} style={{ marginBottom: 24 }} />
 
+                <Card
+                    id="automation"
+                    title={<Space><Zap size={18} /> Điều khiển tự động hóa Zalo</Space>}
+                    style={{ marginBottom: 20 }}
+                >
+                    <Row gutter={[14, 14]}>
+                        <Col xs={24} md={8}>
+                            <Card size="small" title={<Space><Bot size={16} /> AI Auto-reply</Space>}>
+                                <p style={{ minHeight: 44, color: '#64748b', fontSize: 13 }}>Tạo bot riêng cho Zalo, cấu hình giọng trả lời, kho tri thức và kiểm thử trước khi bật.</p>
+                                <Button type="primary" block icon={<Zap size={14} />} onClick={() => document.getElementById('auto-reply')?.scrollIntoView({ behavior: 'smooth' })}>
+                                    Cấu hình Auto-reply
+                                </Button>
+                            </Card>
+                        </Col>
+                        <Col xs={24} md={8}>
+                            <Card size="small" title={<Space><Users size={16} /> Nhóm & kết bạn</Space>}>
+                                <p style={{ minHeight: 44, color: '#64748b', fontSize: 13 }}>Quét thành viên nhóm, đồng bộ về Leads và chạy kết bạn có kiểm soát.</p>
+                                <Button block icon={<Users size={14} />} onClick={() => router.push(`/workspace/${workspaceId}/leads`)}>
+                                    Mở tự động hóa nhóm
+                                </Button>
+                            </Card>
+                        </Col>
+                        <Col xs={24} md={8}>
+                            <Card size="small" title={<Space><Megaphone size={16} /> Chiến dịch & lịch gửi</Space>}>
+                                <p style={{ minHeight: 44, color: '#64748b', fontSize: 13 }}>Soạn chuỗi tin ngắn, chọn đối tượng, khung giờ và theo dõi tiến độ gửi Zalo.</p>
+                                <Button block icon={<Megaphone size={14} />} onClick={() => router.push(`/workspace/${workspaceId}/campaigns`)}>
+                                    Mở chiến dịch Zalo
+                                </Button>
+                            </Card>
+                        </Col>
+                    </Row>
+                </Card>
+
                 <Row gutter={[20, 20]}>
-                    <Col xs={24} xl={15}>
+                    <Col id="auto-reply" xs={24} xl={15} style={{ scrollMarginTop: 24 }}>
                         <Card title={<Space><Bot size={18} /> Template Zalo · Shopee Affiliate</Space>}>
                             <Form form={botForm} layout="vertical" onFinish={createDraft} initialValues={{
                                 name: 'Trợ lý link Shopee', brandName: 'Shop của bạn', subId: 'zalo',

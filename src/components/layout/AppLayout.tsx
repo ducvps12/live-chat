@@ -44,6 +44,7 @@ import { signalRadarAPI } from '../../services/signal-radar.service';
 interface AppLayoutProps {
     children: React.ReactNode;
     hideHeader?: boolean;
+    hideMobileNav?: boolean;
     headerTitle?: React.ReactNode;
     headerExtra?: React.ReactNode;
 }
@@ -84,7 +85,7 @@ const navLabelStyle: React.CSSProperties = {
     textTransform: 'uppercase',
 };
 
-export default function AppLayout({ children, hideHeader = false, headerTitle, headerExtra }: AppLayoutProps) {
+export default function AppLayout({ children, hideHeader = false, hideMobileNav = false, headerTitle, headerExtra }: AppLayoutProps) {
     const router = useRouter();
     const [collapsed, setCollapsed] = useState(false);
     const [mobileOpen, setMobileOpen] = useState(false);
@@ -566,7 +567,7 @@ export default function AppLayout({ children, hideHeader = false, headerTitle, h
                 <main>{children}</main>
             </div>
 
-            {mobileBottomItems.length > 0 && (
+            {!hideMobileNav && mobileBottomItems.length > 0 && (
                 <nav className="app-mobile-bottom-nav" aria-label="Điều hướng nhanh trên mobile">
                     {mobileBottomItems.map((item) => {
                         const Icon = item.icon;

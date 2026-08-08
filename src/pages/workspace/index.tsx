@@ -131,21 +131,21 @@ export default function WorkspacePage() {
                         </p>
                     </div>
                     <section style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 320px', gap: 18, alignItems: 'stretch' }} className="workspace-hero-grid">
-                        <div className="enterprise-section" style={{ padding: 26 }}>
-                            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 20 }}>
+                        <div className="enterprise-section workspace-overview-panel" style={{ padding: 26 }}>
+                            <div className="workspace-hero-heading-row" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 20 }}>
                                 <div style={{ maxWidth: 760 }}>
                                     <span className="enterprise-kicker">
                                         <Building2 size={14} />
                                         Tenant Operations
                                     </span>
-                                    <h1 style={{ margin: '16px 0 10px', fontSize: 34, lineHeight: 1.14, fontWeight: 950, letterSpacing: 0, color: 'var(--ent-text)' }}>
+                                    <h1 className="workspace-hero-title" style={{ margin: '16px 0 10px', fontSize: 34, lineHeight: 1.14, fontWeight: 950, letterSpacing: 0, color: 'var(--ent-text)' }}>
                                         Quản lý các workspace khách thuê từ một trung tâm vận hành.
                                     </h1>
                                     <p style={{ margin: 0, maxWidth: 680, color: 'var(--ent-text-muted)', fontSize: 15, lineHeight: 1.75 }}>
                                         Mỗi workspace là một doanh nghiệp sử dụng live chat, Zalo/Facebook/email, đội CSKH và AI riêng. Mục tiêu là giúp khách vào là hiểu trạng thái, biết bước tiếp theo và bắt đầu vận hành ngay.
                                     </p>
                                 </div>
-                                <button onClick={() => setShowCreate(true)} className="enterprise-button enterprise-button-primary" style={{ flexShrink: 0 }}>
+                                <button onClick={() => setShowCreate(true)} className="enterprise-button enterprise-button-primary workspace-create-button" style={{ flexShrink: 0 }}>
                                     <Plus size={17} />
                                     Tạo workspace
                                 </button>
@@ -258,11 +258,22 @@ export default function WorkspacePage() {
             </Modal>
 
             <style jsx global>{`
-                @media (max-width: 980px) {
+                @media (max-width: 1280px) {
                     .workspace-hero-grid { grid-template-columns: 1fr !important; }
+                }
+                @media (max-width: 1080px) {
                     .workspace-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
                 }
                 @media (max-width: 560px) {
+                    .workspace-hero-heading-row { flex-direction: column !important; }
+                    .workspace-create-button { width: 100% !important; justify-content: center !important; }
+                    .workspace-hero-title { font-size: clamp(26px, 8vw, 32px) !important; overflow-wrap: normal !important; word-break: normal !important; }
+                    .workspace-overview-panel { padding: 20px !important; }
+                    .workspace-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 10px !important; }
+                    .workspace-stat-tile { padding: 13px !important; min-width: 0 !important; }
+                    .workspace-stat-label { overflow-wrap: anywhere; line-height: 1.35 !important; }
+                }
+                @media (max-width: 360px) {
                     .workspace-stat-grid { grid-template-columns: 1fr !important; }
                 }
             `}</style>
@@ -305,9 +316,9 @@ function StatTile({ icon: Icon, label, value, tone }: { icon: any; label: string
     }[tone];
 
     return (
-        <div style={{ border: '1px solid var(--ent-border)', borderRadius: 8, background: '#fff', padding: 16 }}>
+        <div className="workspace-stat-tile" style={{ border: '1px solid var(--ent-border)', borderRadius: 8, background: '#fff', padding: 16 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <div style={{ color: 'var(--ent-text-muted)', fontSize: 12, fontWeight: 800, textTransform: 'uppercase' }}>{label}</div>
+                <div className="workspace-stat-label" style={{ color: 'var(--ent-text-muted)', fontSize: 12, fontWeight: 800, textTransform: 'uppercase' }}>{label}</div>
                 <div style={{ width: 34, height: 34, borderRadius: 8, background: tones[0], color: tones[1], display: 'grid', placeItems: 'center' }}>
                     <Icon size={17} />
                 </div>

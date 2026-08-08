@@ -455,7 +455,7 @@ export default function ZaloIntegrationSettings({ workspaceId }: { workspaceId: 
                                             <p className="m-0 text-[11px] leading-4 text-slate-500">AI tự trả lời khách Zalo theo kho trí thức, giả lập gõ phím & theo dõi kịch bản bán hàng.</p>
                                         </div>
                                         <button
-                                            onClick={() => router.push(`/workspace/${workspaceId}/chatbot`)}
+                                            onClick={() => router.push(`/workspace/${workspaceId}/zalo-bot-studio#auto-reply`)}
                                             className="w-full inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 text-[11px] font-semibold text-amber-700 hover:bg-amber-100 transition-colors"
                                         >
                                             <Zap size={13} /> Cấu hình Bot AI
@@ -471,7 +471,7 @@ export default function ZaloIntegrationSettings({ workspaceId }: { workspaceId: 
                                             <p className="m-0 text-[11px] leading-4 text-slate-500">Tự động kết bạn với thành viên trong Nhóm Zalo & lưu tự động vào tập Leads CRM.</p>
                                         </div>
                                         <button
-                                            onClick={() => router.push(`/workspace/${workspaceId}/contacts`)}
+                                            onClick={() => router.push(`/workspace/${workspaceId}/zalo-bot-studio#automation`)}
                                             className="w-full inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-100 transition-colors"
                                         >
                                             <Users size={13} /> Quản lý Tự động hóa
