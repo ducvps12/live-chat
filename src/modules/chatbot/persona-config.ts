@@ -290,8 +290,10 @@ export function splitHumanizedReply(response: string, value: unknown): string[] 
         return normalized ? [normalized] : [];
     }
 
+    // A sentence is not automatically a separate chat bubble. Only explicit
+    // paragraph breaks represent an intentional burst.
     const units = normalized
-        .split(/\n+|(?<=[.!?…])\s+/u)
+        .split(/\n{2,}/u)
         .flatMap(splitLongUnit)
         .map(part => part.trim())
         .filter(Boolean);

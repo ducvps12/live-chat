@@ -528,6 +528,77 @@ export function requestsHumanHandoff(value: string): boolean {
         || new RegExp(`\\b(?:bao|chuyen|de)\\b.{0,24}\\b${staff}\\b`).test(folded);
 }
 
+function isEmptyConversationalFiller(value: string): boolean {
+    const folded = foldConversationText(value);
+    return /^(?:rat tiec|tiec qua|hieu roi|minh hieu roi|cam on ban da chia se|dieu nay se giup|minh ghi nhan)(?:\b|[,.!])/i.test(folded);
+}
+
+function isCustomerQuestionOrRequest(value: string): boolean {
+    const folded = foldConversationText(value);
+    return /[?？]\s*$/.test(value)
+        || /\b(?:cho|minh|shop)\s+(?:minh|shop)?\s*(?:biet|xin)\b/.test(folded)
+        || /\b(?:gui|cung cap|chup)\s+(?:minh|shop)\b/.test(folded)
+        || /\b(?:duoc khong|khong nhi|chua nhi|nhe)\s*[.!…]?$/.test(folded);
+}
+
+/**
+ * Keep generated chat useful even when a provider ignores brevity instructions.
+ * One turn may contain one concrete statement and one question at most.
+ */
+export function polishAutoReplyOutput(input: {
+    candidate: string;
+    history?: Array<{ role: string; content: string }>;
+    maxSentences?: number;
+}): string {
+    const normalized = String(input.candidate || '')
+        .replace(/\r\n/g, '\n')
+        .replace(/[ \t]+/g, ' ')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    if (!normalized) return '';
+
+    const historicalAssistantUnits = (input.history || [])
+        .filter(item => item.role === 'assistant')
+        .flatMap(item => item.content.split(/\n+|(?<=[.!?…])\s+/u))
+        .map(item => foldConversationText(item))
+        .filter(Boolean);
+    const units = normalized
+        .split(/\n+|(?<=[.!?…])\s+/u)
+        .map(item => item.trim())
+        .filter(Boolean)
+        .filter(item => !isEmptyConversationalFiller(item))
+        .filter((item, index, all) => {
+            const folded = foldConversationText(item);
+            return all.findIndex(other => {
+                const otherFolded = foldConversationText(other);
+                return folded === otherFolded || tokenSimilarity(folded, otherFolded) >= 0.78;
+            }) === index;
+        });
+    if (!units.length) return normalized;
+
+    const statements = units.filter(item => !isCustomerQuestionOrRequest(item));
+    const questions = units.filter(isCustomerQuestionOrRequest);
+    const freshQuestions = questions.filter(question => {
+        const folded = foldConversationText(question);
+        return !historicalAssistantUnits.some(previous => (
+            folded === previous || tokenSimilarity(folded, previous) >= 0.58
+        ));
+    });
+
+    const limit = Math.min(2, Math.max(1, input.maxSentences || 2));
+    const selected: string[] = [];
+    if (statements.length) selected.push(statements[0]);
+    if (freshQuestions.length && selected.length < limit) {
+        // The final question is normally the most specific one after the model
+        // has reasoned through the issue; discard earlier generic questions.
+        selected.push(freshQuestions[freshQuestions.length - 1]);
+    }
+    if (!selected.length && freshQuestions.length) {
+        selected.push(freshQuestions[freshQuestions.length - 1]);
+    }
+    return (selected.length ? selected : units.slice(0, limit)).join(' ').trim();
+}
+
 function isExplicitAutomationQuestion(value: string): boolean {
     const folded = foldConversationText(value);
     return /\b(?:ai|bot|chatbot|tro ly tu dong|tu dong|he thong)\b/.test(folded)

@@ -22,6 +22,7 @@ import {
     detectConversationTurnIntent,
     evaluateAutoReplyPolicy,
     guardAutoReplyOutput,
+    polishAutoReplyOutput,
     requestsHumanHandoff,
     isLowSignalMessage,
 } from './auto-reply.helpers';
@@ -139,6 +140,8 @@ function buildSystemPrompt(
 
     prompt += '\nCách viết bắt buộc:\n';
     prompt += '- Với trao đổi thông thường, chỉ viết 1-2 câu ngắn. Trả lời ý chính trước; nếu cần thì hỏi đúng một câu cụ thể ở cuối.\n';
+    prompt += '- Mỗi lượt chỉ đưa ra một bước kiểm tra phù hợp và tối đa một câu hỏi. Không viết các câu đệm như “rất tiếc khi nghe”, “mình hiểu rồi” hoặc “điều này sẽ giúp mình hỗ trợ tốt hơn”.\n';
+    prompt += '- Không lặp lại câu hỏi đã hỏi ở lượt trước. Nếu khách đã trả lời hoặc đã gửi ảnh/lỗi, phải dùng thông tin mới đó để tiến thêm một bước hoặc chuyển nhân viên.\n';
     prompt += '- Dùng đúng cách xưng hô trong phần cá tính hội thoại; viết tiếng Việt đời thường, lịch sự. Không dùng giọng thông báo, tổng đài hoặc văn quảng cáo.\n';
     prompt += '- Không dùng câu rập khuôn như “Có vẻ như bạn đang cần hỗ trợ”, “Hãy cho tôi biết thêm thông tin”, “Tôi có thể giúp gì cho bạn?” hoặc “Bạn muốn hỏi về điều gì?”.\n';
     prompt += '- Không chào lại khi hội thoại đã bắt đầu; không lặp lời khách, câu trả lời cũ hay câu hỏi đã được trả lời.\n';
@@ -149,6 +152,7 @@ function buildSystemPrompt(
     prompt += '- Khi có dữ liệu sản phẩm, trả lời trực tiếp điều khách hỏi rồi đề xuất tối đa một bước tiếp theo phù hợp. Không dồn khách chốt đơn và không tạo khan hiếm giả.\n';
     prompt += '- Khi khách chê đắt, so sánh nơi khác hoặc còn ngại, hãy ghi nhận đúng băn khoăn, giải thích bằng dữ liệu có sẵn và đưa ra một lựa chọn nhẹ nhàng. Không tranh luận, gây áp lực hay tự hứa giảm giá.\n';
     prompt += '- Nếu thiếu dữ liệu để trả lời, chỉ hỏi một chi tiết giúp tra cứu, ví dụ tên/mã/ảnh sản phẩm. Nếu doanh nghiệp cần xác nhận, nói rõ và đề nghị chuyển nhân viên.\n';
+    prompt += '- Với lỗi VPS/remote, không mặc định dùng SSH/PuTTY. Chỉ hướng dẫn theo đúng giao thức đã biết; nếu chưa rõ Windows RDP hay Linux SSH thì hỏi đúng chi tiết đó hoặc xin ảnh thông báo lỗi.\n';
 
     prompt += '- Tuyệt đối KHÔNG tự ý khẳng định shop "không bán" hay "không hỗ trợ" sản phẩm khi chưa có chỉ dẫn rõ ràng. Tuyệt đối KHÔNG khuyên khách sang trang web đối thủ hoặc bên thứ ba (như trang web chính thức của OpenAI, Canva, Netflix...). Khi thiếu dữ liệu về một sản phẩm khách hỏi, hãy nhẹ nhàng báo shop ghi nhận để nhân viên kiểm tra hỗ trợ ngay.\n';
     prompt += '- Không bịa giá, chính sách, tồn kho, trạng thái đơn, thời gian giao, ưu đãi hoặc cam kết. Nguồn sự thật chỉ gồm lịch sử hội thoại và kho tri thức được cung cấp.\n';
@@ -605,9 +609,16 @@ export const chatbotService = {
                     botModel,
                     persona.intelligenceLevel,
                 );
-                const guardedAI = aiResponse
-                    ? guardAutoReplyOutput({
+                const polishedAI = aiResponse
+                    ? polishAutoReplyOutput({
                         candidate: aiResponse,
+                        history: conversationHistory,
+                        maxSentences: bot.messageLength === 'short' ? 1 : 2,
+                    })
+                    : null;
+                const guardedAI = polishedAI
+                    ? guardAutoReplyOutput({
+                        candidate: polishedAI,
                         currentMessage: message,
                         history: conversationHistory,
                         forbiddenPhrases: persona.forbiddenPhrases,
