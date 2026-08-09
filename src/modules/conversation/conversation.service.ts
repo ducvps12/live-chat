@@ -144,14 +144,21 @@ function serializePublicMessage(message: Message) {
 }
 
 function isReplyableVisitorMessage(message: Message | null): message is Message {
-    return Boolean(
-        message
-        && message.senderType === 'visitor'
-        && message.type === 'text'
-        && !message.isDeleted
-        && !message.isInternal
-        && message.content.trim().length > 0,
-    );
+    if (!message || message.senderType !== 'visitor' || message.isDeleted || message.isInternal) {
+        return false;
+    }
+    const msgType = (message as any).type || 'text';
+    const hasMedia = Boolean((message as any).stickerUrl)
+        || Boolean((message as any).attachments && (message as any).attachments.length > 0);
+    const isSupportedType = msgType === 'text'
+        || msgType === 'sticker'
+        || msgType === 'image'
+        || msgType === 'media'
+        || hasMedia;
+
+    if (!isSupportedType) return false;
+    const content = String(message.content || '').trim();
+    return hasMedia || msgType !== 'text' || content.length > 0;
 }
 
 function buildHumanTakeoverMetadata(
@@ -340,12 +347,7 @@ async function processQueuedAutoReply(
         const outboundGuard = guardAutoReplyOutput({
             candidate: botResult.response,
             currentMessage: initial.latestVisitor.content,
-            // Deterministic identity/fallback messages are already bounded and safe;
-            // repeating one is preferable to silently ignoring a repeated customer
-            // question. Duplicate suppression is for generated/retrieved content.
-            history: botResult.source === 'ai' || botResult.source === 'knowledge'
-                ? conversationHistory
-                : [],
+            history: conversationHistory,
         });
         if (!outboundGuard.allowed) {
             console.warn(`[Chatbot] Auto-reply suppressed by final output guard (${outboundGuard.reason})`);
@@ -414,6 +416,30 @@ async function processQueuedAutoReply(
                     isLatestJob,
                 );
                 if (!continueBurst) return;
+            }
+        }
+
+        // A reply that promises human support must create a real handoff. Pause
+        // the bot after the acknowledgement so later customer details do not
+        // trigger another generic clarification loop.
+        if (botResult.handoffRequested) {
+            const afterReply = await conversationRepo.findById(conversationId);
+            if (afterReply) {
+                await conversationRepo.updateMetadata(conversationId, {
+                    ...jsonRecord(afterReply.metadata),
+                    humanTakeover: true,
+                    aiPaused: true,
+                    autoReplyEnabled: false,
+                    autoReplyDisabled: true,
+                    aiMode: 'manual',
+                    handoffRequestedAt: new Date().toISOString(),
+                    handoffReason: botResult.source === 'fallback'
+                        ? 'missing_knowledge'
+                        : 'bot_requested_human_support',
+                    handoffBotId: botResult.botId,
+                    handoffBotName: botResult.botName,
+                });
+                console.log(`[Chatbot] Human handoff requested for conv ${conversationId}; auto-reply paused`);
             }
         }
     } finally {

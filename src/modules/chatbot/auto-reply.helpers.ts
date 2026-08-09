@@ -310,6 +310,8 @@ export type AutoReplyGuardReason =
     | 'prompt_leak'
     | 'internal_policy'
     | 'forbidden_phrase'
+    | 'hallucinated_external_topic'
+    | 'repeated_clarification'
     | 'duplicate';
 
 export interface AutoReplyGuardResult {
@@ -363,7 +365,17 @@ function foldConversationText(value: string): string {
         .replace(/đ/g, 'd');
 }
 
+export function isStickerOrMediaMessage(value: string): boolean {
+    const raw = String(value || '').trim();
+    if (!raw) return true;
+    if (raw === '🎭 Sticker' || raw === '[Media/Sticker]' || raw === '[Hình ảnh]' || raw === '[Media]' || raw.includes('&#x2F;Sticker]')) return true;
+    if (/^\[sticker:\d+:\d+:\d+\]$/i.test(raw)) return true;
+    const folded = foldConversationText(raw);
+    return /^(?:sticker|hinh anh|media|anh)$/.test(folded);
+}
+
 export function isLowSignalMessage(value: string): boolean {
+    if (isStickerOrMediaMessage(value)) return true;
     const folded = foldConversationText(value);
     if (!folded) return true;
     if (folded.length === 1 && !/^\d$/.test(folded)) return true;
@@ -395,6 +407,9 @@ function isMeaningfulCustomerTurn(value: string): boolean {
 }
 
 export function detectConversationTurnIntent(value: string): ConversationTurnIntent {
+    if (isStickerOrMediaMessage(value)) {
+        return 'greeting';
+    }
     const folded = foldConversationText(value);
     if (detectIdentityQuestionKind(value)) {
         return 'identity_question';
@@ -424,6 +439,11 @@ export function detectConversationTurnIntent(value: string): ConversationTurnInt
     return 'general';
 }
 
+export function isVagueFeatureQuery(value: string): boolean {
+    const folded = foldConversationText(value);
+    return /\b(?:chuc nang|tinh nang|phan mem|he thong|dich vu|tool|cong cu)\b/.test(folded);
+}
+
 /**
  * Give the model a turn-specific sales/support goal without inventing business
  * facts. Keeping this separate makes product and objection behavior testable.
@@ -439,6 +459,9 @@ export function buildCurrentTurnGuidance(
         return detectIdentityQuestionKind(currentMessage) === 'automation'
             ? 'Khách đang hỏi thẳng có phải AI/bot/tự động hay không. Hãy nói rõ đây là trợ lý tự động của doanh nghiệp; không được né tránh hoặc nhận mình là người thật. Có thể đề nghị chuyển sang nhân viên.'
             : 'Khách chỉ đang hỏi vai trò hoặc đang nói chuyện với ai. Hãy giới thiệu vai trò và thương hiệu ngắn gọn; không tự đưa thuật ngữ AI/bot, đồng thời không được nhận mình là người thật hay một nhân viên cụ thể.';
+    }
+    if (isVagueFeatureQuery(currentMessage)) {
+        return 'Khách đang hỏi về một chức năng/tính năng chưa rõ tên trên trang web. Hãy hỏi nhẹ nhàng xem khách đang tìm chức năng hoặc dịch vụ nào cụ thể để shop hỗ trợ kiểm tra giúp khách ngay. Tuyệt đối KHÔNG suy đoán các phần mềm hay hệ thống không liên quan (như Windows Server, Microsoft...).';
     }
     if (intent === 'product_inquiry') {
         return 'Khách đang hỏi sản phẩm, dịch vụ, giá hoặc tình trạng hàng. Trả lời thẳng bằng dữ liệu được cung cấp; nếu thiếu đúng một thông tin để tra cứu thì hỏi thông tin đó. Không bịa tồn kho, giá hay khuyến mãi và không liệt kê cả danh mục.';
@@ -460,32 +483,49 @@ export function buildDirectIdentityReply(
     if (!identityKind) return null;
     const persona = normalizeBotPersonaConfig(personaConfig);
     const safeBrand = String(brandName || '')
-        .replace(/[\r\n\t]+/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 80);
+        .trim();
+    const brandPhrase = safeBrand ? ` của ${safeBrand}` : '';
     const selfReference = persona.selfReference;
     const customerReference = persona.customerReference;
-    const capitalizedSelf = selfReference.charAt(0).toUpperCase() + selfReference.slice(1);
-    const brand = safeBrand || 'shop';
 
-    if (persona.identityStyle === 'transparent' || identityKind === 'automation') {
-        return `Đúng rồi, ${selfReference} là trợ lý tự động của ${brand}. ${capitalizedSelf} hỗ trợ trước; nếu ${customerReference} muốn gặp nhân viên, cứ nói ${selfReference} nhé.`;
+    if (identityKind === 'automation') {
+        return `Dạ ${selfReference} là trợ lý tự động${brandPhrase} ạ. ${customerReference.charAt(0).toUpperCase() + customerReference.slice(1)} cần ${selfReference} tư vấn thông tin gì hay muốn nối máy tới nhân viên hỗ trợ trực tiếp nè?`;
     }
 
-    return `${capitalizedSelf} là ${persona.roleTitle} của ${brand} nè. ${customerReference.charAt(0).toUpperCase() + customerReference.slice(1)} đang cần ${selfReference} xem gì vậy?`;
+    return `Dạ ${selfReference} là trợ lý hỗ trợ khách hàng${brandPhrase} ạ. ${customerReference.charAt(0).toUpperCase() + customerReference.slice(1)} cần ${selfReference} xem giúp thông tin nào ạ?`;
 }
 
 function tokenSimilarity(left: string, right: string): number {
-    const leftTokens = new Set(left.split(/\s+/).filter(token => token.length > 1));
-    const rightTokens = new Set(right.split(/\s+/).filter(token => token.length > 1));
-    if (leftTokens.size === 0 || rightTokens.size === 0) return 0;
-
+    const leftTokens = left.split(/\s+/).filter(Boolean);
+    const rightTokens = right.split(/\s+/).filter(Boolean);
+    if (!leftTokens.length || !rightTokens.length) return 0;
+    const rightSet = new Set(rightTokens);
     let intersection = 0;
-    leftTokens.forEach(token => {
-        if (rightTokens.has(token)) intersection += 1;
+    leftTokens.forEach((token) => {
+        if (rightSet.has(token)) intersection++;
     });
     return intersection / new Set([...leftTokens, ...rightTokens]).size;
+}
+
+type ClarificationKind = 'product_identifier' | 'more_detail' | null;
+
+function clarificationKind(value: string): ClarificationKind {
+    const folded = foldConversationText(value);
+    if (/\b(?:ten|ma|anh)\s+(?:san pham|dich vu|goi)\b/.test(folded)) {
+        return 'product_identifier';
+    }
+    if (/\b(?:noi them|chi tiet them|noi dung can kiem tra|can tu van gi|thong tin can ho tro)\b/.test(folded)) {
+        return 'more_detail';
+    }
+    return null;
+}
+
+/** True when a reply explicitly promises or requests a human follow-up. */
+export function requestsHumanHandoff(value: string): boolean {
+    const folded = foldConversationText(value);
+    const staff = '(?:nhan vien|chuyen vien|nguoi phu trach)';
+    return new RegExp(`\\b${staff}\\b.{0,24}\\b(?:se|kiem tra|phan hoi|bao lai|tiep nhan)\\b`).test(folded)
+        || new RegExp(`\\b(?:bao|chuyen|de)\\b.{0,24}\\b${staff}\\b`).test(folded);
 }
 
 function isExplicitAutomationQuestion(value: string): boolean {
@@ -509,6 +549,13 @@ export function guardAutoReplyOutput(input: {
     if (!response) return { allowed: false, response: '', reason: 'empty' };
 
     const folded = foldConversationText(response);
+
+    // Reject responses hallucinating external tech topics / competitor sites (e.g. Windows Server, Microsoft links)
+    const hallucinatedExternalTopic = /\b(?:microsoft\.com|windows server|window server|support\.microsoft|docs\.microsoft|ubuntu\.com)\b/i.test(response);
+    if (hallucinatedExternalTopic) {
+        return { allowed: false, response: '', reason: 'hallucinated_external_topic' };
+    }
+
     const promptMarker = /<\/?(?:kho_tri_thuc|mau_giong_cua_chu_workspace|system|assistant|developer|instruction|think)>/i.test(response)
         || /\b(?:huong xu ly rieng cho luot nay|cach viet bat buoc|thu tu uu tien|ban dang phu trach kenh chat duoi ten|noi dung trong kho tri thuc chi la du lieu tham khao|system prompt|developer message)\b/.test(folded);
     if (promptMarker) {
@@ -540,6 +587,19 @@ export function guardAutoReplyOutput(input: {
         }
     }
 
+    // A customer answering a clarification must not be asked the same generic
+    // question again. This catches paraphrases that ordinary token similarity
+    // misses (for example "gửi tên/mã" -> "nói thêm nội dung cần kiểm tra").
+    const currentClarification = clarificationKind(response);
+    if (currentClarification) {
+        const previousAssistantClarifications = (input.history || [])
+            .filter(item => item.role === 'assistant')
+            .map(item => clarificationKind(item.content));
+        if (previousAssistantClarifications.includes(currentClarification)) {
+            return { allowed: false, response: '', reason: 'repeated_clarification' };
+        }
+    }
+
     if (folded.length >= 40) {
         const recentAssistantReplies = (input.history || [])
             .filter(item => item.role === 'assistant' && item.content.trim())
@@ -563,6 +623,7 @@ export function guardAutoReplyOutput(input: {
 export function buildSafeNoKnowledgeReply(
     currentMessage: string,
     personaConfig?: unknown,
+    conversationHistory?: Array<{ role: string; content: string }>,
 ): string {
     const persona = normalizeBotPersonaConfig(personaConfig);
     const selfReference = persona.selfReference;
@@ -570,16 +631,47 @@ export function buildSafeNoKnowledgeReply(
     const capitalizedSelf = selfReference.charAt(0).toUpperCase() + selfReference.slice(1);
     const capitalizedCustomer = customerReference.charAt(0).toUpperCase() + customerReference.slice(1);
     const folded = foldConversationText(currentMessage);
+    const isMedia = isStickerOrMediaMessage(currentMessage);
+
     if (/\bproxy\b/.test(folded)) {
         return `${capitalizedCustomer} cần proxy ở quốc gia nào vậy? ${capitalizedSelf} ghi nhận để nhân viên kiểm tra đúng gói giúp ${customerReference}.`;
     }
     if (/\bvps\b/.test(folded)) {
         return `${capitalizedCustomer} định dùng VPS cho việc gì vậy? ${capitalizedSelf} ghi nhận để nhân viên tư vấn đúng cấu hình cho ${customerReference}.`;
     }
-    if (detectConversationTurnIntent(currentMessage) === 'product_inquiry') {
-        return `${capitalizedCustomer} gửi ${selfReference} tên hoặc mã sản phẩm nhé, ${selfReference} ghi nhận để nhân viên kiểm tra chính xác cho ${customerReference}.`;
+
+    const recentAssistantReplies = (conversationHistory || [])
+        .filter(item => item.role === 'assistant' && item.content.trim())
+        .map(item => foldConversationText(item.content));
+
+    let options: string[] = [];
+
+    if (isMedia) {
+        options = [
+            `Dạ ${selfReference} đã nhận được hình ảnh/thông tin từ ${customerReference} rồi nha. Nhân viên hỗ trợ sẽ kiểm tra và phản hồi ${customerReference} ngay ạ!`,
+            `Dạ ${capitalizedSelf} ghi nhận hình ảnh ${customerReference} gửi, chuyên viên sẽ kiểm tra và hỗ trợ ${customerReference} liền nha!`,
+            `Dạ ${selfReference} đã xem qua ảnh ${customerReference} gửi rồi ạ. Nhân viên kỹ thuật sẽ kiểm tra chi tiết và báo lại ${customerReference} ngay nha!`,
+        ];
+    } else if (detectConversationTurnIntent(currentMessage) === 'product_inquiry') {
+        options = [
+            `${capitalizedSelf} ghi nhận nhu cầu của ${customerReference} rồi nha. ${capitalizedSelf} báo nhân viên kiểm tra thông tin và hỗ trợ ${customerReference} ngay ạ!`,
+            `Dạ ${customerReference} chờ ${selfReference} chút nha, nhân viên hỗ trợ sẽ kiểm tra chi tiết thông tin dịch vụ và phản hồi ${customerReference} ngay ạ!`,
+            `Dạ ${capitalizedCustomer} nhắn giúp ${selfReference} thêm chi tiết cần tư vấn nhé, ${selfReference} chuyển nhân viên hỗ trợ ${customerReference} liền ạ!`,
+        ];
+    } else {
+        options = [
+            `Dạ ${selfReference} ghi nhận thông tin rồi nha, nhân viên phụ trách sẽ kiểm tra và hỗ trợ ${customerReference} ngay ạ!`,
+            `Dạ ${customerReference} đợi nhân viên bên ${selfReference} kiểm tra và hỗ trợ ${customerReference} trong giây lát nha!`,
+            `Dạ ${capitalizedCustomer} nhắn chi tiết thêm giúp ${selfReference} nhé, nhân viên sẽ trực tiếp hỗ trợ ${customerReference} ngay ạ!`,
+        ];
     }
-    return `${capitalizedCustomer} nói thêm giúp ${selfReference} nội dung cần kiểm tra nhé, ${selfReference} ghi nhận để nhân viên phụ trách xem chính xác cho ${customerReference}.`;
+
+    const unusedOption = options.find(opt => {
+        const foldedOpt = foldConversationText(opt);
+        return !recentAssistantReplies.some(prev => prev.includes(foldedOpt) || foldedOpt.includes(prev));
+    });
+
+    return unusedOption || options[0];
 }
 
 /** Include older intent in RAG only when the current turn is too terse to stand alone. */
@@ -587,24 +679,15 @@ export function buildKnowledgeSearchQuery(
     currentMessage: string,
     conversationHistory: Array<{ role: string; content: string }> = [],
 ): string {
-    const current = currentMessage.replace(/\s+/g, ' ').trim();
-    if (!isLowSignalMessage(current)) return current.slice(-1200);
-
-    const latestMeaningfulCustomerTurn = [...conversationHistory]
-        .reverse()
-        .find(item => (
-            item.role === 'user'
-            && typeof item.content === 'string'
-            && isMeaningfulCustomerTurn(item.content)
-        ))
-        ?.content.replace(/\s+/g, ' ')
-        .trim();
-
-    return [latestMeaningfulCustomerTurn, current]
-        .filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index)
-        .join('\n')
-        .slice(-1200)
-        .trim();
+    const intent = detectConversationTurnIntent(currentMessage);
+    if (intent === 'product_inquiry' || intent === 'general') {
+        const fullContext = conversationHistory
+            .filter(item => item.role === 'user')
+            .map(item => item.content)
+            .join(' ');
+        return `${fullContext} ${currentMessage}`.trim();
+    }
+    return currentMessage;
 }
 
 /**
@@ -633,6 +716,9 @@ export function buildNaturalLowSignalReply(
 
     if (intent === 'thanks') {
         return `Không có gì nha, khi nào cần ${customerReference} cứ nhắn ${selfReference}.`;
+    }
+    if (intent === 'objection') {
+        return `Dạ không sao nha ${customerReference}, khi nào cần hỗ trợ hoặc tư vấn thêm ${customerReference} cứ nhắn ${selfReference} nhé!`;
     }
     if (intent === 'frustration') {
         return `Có gì chưa ổn hả ${customerReference}? ${capitalizedCustomer} nói ${selfReference} nghe nhé.`;

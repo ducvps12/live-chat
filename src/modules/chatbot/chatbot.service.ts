@@ -22,6 +22,7 @@ import {
     detectConversationTurnIntent,
     evaluateAutoReplyPolicy,
     guardAutoReplyOutput,
+    requestsHumanHandoff,
     isLowSignalMessage,
 } from './auto-reply.helpers';
 import { botTemplates, buildZaloShopeeBot, ZALO_SHOPEE_TEMPLATE_KEY } from './bot-templates';
@@ -149,7 +150,7 @@ function buildSystemPrompt(
     prompt += '- Khi khách chê đắt, so sánh nơi khác hoặc còn ngại, hãy ghi nhận đúng băn khoăn, giải thích bằng dữ liệu có sẵn và đưa ra một lựa chọn nhẹ nhàng. Không tranh luận, gây áp lực hay tự hứa giảm giá.\n';
     prompt += '- Nếu thiếu dữ liệu để trả lời, chỉ hỏi một chi tiết giúp tra cứu, ví dụ tên/mã/ảnh sản phẩm. Nếu doanh nghiệp cần xác nhận, nói rõ và đề nghị chuyển nhân viên.\n';
 
-    prompt += '\nSự thật, an toàn và danh tính:\n';
+    prompt += '- Tuyệt đối KHÔNG tự ý khẳng định shop "không bán" hay "không hỗ trợ" sản phẩm khi chưa có chỉ dẫn rõ ràng. Tuyệt đối KHÔNG khuyên khách sang trang web đối thủ hoặc bên thứ ba (như trang web chính thức của OpenAI, Canva, Netflix...). Khi thiếu dữ liệu về một sản phẩm khách hỏi, hãy nhẹ nhàng báo shop ghi nhận để nhân viên kiểm tra hỗ trợ ngay.\n';
     prompt += '- Không bịa giá, chính sách, tồn kho, trạng thái đơn, thời gian giao, ưu đãi hoặc cam kết. Nguồn sự thật chỉ gồm lịch sử hội thoại và kho tri thức được cung cấp.\n';
     prompt += '- Không yêu cầu mật khẩu, mã OTP, số thẻ hoặc dữ liệu nhạy cảm; không tự xác nhận thanh toán, sửa đơn, hủy đơn hay hành động ngoài cuộc trò chuyện.\n';
     prompt += '- Không tự giới thiệu là AI khi khách không hỏi vì điều đó không giúp giải quyết nhu cầu. Tuy nhiên, tuyệt đối không nhận mình là người thật hoặc một nhân viên cụ thể.\n';
@@ -297,6 +298,7 @@ export interface AutoReplyResult {
     responseParts?: string[];
     interMessageDelayMs?: number;
     preview?: boolean;
+    handoffRequested?: boolean;
 }
 
 export interface AutoReplyProcessingStart {
@@ -482,6 +484,7 @@ export const chatbotService = {
                     ? persona.interMessageDelayMs
                     : 0,
                 preview: isPreview,
+                handoffRequested: source === 'fallback' || requestsHumanHandoff(response),
             };
         };
 
@@ -578,18 +581,6 @@ export const chatbotService = {
                 // Knowledge base may not be available
             }
 
-            // Product facts must be grounded. When the catalogue has no relevant
-            // entry, ask one useful qualification question instead of letting a
-            // general model invent availability, pricing or an offer.
-            if (
-                detectConversationTurnIntent(message) === 'product_inquiry'
-                && !knowledgeContext
-            ) {
-                const response = buildSafeNoKnowledgeReply(message, persona);
-                if (!isPreview) await chatbotRepo.incrementStats(bot.id, 'totalReplies');
-                return makeResult(response, 'fallback');
-            }
-
             // Build system prompt from bot config
             const systemPrompt = buildSystemPrompt(
                 bot,
@@ -671,7 +662,7 @@ export const chatbotService = {
             return makeResult(bot.customGreeting, 'greeting');
         }
 
-        const response = buildSafeNoKnowledgeReply(message, persona);
+        const response = buildSafeNoKnowledgeReply(message, persona, conversationHistory);
         if (!isPreview) await chatbotRepo.incrementStats(bot.id, 'totalReplies');
         return makeResult(response, 'fallback');
     },
