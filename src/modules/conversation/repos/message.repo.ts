@@ -129,6 +129,10 @@ export const messageRepo = {
         });
     },
 
+    async updateStatus(messageId: string, status: 'sent' | 'delivered' | 'read' | 'error'): Promise<void> {
+        await prisma.message.update({ where: { id: messageId }, data: { status } });
+    },
+
     async markAsReadUpTo(
         conversationId: string,
         messageId: string,

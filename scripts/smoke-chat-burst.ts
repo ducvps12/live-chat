@@ -15,34 +15,41 @@ assert.equal(natural.intelligenceLevel, 'advanced');
 assert.equal(natural.maxReplyParts, 3);
 assert.equal(natural.interMessageDelayMs, 700);
 
+// Punctuation alone must not produce a machine-gun burst. The model needs to
+// explicitly separate deliberate chat bubbles with a blank line.
+assert.deepEqual(
+    splitHumanizedReply('First sentence. Second sentence. Third sentence.', natural),
+    ['First sentence. Second sentence. Third sentence.'],
+);
+
 const threeParts = splitHumanizedReply(
-    'Dạ dùng được ạ. Mình chỉ cần vặn trực tiếp vào vòi có sẵn. Không cần khoan hay lắp đặt phức tạp đâu ạ.',
+    'First deliberate thought.\n\nSecond deliberate thought.\n\nThird deliberate thought.',
     natural,
 );
 assert.deepEqual(threeParts, [
-    'Dạ dùng được ạ.',
-    'Mình chỉ cần vặn trực tiếp vào vòi có sẵn.',
-    'Không cần khoan hay lắp đặt phức tạp đâu ạ.',
+    'First deliberate thought.',
+    'Second deliberate thought.',
+    'Third deliberate thought.',
 ]);
 
 const withUrl = splitHumanizedReply(
-    'Bạn xem mẫu tại https://nemarkchat.com/products/item-2. Giá hiện tại là 299.000đ. Mình kiểm tra tồn kho giúp bạn nhé.',
+    'See https://nemarkchat.com/products/item-2 first.\n\nPrice is 299000.\n\nI will check stock.',
     natural,
 );
 assert.equal(withUrl.some(part => part.includes('https://nemarkchat.com/products/item-2')), true);
-assert.equal(withUrl.join(' ').includes('299.000đ'), true);
+assert.equal(withUrl.join(' ').includes('299000'), true);
 
 const capped = splitHumanizedReply(
-    'Ý thứ nhất. Ý thứ hai. Ý thứ ba. Ý thứ tư.',
+    'One.\n\nTwo.\n\nThree.\n\nFour.',
     { ...natural, maxReplyParts: 2 },
 );
 assert.equal(capped.length, 2);
-assert.equal(capped.join(' '), 'Ý thứ nhất. Ý thứ hai. Ý thứ ba. Ý thứ tư.');
+assert.equal(capped.join(' '), 'One. Two. Three. Four.');
 
 const single = splitHumanizedReply(
-    'Câu đầu. Câu sau.',
+    'First.\n\nSecond.',
     { ...natural, replyGrouping: 'single' },
 );
-assert.deepEqual(single, ['Câu đầu. Câu sau.']);
+assert.deepEqual(single, ['First.\n\nSecond.']);
 
 console.log('CHAT_BURST_SMOKE_OK');

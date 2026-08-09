@@ -266,15 +266,6 @@ export function calculateHumanizedDeliveryDelay(input: {
     return Math.max(0, targetMs - Math.max(0, input.elapsedMs));
 }
 
-function splitLongUnit(unit: string): string[] {
-    if (unit.length <= 170) return [unit];
-    const clauses = unit
-        .split(/(?<=[,;:])\s+/)
-        .map(part => part.trim())
-        .filter(Boolean);
-    return clauses.length > 1 ? clauses : [unit];
-}
-
 /**
  * Turn one AI answer into a short, natural chat burst. This is deterministic:
  * it does not spend extra AI quota and never cuts URLs or words in the middle.
@@ -294,7 +285,6 @@ export function splitHumanizedReply(response: string, value: unknown): string[] 
     // paragraph breaks represent an intentional burst.
     const units = normalized
         .split(/\n{2,}/u)
-        .flatMap(splitLongUnit)
         .map(part => part.trim())
         .filter(Boolean);
     if (units.length <= 1) return [normalized];

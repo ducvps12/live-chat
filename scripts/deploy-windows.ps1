@@ -6,13 +6,6 @@ $startupTask = '\Nemark_AutoStart'
 
 Set-Location -LiteralPath $appDirectory
 
-Write-Host 'Stopping the NemarkChat API process on port 4001...'
-Get-NetTCPConnection -LocalPort 4001 -State Listen -ErrorAction SilentlyContinue |
-    Select-Object -ExpandProperty OwningProcess -Unique |
-    ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
-
-Start-Sleep -Seconds 2
-
 Write-Host 'Installing locked production dependencies...'
 & npm.cmd ci --no-audit --fund=false
 if ($LASTEXITCODE -ne 0) { throw "npm ci failed with exit code $LASTEXITCODE" }
@@ -21,9 +14,16 @@ Write-Host 'Generating Prisma Client...'
 & npx.cmd prisma generate
 if ($LASTEXITCODE -ne 0) { throw "Prisma generate failed with exit code $LASTEXITCODE" }
 
-Write-Host 'Building the production application...'
-& npm.cmd run build
-if ($LASTEXITCODE -ne 0) { throw "Production build failed with exit code $LASTEXITCODE" }
+Write-Host 'Running the production test gate before touching the live process...'
+& npm.cmd run verify:production
+if ($LASTEXITCODE -ne 0) { throw "Production test gate failed with exit code $LASTEXITCODE. Existing service was not restarted." }
+
+Write-Host 'Stopping the NemarkChat API process on port 4001 after the gate passed...'
+Get-NetTCPConnection -LocalPort 4001 -State Listen -ErrorAction SilentlyContinue |
+    Select-Object -ExpandProperty OwningProcess -Unique |
+    ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
+
+Start-Sleep -Seconds 2
 
 Write-Host 'Restarting the existing NemarkChat startup task...'
 & schtasks.exe /Run /TN $startupTask

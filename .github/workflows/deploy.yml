@@ -13,8 +13,28 @@ permissions:
   contents: read
 
 jobs:
+  verify:
+    name: Production test gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --fund=false
+
+      - name: Build and verify auto-reply invariants
+        run: npm run verify:production
+
   deploy:
     name: Deploy and verify production
+    needs: verify
     runs-on: ubuntu-latest
     environment: production
     steps:

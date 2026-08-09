@@ -17,7 +17,6 @@ import {
     isZaloGroupConversation,
     type LatestOnlyWorkerResult,
 } from '../chatbot/auto-reply.helpers';
-import type { AutoReplyResult } from '../chatbot/chatbot.service';
 import type { Conversation, Message } from '@prisma/client';
 import {
     buildZaloConversationIdentity,
@@ -30,6 +29,14 @@ import {
     type AutoReplyTypingActor,
     waitForAutoReplyDelivery,
 } from './auto-reply-typing';
+import {
+    attemptExternalAutoReplyDelivery,
+    autoReplyPartClientMessageId,
+    createDurableAutoReplyPlan,
+    readDurableAutoReplyPlan,
+    type DurableAutoReplyPlan,
+    withDurableAutoReplyPlan,
+} from './auto-reply-delivery';
 import {
     captureLeadFromWidget,
     normalizeWidgetVisitorInfo,
@@ -189,10 +196,6 @@ function latestVisitorResult(
     return {}; // A newer non-text visitor message suppresses the stale text reply.
 }
 
-function autoReplyClientMessageId(incomingMessageId: string): string {
-    return `ai-auto-reply:${incomingMessageId}`;
-}
-
 async function loadFreshAutoReplyState(conversationId: string): Promise<{
     conversation: Conversation | null;
     latestVisitor: Message | null;
@@ -219,7 +222,7 @@ function conversationAllowsAutoReply(
 
 async function sendAutoReplyToExternal(
     conversation: Conversation,
-    botResult: AutoReplyResult,
+    text: string,
 ): Promise<void> {
     const channel = String(conversation.channel || 'website').toLowerCase();
     const metadata = jsonRecord(conversation.metadata);
@@ -227,9 +230,11 @@ async function sendAutoReplyToExternal(
     if (channel === 'facebook' || channel === 'messenger') {
         const fbUserId = typeof metadata.fbUserId === 'string' ? metadata.fbUserId : '';
         const pageId = typeof metadata.pageId === 'string' ? metadata.pageId : '';
-        if (!fbUserId || !pageId) return;
+        if (!fbUserId || !pageId) {
+            throw new Error('Facebook auto-reply is missing the recipient or Page identity');
+        }
         const { facebookService } = await import('../facebook/facebook.service');
-        await facebookService.sendMessage(conversation.workspaceId, fbUserId, botResult.response, pageId);
+        await facebookService.sendMessage(conversation.workspaceId, fbUserId, text, pageId);
         console.log(`[Chatbot] ✅ Bot reply sent to Facebook user ${fbUserId}`);
         return;
     }
@@ -238,18 +243,129 @@ async function sendAutoReplyToExternal(
         const metadataUserId = typeof metadata.zaloUserId === 'string' ? metadata.zaloUserId : '';
         const zaloThreadId = metadataUserId || String(conversation.visitorId || '').replace(/^zalo_/, '');
         const accountId = typeof metadata.accountId === 'string' ? metadata.accountId : undefined;
-        if (!zaloThreadId) return;
+        if (!zaloThreadId) {
+            throw new Error('Zalo auto-reply is missing the recipient identity');
+        }
         const { zaloService } = await import('../zalo/zalo.service');
         await zaloService.sendMessage(
             conversation.workspaceId,
             zaloThreadId,
-            botResult.response,
+            text,
             'text',
             undefined,
             accountId,
         );
         console.log(`[Chatbot] ✅ Bot reply sent to Zalo user ${zaloThreadId}`);
     }
+}
+
+async function isCurrentAutoReplyDelivery(
+    conversationId: string,
+    targetMessageId: string,
+    agentCondition: string,
+    isLatestJob: () => boolean,
+): Promise<Conversation | null> {
+    const fresh = await loadFreshAutoReplyState(conversationId);
+    if (!fresh.conversation || !fresh.latestVisitor) return null;
+    if (latestVisitorResult(fresh.latestVisitor, targetMessageId)) return null;
+    if (!conversationAllowsAutoReply(fresh.conversation, agentCondition)) return null;
+    return isLatestJob() ? fresh.conversation : null;
+}
+
+async function completeAutoReplyPlan(
+    conversationId: string,
+    conversation: Conversation,
+    plan: DurableAutoReplyPlan,
+): Promise<void> {
+    const metadata = withDurableAutoReplyPlan(conversation.metadata, null);
+    if (plan.handoffRequested) {
+        Object.assign(metadata, {
+            humanTakeover: true,
+            aiPaused: true,
+            autoReplyEnabled: false,
+            autoReplyDisabled: true,
+            aiMode: 'manual',
+            handoffRequestedAt: new Date().toISOString(),
+            handoffReason: plan.source === 'fallback'
+                ? 'missing_knowledge'
+                : 'bot_requested_human_support',
+            handoffBotId: plan.botId,
+            handoffBotName: plan.botName,
+        });
+    }
+    await conversationRepo.updateMetadata(conversationId, metadata);
+}
+
+async function deliverDurableAutoReplyPlan(
+    conversationId: string,
+    plan: DurableAutoReplyPlan,
+    isLatestJob: () => boolean,
+): Promise<void | LatestOnlyWorkerResult<string>> {
+    for (let partIndex = plan.nextPartIndex; partIndex < plan.parts.length; partIndex += 1) {
+        const conversation = await isCurrentAutoReplyDelivery(
+            conversationId,
+            plan.targetMessageId,
+            plan.agentCondition,
+            isLatestJob,
+        );
+        if (!conversation) return;
+
+        const partClientMessageId = autoReplyPartClientMessageId(plan.targetMessageId, partIndex);
+        let localMessage = await messageRepo.findByClientMessageId(conversationId, partClientMessageId);
+        if (!localMessage) {
+            localMessage = await conversationService.addMessage(
+                conversationId,
+                { type: 'agent', id: `bot_${plan.botId}`, name: plan.botName },
+                plan.parts[partIndex],
+                'text',
+                undefined,
+                partClientMessageId,
+            );
+            _botReplyTimestamps.set(conversationId, Date.now());
+            console.log(`[Chatbot] Auto-replied part ${partIndex + 1}/${plan.parts.length} in conv ${conversationId}`);
+        }
+
+        const delivery = await attemptExternalAutoReplyDelivery({
+            channel: conversation.channel,
+            messageStatus: localMessage.status,
+            isCurrent: async () => Boolean(await isCurrentAutoReplyDelivery(
+                conversationId,
+                plan.targetMessageId,
+                plan.agentCondition,
+                isLatestJob,
+            )),
+            send: () => sendAutoReplyToExternal(conversation, plan.parts[partIndex]),
+            markStatus: status => messageRepo.updateStatus(localMessage!.id, status),
+        });
+        if (delivery === 'stale') return;
+        if (delivery === 'retry') {
+            console.error(`[Chatbot] External auto-reply part ${partIndex + 1} failed after local save; retrying durable row`);
+            return { retryAfterMs: 1_500 };
+        }
+
+        const afterDelivery = await loadFreshAutoReplyState(conversationId);
+        if (!afterDelivery.conversation || !afterDelivery.latestVisitor) return;
+        if (latestVisitorResult(afterDelivery.latestVisitor, plan.targetMessageId)) return;
+        if (!conversationAllowsAutoReply(afterDelivery.conversation, plan.agentCondition) || !isLatestJob()) return;
+        const nextPlan = { ...plan, nextPartIndex: partIndex + 1 };
+        await conversationRepo.updateMetadata(
+            conversationId,
+            withDurableAutoReplyPlan(afterDelivery.conversation.metadata, nextPlan),
+        );
+
+        if (partIndex < plan.parts.length - 1) {
+            const keepGoing = await waitForAutoReplyDelivery(plan.interMessageDelayMs, isLatestJob);
+            if (!keepGoing) return;
+        }
+    }
+
+    const finalConversation = await isCurrentAutoReplyDelivery(
+        conversationId,
+        plan.targetMessageId,
+        plan.agentCondition,
+        isLatestJob,
+    );
+    if (finalConversation) await completeAutoReplyPlan(conversationId, finalConversation, plan);
 }
 
 async function findZaloConversationForIdentity(
@@ -279,12 +395,35 @@ async function processQueuedAutoReply(
     if (!isReplyableVisitorMessage(initial.latestVisitor)) return;
     if (!conversationAllowsAutoReply(initial.conversation, 'no_condition')) return;
 
-    // A deterministic id makes a retried worker a no-op after the local bot row exists.
-    const botClientMessageId = autoReplyClientMessageId(targetMessageId);
+    // Resume a durable delivery plan before ever asking the model again. This
+    // makes a retry after a local save safe for Facebook/Zalo outages and keeps
+    // multi-bubble bursts ordered without regenerating different wording.
+    const pendingPlan = readDurableAutoReplyPlan(initial.conversation.metadata);
+    if (pendingPlan?.targetMessageId === targetMessageId) {
+        return deliverDurableAutoReplyPlan(conversationId, pendingPlan, isLatestJob);
+    }
+
+    // Compatibility recovery for rows created before durable delivery plans.
+    // Only retry known failures; a sent row is idempotently complete.
+    const botClientMessageId = autoReplyPartClientMessageId(targetMessageId, 0);
     const existingBotMessage = await messageRepo.findByClientMessageId(conversationId, botClientMessageId);
     if (existingBotMessage) {
         _botReplyTimestamps.set(conversationId, new Date(existingBotMessage.createdAt).getTime());
-        return;
+        if (existingBotMessage.status !== 'error') return;
+        const recoveryConversation = initial.conversation;
+        const recovery = await attemptExternalAutoReplyDelivery({
+            channel: recoveryConversation.channel,
+            messageStatus: existingBotMessage.status,
+            isCurrent: async () => Boolean(await isCurrentAutoReplyDelivery(
+                conversationId,
+                targetMessageId,
+                'no_condition',
+                isLatestJob,
+            )),
+            send: () => sendAutoReplyToExternal(recoveryConversation, existingBotMessage.content),
+            markStatus: status => messageRepo.updateStatus(existingBotMessage.id, status),
+        });
+        return recovery === 'retry' ? { retryAfterMs: 1_500 } : undefined;
     }
 
     const lastBotReply = _botReplyTimestamps.get(conversationId);
@@ -363,85 +502,29 @@ async function processQueuedAutoReply(
             ? configuredParts
             : [botResult.response];
 
-        for (let partIndex = 0; partIndex < responseParts.length; partIndex += 1) {
-            const responsePart = responseParts[partIndex];
-
-            // Re-read before every bubble. A customer follow-up or human takeover
-            // cancels the remainder of the burst instead of sending stale text.
-            const beforeSave = await loadFreshAutoReplyState(conversationId);
-            if (!beforeSave.conversation || !beforeSave.latestVisitor) return;
-            const saveReplacement = latestVisitorResult(beforeSave.latestVisitor, targetMessageId);
-            if (saveReplacement) return saveReplacement;
-            if (!conversationAllowsAutoReply(beforeSave.conversation, botResult.agentCondition)) return;
-            if (!isLatestJob()) return;
-
-            const partClientMessageId = partIndex === 0
-                ? botClientMessageId
-                : `${botClientMessageId}:${partIndex + 1}`;
-            await conversationService.addMessage(
-                conversationId,
-                { type: 'agent', id: `bot_${botResult.botId}`, name: botResult.botName },
-                responsePart,
-                'text',
-                undefined,
-                partClientMessageId,
-            );
-            _botReplyTimestamps.set(conversationId, Date.now());
-            console.log(`[Chatbot] Auto-replied part ${partIndex + 1}/${responseParts.length} in conv ${conversationId}`);
-
-            const channel = String(beforeSave.conversation.channel || 'website').toLowerCase();
-            if (channel === 'facebook' || channel === 'messenger' || channel === 'zalo') {
-                // External delivery gets its own final freshness check. We do not
-                // retry an ambiguous send without a durable delivery/outbox table.
-                const beforeSend = await loadFreshAutoReplyState(conversationId);
-                if (!beforeSend.conversation || !beforeSend.latestVisitor) return;
-                const sendReplacement = latestVisitorResult(beforeSend.latestVisitor, targetMessageId);
-                if (sendReplacement) return sendReplacement;
-                if (!conversationAllowsAutoReply(beforeSend.conversation, botResult.agentCondition)) return;
-                if (!isLatestJob()) return;
-
-                try {
-                    await sendAutoReplyToExternal(beforeSend.conversation, {
-                        ...botResult,
-                        response: responsePart,
-                    });
-                } catch (error) {
-                    console.error(`[Chatbot] External auto-reply part ${partIndex + 1} failed after local save:`, error);
-                }
-            }
-
-            if (partIndex < responseParts.length - 1) {
-                const continueBurst = await waitForAutoReplyDelivery(
-                    botResult.interMessageDelayMs || 0,
-                    isLatestJob,
-                );
-                if (!continueBurst) return;
-            }
-        }
-
-        // A reply that promises human support must create a real handoff. Pause
-        // the bot after the acknowledgement so later customer details do not
-        // trigger another generic clarification loop.
-        if (botResult.handoffRequested) {
-            const afterReply = await conversationRepo.findById(conversationId);
-            if (afterReply) {
-                await conversationRepo.updateMetadata(conversationId, {
-                    ...jsonRecord(afterReply.metadata),
-                    humanTakeover: true,
-                    aiPaused: true,
-                    autoReplyEnabled: false,
-                    autoReplyDisabled: true,
-                    aiMode: 'manual',
-                    handoffRequestedAt: new Date().toISOString(),
-                    handoffReason: botResult.source === 'fallback'
-                        ? 'missing_knowledge'
-                        : 'bot_requested_human_support',
-                    handoffBotId: botResult.botId,
-                    handoffBotName: botResult.botName,
-                });
-                console.log(`[Chatbot] Human handoff requested for conv ${conversationId}; auto-reply paused`);
-            }
-        }
+        const plan = createDurableAutoReplyPlan({
+            targetMessageId,
+            botId: botResult.botId,
+            botName: botResult.botName,
+            agentCondition: botResult.agentCondition,
+            source: botResult.source || 'ai',
+            handoffRequested: Boolean(botResult.handoffRequested),
+            parts: responseParts,
+            interMessageDelayMs: botResult.interMessageDelayMs || 0,
+        });
+        if (!plan.parts.length) return;
+        const beforePlan = await isCurrentAutoReplyDelivery(
+            conversationId,
+            targetMessageId,
+            botResult.agentCondition,
+            isLatestJob,
+        );
+        if (!beforePlan) return;
+        await conversationRepo.updateMetadata(
+            conversationId,
+            withDurableAutoReplyPlan(beforePlan.metadata, plan),
+        );
+        return deliverDurableAutoReplyPlan(conversationId, plan, isLatestJob);
     } finally {
         stopAutoReplyTyping(conversationId, targetMessageId);
     }

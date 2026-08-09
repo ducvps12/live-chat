@@ -52,12 +52,12 @@ const boundedHistory = buildAutoReplyHistory(
 assert.equal(boundedHistory.length, 12);
 assert.equal(boundedHistory[0].content, 'message 2');
 
-const knowledgeQuery = buildKnowledgeSearchQuery('Hi', history);
+const knowledgeQuery = buildKnowledgeSearchQuery('Báo giá giúp mình', history);
 assert.match(knowledgeQuery, /VPS/);
-assert.match(knowledgeQuery, /Hi$/);
-assert.equal(
+assert.match(knowledgeQuery, /Báo giá giúp mình$/);
+assert.match(
     buildKnowledgeSearchQuery('Shop còn mẫu váy này size M không?', history),
-    'Shop còn mẫu váy này size M không?',
+    /Shop còn mẫu váy này size M không\?$/,
 );
 
 // Terse chat: keep the reply short and conversational instead of invoking an LLM.
@@ -105,7 +105,7 @@ const identityQuestion = 'Bạn là AI à?';
 assert.equal(detectConversationTurnIntent(identityQuestion), 'identity_question');
 assert.equal(
     buildDirectIdentityReply(identityQuestion, 'NemarkChat'),
-    'Đúng rồi, mình là trợ lý tự động của NemarkChat. Mình hỗ trợ trước; nếu bạn muốn gặp nhân viên, cứ nói mình nhé.',
+    'Dạ mình là trợ lý tự động của NemarkChat ạ. Bạn cần mình tư vấn thông tin gì hay muốn nối máy tới nhân viên hỗ trợ trực tiếp nè?',
 );
 assert.equal(buildDirectIdentityReply('Shop còn size M không?', 'NemarkChat'), null);
 assert.equal(detectConversationTurnIntent('ai à'), 'identity_question');
@@ -127,7 +127,7 @@ const roleFirstIdentity = buildDirectIdentityReply('mày là ai?', 'NemarkChat',
 });
 assert.equal(
     roleFirstIdentity,
-    'Tớ là người phụ trách tư vấn của NemarkChat nè. Cậu đang cần tớ xem gì vậy?',
+    'Dạ tớ là trợ lý hỗ trợ khách hàng của NemarkChat ạ. Cậu cần tớ xem giúp thông tin nào ạ?',
 );
 assert.doesNotMatch(roleFirstIdentity || '', /\b(?:AI|bot|tự động)\b/i);
 
