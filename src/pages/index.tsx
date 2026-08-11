@@ -33,6 +33,7 @@ import {
     Zap,
 } from 'lucide-react';
 import { WIDGET_LOADER_PATH } from '../config/widgetLoader';
+import { LandingGuidedSetup } from '../features/marketing/LandingGuidedSetup';
 
 const LANDING_WIDGET_ID = process.env.NEXT_PUBLIC_LANDING_WIDGET_ID || 'cmr6lsujd00071sv6xl02s7dr';
 const configuredLandingApiBase = process.env.NEXT_PUBLIC_LANDING_WIDGET_API_BASE
@@ -549,6 +550,8 @@ export default function HomePage() {
                         </div>
                     </div>
                 </section>
+
+                <LandingGuidedSetup />
 
                 {/* AI & AUTOMATION OPERATING LAYER */}
                 <section className="nk-section nk-section-alt nk-appear" id="automation">

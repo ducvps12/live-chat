@@ -993,12 +993,20 @@
 
             // ── Pre-chat form (redesigned) ──
             '#nchat-pcf{max-width:100%;padding:4px 0;display:flex;flex-direction:column}',
-            '#nchat-pcf .nchat-pcf-title{font-size:14px;font-weight:600;color:#1a1a2e;margin-bottom:16px}',
+            '#nchat-pcf .nchat-pcf-title{font-size:15px;font-weight:720;color:#172033;margin-bottom:4px;letter-spacing:-.01em}',
+            '#nchat-pcf .nchat-pcf-subtitle{font-size:12px;line-height:1.5;color:#64748b;margin-bottom:15px}',
+            '#nchat-pcf .nchat-pcf-progress{display:flex;align-items:center;gap:6px;margin:2px 0 16px}',
+            '#nchat-pcf .nchat-pcf-progress span{display:block;height:4px;flex:1;border-radius:999px;background:#e8edf4;transition:background .2s,transform .2s}',
+            '#nchat-pcf .nchat-pcf-progress span.is-active{background:' + color + ';transform:scaleY(1.15)}',
+            '#nchat-pcf .nchat-pcf-step{display:none}',
+            '#nchat-pcf .nchat-pcf-step.is-active{display:block;animation:nchat-pcf-in .2s ease-out}',
+            '@keyframes nchat-pcf-in{from{opacity:0;transform:translateX(8px)}to{opacity:1;transform:translateX(0)}}',
+            '#nchat-pcf .nchat-pcf-field{display:block}',
             '#nchat-pcf label{display:block;font-size:12px;font-weight:500;color:#475569;margin-bottom:4px}',
             '#nchat-pcf label .nchat-req{color:#ef4444;margin-left:2px}',
             '#nchat-pcf input{width:100%;padding:10px 14px;border:1.5px solid #e2e8f0;border-radius:10px;font-size:13px;margin-bottom:12px;box-sizing:border-box;outline:none;transition:border-color .2s,box-shadow .2s;background:#fff}',
             '#nchat-pcf input:focus{border-color:' + color + ';box-shadow:0 0 0 3px ' + color + '20}',
-            '#nchat-pcf button{width:100%;padding:12px;border:none;border-radius:12px;background:' + bgVal + ';color:#fff;font-weight:600;cursor:pointer;font-size:14px;transition:all .2s;margin-top:4px;order:60}',
+            '#nchat-pcf button{width:100%;padding:12px;border:none;border-radius:12px;background:' + bgVal + ';color:#fff;font-weight:650;cursor:pointer;font-size:14px;transition:all .2s;margin-top:4px;order:60}',
             '#nchat-pcf button:hover{opacity:.92;transform:translateY(-1px);box-shadow:0 4px 12px ' + color + '30}',
             '#nchat-pcf textarea{width:100%;padding:10px 14px;border:1.5px solid #e2e8f0;border-radius:10px;font-size:13px;margin-bottom:12px;box-sizing:border-box;outline:none;transition:border-color .2s,box-shadow .2s;font-family:inherit;resize:vertical;min-height:60px;max-height:120px;background:#fff}',
             '#nchat-pcf textarea:focus{border-color:' + color + ';box-shadow:0 0 0 3px ' + color + '20}',
@@ -1009,6 +1017,10 @@
             '#nchat-pcf .nchat-consent{display:flex;align-items:flex-start;gap:9px;margin:4px 0 13px;color:#475569;font-size:11px;line-height:1.45;cursor:pointer;order:50}',
             '#nchat-pcf .nchat-consent input{appearance:auto;width:17px;height:17px;min-width:17px;margin:1px 0 0;padding:0;border:1px solid #cbd5e1;border-radius:4px;box-shadow:none;accent-color:' + color + '}',
             '#nchat-pcf .nchat-consent span{display:block}',
+            '#nchat-pcf .nchat-pcf-actions{display:flex;gap:8px;align-items:center;margin-top:2px}',
+            '#nchat-pcf .nchat-pcf-actions button{margin-top:0}',
+            '#nchat-pcf .nchat-pcf-actions .nchat-pcf-back{width:auto;min-width:84px;background:#fff;color:#475569;border:1px solid #dbe3ee;box-shadow:none}',
+            '#nchat-pcf .nchat-pcf-actions .nchat-pcf-back:hover{background:#f8fafc;box-shadow:none}',
 
             // ── Message Bubbles (improved) ──
             '.nchat-msg{margin-bottom:10px;display:flex;align-items:flex-end;gap:6px;animation:nchat-fadeIn .25s ease}',
@@ -1657,7 +1669,10 @@
 
                 // Auto-evaluate view: if has conversations, show list. Else show chat.
                 loadConversationList().then(function (hasConversations) {
-                    if (hasConversations) {
+                    // A visitor who has not completed pre-chat must stay in the chat view.
+                    // The list can contain an anonymous historical item, but it must never
+                    // hide the form needed to establish the current visitor profile.
+                    if (hasConversations && !win.querySelector('#nchat-pcf')) {
                         switchView('list', { skipLoad: true });
                     } else {
                         switchView('chat');
@@ -2897,6 +2912,105 @@
         _globalCleanup.push(function () { window.removeEventListener('online', handleWidgetOnline); });
 
         if (pcfEl) {
+            // Keep the configured form payload intact, but reveal it in two small steps.
+            // This reduces abandonment on mobile without adding a second lead contract.
+            (function setupProgressivePrechat() {
+                var submitButton = pcfEl.querySelector('button[type="submit"]');
+                var fieldConfig = pcf.fields || [];
+                if (!submitButton || fieldConfig.filter(function (field) { return field && field.enabled; }).length < 2) return;
+
+                var fieldRoots = [];
+                var controls = pcfEl.querySelectorAll('input:not([type="hidden"]), textarea, select');
+                for (var controlIndex = 0; controlIndex < controls.length; controlIndex++) {
+                    var control = controls[controlIndex];
+                    var root;
+                    if (control.type === 'checkbox') {
+                        root = control.closest ? control.closest('.nchat-consent') : control.parentNode;
+                    } else {
+                        var fieldLabel = control.previousElementSibling;
+                        if (fieldLabel && fieldLabel.tagName === 'LABEL') {
+                            root = document.createElement('div');
+                            root.className = 'nchat-pcf-field';
+                            fieldLabel.parentNode.insertBefore(root, fieldLabel);
+                            root.appendChild(fieldLabel);
+                            root.appendChild(control);
+                        } else {
+                            root = control;
+                        }
+                    }
+                    if (root && fieldRoots.indexOf(root) === -1) fieldRoots.push(root);
+                }
+                if (fieldRoots.length < 2) return;
+
+                pcfEl.setAttribute('novalidate', 'novalidate');
+                var title = pcfEl.querySelector('.nchat-pcf-title');
+                var subtitle = document.createElement('p');
+                subtitle.className = 'nchat-pcf-subtitle';
+                subtitle.textContent = lang === 'vi'
+                    ? 'Cho m\u00ecnh xin m\u1ed9t v\u00e0i th\u00f4ng tin, m\u1ea5t kho\u1ea3ng 20 gi\u00e2y.'
+                    : 'A couple of quick details help us route your request.';
+                if (title && title.parentNode) title.parentNode.insertBefore(subtitle, title.nextSibling);
+
+                var progress = document.createElement('div');
+                progress.className = 'nchat-pcf-progress';
+                progress.setAttribute('aria-label', lang === 'vi' ? 'Ti\u1ebfn tr\u00ecnh bi\u1ec3u m\u1eabu' : 'Form progress');
+                progress.innerHTML = '<span class="is-active"></span><span></span>';
+                pcfEl.insertBefore(progress, fieldRoots[0]);
+
+                var firstStep = document.createElement('div');
+                firstStep.className = 'nchat-pcf-step is-active';
+                firstStep.setAttribute('data-pcf-step', '1');
+                var secondStep = document.createElement('div');
+                secondStep.className = 'nchat-pcf-step';
+                secondStep.setAttribute('data-pcf-step', '2');
+                pcfEl.insertBefore(firstStep, fieldRoots[0]);
+                pcfEl.insertBefore(secondStep, submitButton);
+                firstStep.appendChild(fieldRoots[0]);
+                for (var rootIndex = 1; rootIndex < fieldRoots.length; rootIndex++) secondStep.appendChild(fieldRoots[rootIndex]);
+
+                var actions = document.createElement('div');
+                actions.className = 'nchat-pcf-actions';
+                var backButton = document.createElement('button');
+                backButton.type = 'button';
+                backButton.className = 'nchat-pcf-back';
+                backButton.hidden = true;
+                backButton.textContent = lang === 'vi' ? 'Quay l\u1ea1i' : 'Back';
+                var nextButton = document.createElement('button');
+                nextButton.type = 'button';
+                nextButton.id = 'nchat-pcf-next';
+                nextButton.textContent = lang === 'vi' ? 'Ti\u1ebfp t\u1ee5c' : 'Continue';
+                submitButton.hidden = true;
+                pcfEl.insertBefore(actions, submitButton);
+                actions.appendChild(backButton);
+                actions.appendChild(nextButton);
+                actions.appendChild(submitButton);
+
+                function updateStep(step) {
+                    var first = step === 1;
+                    firstStep.classList.toggle('is-active', first);
+                    secondStep.classList.toggle('is-active', !first);
+                    firstStep.hidden = !first;
+                    secondStep.hidden = first;
+                    backButton.hidden = first;
+                    nextButton.hidden = !first;
+                    submitButton.hidden = first;
+                    var bars = progress.querySelectorAll('span');
+                    for (var barIndex = 0; barIndex < bars.length; barIndex++) bars[barIndex].classList.toggle('is-active', barIndex < step);
+                    var target = (first ? firstStep : secondStep).querySelector('input,textarea,select');
+                    if (target && target.focus) target.focus();
+                }
+
+                nextButton.addEventListener('click', function () {
+                    var firstControl = firstStep.querySelector('input,textarea,select');
+                    var firstName = firstControl && firstControl.getAttribute('name');
+                    var firstConfig = fieldConfig.filter(function (field) { return field && field.enabled && field.key === firstName; });
+                    if (!validateFields(pcfEl, firstConfig)) return;
+                    updateStep(2);
+                });
+                backButton.addEventListener('click', function () { updateStep(1); });
+                updateStep(1);
+            })();
+
             // Clear errors on input/change
             pcfEl.addEventListener('input', function (ev) {
                 if (ev.target && ev.target.classList) clearFieldError(ev.target);

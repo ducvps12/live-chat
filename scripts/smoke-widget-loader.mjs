@@ -29,13 +29,22 @@ window.io = function () {
 window.__emitNchatSocket = function (event, payload) {
   (window.__nchatSocketHandlers[event] || []).forEach((handler) => handler(payload));
 };
-localStorage.setItem('nchat_conv_widget-smoke', 'conversation-smoke');
-localStorage.setItem('nchat_visitor_token', 'visitor-token-smoke');
+if (!window.__prechatMode) {
+  localStorage.setItem('nchat_conv_widget-smoke', 'conversation-smoke');
+  localStorage.setItem('nchat_visitor_token', 'visitor-token-smoke');
+}
 const nativeFetch = window.fetch.bind(window);
 window.fetch = async (input, init) => {
   const url = String(input);
   if (url.includes('/config')) return new Response(JSON.stringify({success:true,data:{
-    name:'NemarkChat Hỗ trợ', workspaceId:'workspace-test', config:{primaryColor:'#2563eb',position:'bottom-right',language:'vi',greeting:'Xin chào!',showTypingIndicator:true}, domainRules:{domains:[]}, businessHours:{enabled:false}
+    name:'NemarkChat Hỗ trợ', workspaceId:'workspace-test', config:{
+      primaryColor:'#2563eb',position:'bottom-right',language:'vi',greeting:'Xin chào!',showTypingIndicator:true,
+      preChatForm: window.__prechatMode ? {enabled:true,title:'Bắt đầu hỗ trợ',fields:[
+        {key:'name',label:'Họ tên',type:'text',required:true,enabled:true},
+        {key:'email',label:'Email',type:'email',required:true,enabled:true},
+        {key:'goal',label:'Nhu cầu',type:'select',required:true,enabled:true,options:['Tư vấn','Báo giá']}
+      ]} : {enabled:false,fields:[]}
+    }, domainRules:{domains:[]}, businessHours:{enabled:false}
   }}), {status:200,headers:{'content-type':'application/json'}});
   if (url.includes('/api/conversations/public/find-or-create')) return new Response(JSON.stringify({success:true,data:{
     conversation:{id:'conversation-smoke'}, visitorToken:'visitor-token-smoke', messages:[], totalMessages:0
@@ -416,6 +425,69 @@ try {
       || Math.abs(mobileRestored.width - mobileRestored.viewportWidth) > 1
       || Math.abs(mobileRestored.height - mobileRestored.viewportHeight) > 1) {
     throw new Error(`mobile restore regression: ${JSON.stringify(mobileRestored)}`);
+  }
+
+  // A first-time visitor should see only one prompt at a time, while the final
+  // payload still contains every configured field.
+  const prechatPage = await browser.newPage();
+  await prechatPage.evaluateOnNewDocument(() => {
+    window.__prechatMode = true;
+    localStorage.clear();
+  });
+  await prechatPage.setViewport({width:390,height:760});
+  await prechatPage.goto(origin, {waitUntil:'domcontentloaded', timeout:5000});
+  await prechatPage.waitForSelector('#nchat-bubble');
+  await prechatPage.click('#nchat-bubble');
+  await prechatPage.waitForSelector('#nchat-pcf');
+  const initialPrechat = await prechatPage.evaluate(() => ({
+    steps: document.querySelectorAll('#nchat-pcf .nchat-pcf-step').length,
+    active: document.querySelector('#nchat-pcf .nchat-pcf-step.is-active')?.getAttribute('data-pcf-step'),
+    visibleControls: [...document.querySelectorAll('#nchat-pcf .nchat-pcf-step.is-active input, #nchat-pcf .nchat-pcf-step.is-active select')].map((item) => item.getAttribute('name')),
+    submitHidden: document.querySelector('#nchat-pcf button[type="submit"]')?.hidden,
+  }));
+  if (initialPrechat.steps !== 2 || initialPrechat.active !== '1' || initialPrechat.visibleControls.join(',') !== 'name' || !initialPrechat.submitHidden) {
+    throw new Error(`progressive pre-chat initial-state regression: ${JSON.stringify(initialPrechat)}`);
+  }
+  const nextButtonState = await prechatPage.$eval('#nchat-pcf-next', (next) => ({
+    hidden: next.hidden,
+    display: getComputedStyle(next).display,
+    visibility: getComputedStyle(next).visibility,
+    rect: next.getBoundingClientRect().toJSON(),
+    parent: next.parentElement?.getBoundingClientRect().toJSON(),
+    form: next.closest('form')?.getBoundingClientRect().toJSON(),
+  }));
+  if (nextButtonState.hidden || nextButtonState.display === 'none' || nextButtonState.rect.height === 0) {
+    throw new Error(`progressive pre-chat next button is not interactable: ${JSON.stringify(nextButtonState)}`);
+  }
+  await prechatPage.click('#nchat-pcf-next');
+  await prechatPage.waitForSelector('#nchat-pcf [name="name"].nchat-invalid');
+  await prechatPage.type('#nchat-pcf [name="name"]', 'Lan');
+  await prechatPage.click('#nchat-pcf-next');
+  await prechatPage.waitForSelector('#nchat-pcf [data-pcf-step="2"].is-active');
+  await prechatPage.click('#nchat-pcf .nchat-pcf-back');
+  await prechatPage.waitForSelector('#nchat-pcf [data-pcf-step="1"].is-active');
+  await prechatPage.click('#nchat-pcf-next');
+  await prechatPage.waitForSelector('#nchat-pcf [data-pcf-step="2"].is-active');
+  await prechatPage.type('#nchat-pcf [name="email"]', 'lan@example.com');
+  await prechatPage.select('#nchat-pcf [name="goal"]', 'Báo giá');
+  await prechatPage.waitForFunction(() => {
+    const submit = document.querySelector('#nchat-pcf button[type="submit"]');
+    return Boolean(submit && !submit.hidden && getComputedStyle(submit).display !== 'none' && submit.getBoundingClientRect().height > 0);
+  });
+  await prechatPage.click('#nchat-pcf button[type="submit"]');
+  await prechatPage.waitForFunction(() => Boolean(window.__nchat_visitor?.name));
+  await prechatPage.waitForFunction(() => !document.querySelector('#nchat-window')?.classList.contains('nchat-awaiting-profile'));
+  const completedPrechat = await prechatPage.evaluate(() => ({
+    visitor: window.__nchat_visitor,
+    persisted: JSON.parse(localStorage.getItem('nchat_visitor_session') || 'null'),
+    awaitingProfile: document.querySelector('#nchat-window')?.classList.contains('nchat-awaiting-profile') || false,
+  }));
+  if (completedPrechat.visitor.name !== 'Lan'
+      || completedPrechat.visitor.email !== 'lan@example.com'
+      || completedPrechat.visitor.goal !== 'Báo giá'
+      || completedPrechat.persisted?.info?.goal !== 'Báo giá'
+      || completedPrechat.awaitingProfile) {
+    throw new Error(`progressive pre-chat payload regression: ${JSON.stringify(completedPrechat)}`);
   }
 
   console.log('Widget loader smoke passed');
