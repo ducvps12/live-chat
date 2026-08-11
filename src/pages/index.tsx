@@ -31,9 +31,10 @@ import {
     Webhook,
     X,
     Zap,
+    type LucideIcon,
 } from 'lucide-react';
 import { WIDGET_LOADER_PATH } from '../config/widgetLoader';
-import { LandingGuidedSetup } from '../features/marketing/LandingGuidedSetup';
+import { LandingGuidedSetup, type SetupIntent } from '../features/marketing/LandingGuidedSetup';
 
 const LANDING_WIDGET_ID = process.env.NEXT_PUBLIC_LANDING_WIDGET_ID || 'cmr6lsujd00071sv6xl02s7dr';
 const configuredLandingApiBase = process.env.NEXT_PUBLIC_LANDING_WIDGET_API_BASE
@@ -59,6 +60,36 @@ const channels = [
     { label: 'Facebook', icon: MessageCircle, desc: 'Tập trung inbox fanpage, ảnh đính kèm và thông tin tin nhắn.' },
     { label: 'Email', icon: Mail, desc: 'Quản lý email CSKH như luồng hội thoại có SLA và phân công.' },
     { label: 'API / Webhook', icon: Webhook, desc: 'Tích hợp dữ liệu với CRM, ERP và hệ thống nội bộ.' },
+];
+
+const landingStartPaths: Array<{
+    id: SetupIntent;
+    label: string;
+    description: string;
+    nextStep: string;
+    Icon: LucideIcon;
+}> = [
+    {
+        id: 'inbox',
+        label: 'Gom kênh trước',
+        description: 'Website, Zalo, Facebook và Email',
+        nextStep: 'Tạo inbox chung và mời đội ngũ',
+        Icon: Layers,
+    },
+    {
+        id: 'automation',
+        label: 'Bật AI có kiểm soát',
+        description: 'Nạp tri thức rồi thử nội bộ',
+        nextStep: 'Nạp FAQ và mô phỏng câu trả lời',
+        Icon: Bot,
+    },
+    {
+        id: 'channels',
+        label: 'Kết nối một kênh',
+        description: 'Bắt đầu nơi khách đang nhắn',
+        nextStep: 'Chọn Website, Zalo hoặc Fanpage',
+        Icon: Smartphone,
+    },
 ];
 
 const painPoints = [
@@ -210,6 +241,8 @@ export default function HomePage() {
     const [isYearly, setIsYearly] = useState(true);
     const [openFaqIndex, setOpenFaqIndex] = useState<number | null>(0);
     const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+    const [setupIntent, setSetupIntent] = useState<SetupIntent>('inbox');
+    const selectedStartPath = landingStartPaths.find((path) => path.id === setupIntent) || landingStartPaths[0];
 
     useScrollReveal();
 
@@ -347,6 +380,43 @@ export default function HomePage() {
                             <p className="nk-hero-microcopy">
                                 Không cần thẻ thanh toán <span>•</span> Có sẵn dữ liệu demo <span>•</span> Thiết lập trong 15 phút
                             </p>
+
+                            <div className="nk-hero-start-card" aria-label="Khởi tạo workspace có hướng dẫn">
+                                <div className="nk-hero-start-heading">
+                                    <div>
+                                        <span className="nk-hero-start-kicker"><Sparkles size={14} /> Khởi tạo có hướng dẫn</span>
+                                        <strong>Chọn ưu tiên, NemarkChat gợi ý đúng lộ trình bắt đầu.</strong>
+                                    </div>
+                                    <span className="nk-hero-start-time"><Clock size={14} /> 2 phút</span>
+                                </div>
+                                <div className="nk-hero-start-options" role="radiogroup" aria-label="Chọn ưu tiên khởi tạo">
+                                    {landingStartPaths.map((path) => {
+                                        const Icon = path.Icon;
+                                        const active = path.id === setupIntent;
+                                        return (
+                                            <button
+                                                type="button"
+                                                key={path.id}
+                                                className={active ? 'is-active' : ''}
+                                                role="radio"
+                                                aria-checked={active}
+                                                onClick={() => setSetupIntent(path.id)}
+                                            >
+                                                <span className="nk-hero-start-icon"><Icon size={16} /></span>
+                                                <span className="nk-hero-start-option-copy">
+                                                    <strong>{path.label}</strong>
+                                                    <small>{path.description}</small>
+                                                </span>
+                                                {active && <Check className="nk-hero-start-check" size={15} aria-hidden="true" />}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                                <div className="nk-hero-start-foot">
+                                    <span><i /> Bước tiếp theo: {selectedStartPath.nextStep}</span>
+                                    <a href="#guided-start">Xem 3 bước <ArrowRight size={15} /></a>
+                                </div>
+                            </div>
 
                             <div className="nk-hero-proofs">
                                 <div className="nk-hero-proof-item">
@@ -551,7 +621,7 @@ export default function HomePage() {
                     </div>
                 </section>
 
-                <LandingGuidedSetup />
+                <LandingGuidedSetup intent={setupIntent} onIntentChange={setSetupIntent} />
 
                 {/* AI & AUTOMATION OPERATING LAYER */}
                 <section className="nk-section nk-section-alt nk-appear" id="automation">

@@ -1,8 +1,13 @@
 import Link from 'next/link';
-import { ArrowRight, Bot, CheckCircle2, Database, MessageSquareText, Workflow } from 'lucide-react';
+import { ArrowRight, Bot, CheckCircle2, Database, MessageSquareText, Workflow, type LucideIcon } from 'lucide-react';
 import { useState } from 'react';
 
-type SetupIntent = 'automation' | 'inbox' | 'channels';
+export type SetupIntent = 'automation' | 'inbox' | 'channels';
+
+type LandingGuidedSetupProps = {
+    intent?: SetupIntent;
+    onIntentChange?: (intent: SetupIntent) => void;
+};
 
 const intents: Array<{
     id: SetupIntent;
@@ -11,7 +16,7 @@ const intents: Array<{
     description: string;
     prompt: string;
     nextStep: string;
-    Icon: typeof Bot;
+    Icon: LucideIcon;
 }> = [
     {
         id: 'automation',
@@ -42,13 +47,20 @@ const intents: Array<{
     },
 ];
 
-export function LandingGuidedSetup() {
-    const [intent, setIntent] = useState<SetupIntent>('automation');
+export function LandingGuidedSetup({ intent: controlledIntent, onIntentChange }: LandingGuidedSetupProps) {
+    const [uncontrolledIntent, setUncontrolledIntent] = useState<SetupIntent>('automation');
+    const intent = controlledIntent ?? uncontrolledIntent;
+    const selectIntent = (nextIntent: SetupIntent) => {
+        if (controlledIntent === undefined) {
+            setUncontrolledIntent(nextIntent);
+        }
+        onIntentChange?.(nextIntent);
+    };
     const selected = intents.find((item) => item.id === intent) || intents[0];
     const SelectedIcon = selected.Icon;
 
     return (
-        <section className="nk-guided-setup" aria-labelledby="guided-setup-title">
+        <section id="guided-start" className="nk-guided-setup" aria-labelledby="guided-setup-title">
             <div className="nk-container nk-guided-setup-grid">
                 <div className="nk-guided-copy">
                     <span className="nk-guided-kicker">Khởi tạo có hướng dẫn</span>
@@ -69,7 +81,7 @@ export function LandingGuidedSetup() {
                                     className={active ? 'is-active' : ''}
                                     aria-checked={active}
                                     role="radio"
-                                    onClick={() => setIntent(item.id)}
+                                    onClick={() => selectIntent(item.id)}
                                 >
                                     <span className="nk-guided-option-icon"><Icon size={18} /></span>
                                     <span>

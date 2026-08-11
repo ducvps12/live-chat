@@ -3785,3 +3785,215 @@ a {
 .ws-empty-icon {
   animation: nk-float 3s ease-in-out infinite;
 }
+
+/* Landing first-view guided start. Namespaced so dashboard UI stays untouched. */
+.nk-hero-start-card {
+  position: relative;
+  margin-top: 22px;
+  padding: 17px;
+  border: 1px solid rgba(99, 102, 241, 0.20);
+  border-radius: 18px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.94), rgba(238, 242, 255, 0.90));
+  box-shadow: 0 14px 32px rgba(55, 65, 170, 0.08);
+  overflow: hidden;
+}
+
+.nk-hero-start-card::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto auto 0;
+  width: 138px;
+  height: 3px;
+  border-radius: 0 999px 999px 0;
+  background: linear-gradient(90deg, #2563eb, #8b5cf6, #06b6d4);
+}
+
+.nk-hero-start-heading,
+.nk-hero-start-foot,
+.nk-hero-start-heading > div {
+  min-width: 0;
+}
+
+.nk-hero-start-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.nk-hero-start-heading strong {
+  display: block;
+  color: #172554;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.nk-hero-start-kicker,
+.nk-hero-start-time,
+.nk-hero-start-foot a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.nk-hero-start-kicker {
+  margin-bottom: 4px;
+  color: #4f46e5;
+}
+
+.nk-hero-start-time {
+  flex: 0 0 auto;
+  padding: 6px 8px;
+  border-radius: 999px;
+  color: #0f766e;
+  background: #ecfdf5;
+  white-space: nowrap;
+}
+
+.nk-hero-start-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 13px;
+}
+
+.nk-hero-start-options button {
+  display: flex;
+  align-items: flex-start;
+  min-width: 0;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  color: #334155;
+  background: rgba(255, 255, 255, 0.82);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease, background 180ms ease;
+}
+
+.nk-hero-start-options button:hover {
+  border-color: #a5b4fc;
+  box-shadow: 0 5px 14px rgba(79, 70, 229, 0.11);
+  transform: translateY(-1px);
+}
+
+.nk-hero-start-options button.is-active {
+  border-color: #6366f1;
+  background: #eef2ff;
+  box-shadow: inset 0 0 0 1px rgba(99, 102, 241, 0.10);
+}
+
+.nk-hero-start-icon {
+  display: inline-grid;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 9px;
+  color: #4f46e5;
+  background: #e0e7ff;
+}
+
+.nk-hero-start-option-copy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.nk-hero-start-option-copy strong {
+  color: #1e293b;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.nk-hero-start-option-copy small {
+  overflow: hidden;
+  color: #64748b;
+  font-size: 10px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nk-hero-start-check {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: #4f46e5;
+}
+
+.nk-hero-start-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 11px;
+  border-top: 1px solid rgba(148, 163, 184, 0.20);
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.nk-hero-start-foot > span {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.nk-hero-start-foot i {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.12);
+}
+
+.nk-hero-start-foot a {
+  flex: 0 0 auto;
+  color: #4f46e5;
+}
+
+.nk-hero-start-foot a:hover {
+  color: #3730a3;
+}
+
+@media (max-width: 700px) {
+  .nk-hero-start-card {
+    margin-top: 18px;
+    padding: 15px;
+  }
+
+  .nk-hero-start-options {
+    grid-template-columns: 1fr;
+  }
+
+  .nk-hero-start-options button {
+    align-items: center;
+  }
+
+  .nk-hero-start-option-copy small {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+  }
+
+  .nk-hero-start-foot {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nk-hero-start-options button {
+    transition: none;
+  }
+
+  .nk-hero-start-options button:hover {
+    transform: none;
+  }
+}
