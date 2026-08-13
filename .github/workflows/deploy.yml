@@ -29,6 +29,11 @@ jobs:
       - name: Install locked dependencies
         run: npm ci --no-audit --fund=false
 
+      - name: Generate Prisma client
+        env:
+          DATABASE_URL: mysql://root:root@localhost:3306/livechatnemark
+        run: npx prisma generate
+
       - name: Build and verify auto-reply invariants
         run: npm run verify:production
 
