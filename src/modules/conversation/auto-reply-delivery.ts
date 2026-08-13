@@ -11,6 +11,52 @@ export interface DurableAutoReplyPlan {
     parts: string[];
     interMessageDelayMs: number;
     nextPartIndex: number;
+    traceId?: string;
+    generationStartedAt?: string;
+    generationDurationMs?: number;
+}
+
+export interface AutoReplyConnectorContract {
+    channel: string;
+    requiresExternalDelivery: boolean;
+    idempotencyKey: 'clientMessageId';
+    deliveredStatuses: readonly string[];
+}
+
+export interface AutoReplyTraceRecord {
+    traceId: string;
+    targetMessageId: string;
+    source: string;
+    channel: string;
+    outcome: 'delivered';
+    partCount: number;
+    generationDurationMs: number | null;
+    completedAt: string;
+}
+
+export function getAutoReplyConnectorContract(channel: unknown): AutoReplyConnectorContract {
+    const normalized = String(channel || 'website').toLowerCase();
+    return {
+        channel: normalized,
+        requiresExternalDelivery: isExternalAutoReplyChannel(normalized),
+        idempotencyKey: 'clientMessageId',
+        deliveredStatuses: ['delivered', 'read'] as const,
+    };
+}
+
+export function appendAutoReplyTrace(
+    metadata: unknown,
+    trace: AutoReplyTraceRecord,
+    maxEntries = 20,
+): Record<string, unknown> {
+    const base = metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+        ? { ...(metadata as Record<string, unknown>) }
+        : {};
+    const existing = Array.isArray(base.autoReplyTraceHistory)
+        ? base.autoReplyTraceHistory.filter(item => item && typeof item === 'object')
+        : [];
+    base.autoReplyTraceHistory = [...existing, trace].slice(-Math.max(1, maxEntries));
+    return base;
 }
 
 export function isExternalAutoReplyChannel(channel: unknown): channel is ExternalAutoReplyChannel {
@@ -67,6 +113,11 @@ export function readDurableAutoReplyPlan(metadata: unknown): DurableAutoReplyPla
         parts,
         interMessageDelayMs: Math.max(0, Math.min(2500, Math.round(value.interMessageDelayMs))),
         nextPartIndex,
+        ...(typeof value.traceId === 'string' ? { traceId: value.traceId } : {}),
+        ...(typeof value.generationStartedAt === 'string' ? { generationStartedAt: value.generationStartedAt } : {}),
+        ...(typeof value.generationDurationMs === 'number' && Number.isFinite(value.generationDurationMs)
+            ? { generationDurationMs: Math.max(0, Math.round(value.generationDurationMs)) }
+            : {}),
     };
 }
 

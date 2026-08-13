@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { conversationRepo } from './repos/conversation.repo';
 import { messageRepo } from './repos/message.repo';
 import { visitorRepo } from './repos/visitor.repo';
@@ -30,13 +31,16 @@ import {
     waitForAutoReplyDelivery,
 } from './auto-reply-typing';
 import {
+    appendAutoReplyTrace,
     attemptExternalAutoReplyDelivery,
     autoReplyPartClientMessageId,
     createDurableAutoReplyPlan,
+    getAutoReplyConnectorContract,
     readDurableAutoReplyPlan,
     type DurableAutoReplyPlan,
     withDurableAutoReplyPlan,
 } from './auto-reply-delivery';
+import { summarizeInboxCandidates } from './inbox-summary';
 import {
     captureLeadFromWidget,
     normalizeWidgetVisitorInfo,
@@ -277,7 +281,20 @@ async function completeAutoReplyPlan(
     conversation: Conversation,
     plan: DurableAutoReplyPlan,
 ): Promise<void> {
-    const metadata = withDurableAutoReplyPlan(conversation.metadata, null);
+    const connector = getAutoReplyConnectorContract(conversation.channel);
+    const metadata = appendAutoReplyTrace(
+        withDurableAutoReplyPlan(conversation.metadata, null),
+        {
+            traceId: plan.traceId || `auto-reply:${plan.targetMessageId}`,
+            targetMessageId: plan.targetMessageId,
+            source: plan.source,
+            channel: connector.channel,
+            outcome: 'delivered',
+            partCount: plan.parts.length,
+            generationDurationMs: plan.generationDurationMs ?? null,
+            completedAt: new Date().toISOString(),
+        },
+    );
     if (plan.handoffRequested) {
         Object.assign(metadata, {
             humanTakeover: true,
@@ -448,6 +465,8 @@ async function processQueuedAutoReply(
 
     const conversationHistory = buildAutoReplyHistory(recentMessages, targetMessageId, 12);
 
+    const generationStartedAt = new Date();
+    const generationStartedMs = Date.now();
     try {
         const { chatbotService: botService } = await import('../chatbot/chatbot.service');
         const botResult = await botService.processIncomingMessage(
@@ -511,6 +530,9 @@ async function processQueuedAutoReply(
             handoffRequested: Boolean(botResult.handoffRequested),
             parts: responseParts,
             interMessageDelayMs: botResult.interMessageDelayMs || 0,
+            traceId: crypto.randomUUID(),
+            generationStartedAt: generationStartedAt.toISOString(),
+            generationDurationMs: Date.now() - generationStartedMs,
         });
         if (!plan.parts.length) return;
         const beforePlan = await isCurrentAutoReplyDelivery(
@@ -1868,30 +1890,37 @@ export const conversationService = {
         },
         requester?: { userId: string; type: 'visitor' | 'agent' }
     ) {
-        const result = await conversationRepo.findByWorkspace(workspaceId, options);
+        const [result, summaryCandidates] = await Promise.all([
+            conversationRepo.findByWorkspace(workspaceId, options),
+            requester ? conversationRepo.findSummaryCandidates(workspaceId, options) : Promise.resolve([]),
+        ]);
 
-        if (requester && result.items.length > 0) {
-            const items = await Promise.all(
-                result.items.map(async (conv) => {
-                    const convObj = { ...conv };
-                    const convId = conv.id;
-                    if (!convId) return { ...convObj, unreadCount: 0 };
+        if (requester) {
+            const unreadByConversationId = new Map<string, number>();
+            for (let offset = 0; offset < summaryCandidates.length; offset += 25) {
+                const batch = summaryCandidates.slice(offset, offset + 25);
+                const counts = await Promise.all(batch.map(async conv => {
                     const readCtxArr = (conv.readContext as any[]) || [];
                     const readCtx = readCtxArr.find(
                         (ctx: any) => ctx.participantId === requester.userId && ctx.participantType === requester.type
                     );
                     try {
-                        const unreadCount = await messageRepo.countUnreadSince(
-                            convId,
+                        return await messageRepo.countUnreadSince(
+                            conv.id,
                             requester.type,
                             readCtx ? readCtx.lastReadMessageId : null
                         );
-                        return { ...convObj, unreadCount };
                     } catch {
-                        return { ...convObj, unreadCount: 0 };
+                        return 0;
                     }
-                })
-            );
+                }));
+                batch.forEach((conv, index) => unreadByConversationId.set(conv.id, counts[index] || 0));
+            }
+
+            const items = result.items.map(conv => ({
+                ...conv,
+                unreadCount: unreadByConversationId.get(conv.id) || 0,
+            }));
 
             // If we are sorting by unread, we should at least sort the current page by the dynamic count
             if (options?.sortBy === 'unread') {
@@ -1901,7 +1930,11 @@ export const conversationService = {
                 });
             }
 
-            return { items, total: result.total };
+            return {
+                items,
+                total: result.total,
+                summary: summarizeInboxCandidates(summaryCandidates, unreadByConversationId),
+            };
         }
 
         return result;

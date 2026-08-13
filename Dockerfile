@@ -20,8 +20,10 @@ COPY . .
 # lifecycle scripts disabled in the dependency stage.
 RUN DATABASE_URL="mysql://root:root@localhost:3306/livechatnemark" npx prisma generate
 
-# Build Next.js (production)
-RUN npm run build
+# The image is a release artifact, so it must not be produced unless every
+# production invariant passes against the exact source copied into this stage.
+# This also protects manual Linux deploys that bypass GitHub Actions.
+RUN npm run verify:production
 RUN test -s .next/BUILD_ID \
     && find .next/static -type f -name '*.js' -print -quit | grep -q .
 

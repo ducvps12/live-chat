@@ -4,9 +4,15 @@ import mongoose from 'mongoose';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { AppError } from '../../middlewares/errorHandler';
 import { SETTINGS_KEYS, settingsService } from '../admin/settings.service';
-
-const FB_GRAPH_URL = 'https://graph.facebook.com/v19.0';
-const OAUTH_STATE_TTL_MS = 15 * 60 * 1000;
+import {
+    assertFacebookGraphResponse,
+    connectFacebookPageTwoPhase,
+    facebookGraphUrl,
+    facebookOAuthDialogUrl,
+    isFacebookOAuthTimestampValid,
+    isValidFacebookWebhookSignature,
+    resolveFacebookGraphApiVersion,
+} from './facebook-production.helpers';
 
 type FacebookRuntimeConfig = {
     enabled: boolean;
@@ -15,6 +21,14 @@ type FacebookRuntimeConfig = {
     verifyToken: string;
     redirectUri: string;
     stateSecret: string;
+    graphApiVersion: string;
+};
+
+type FacebookManagedPage = {
+    id: string;
+    name: string;
+    access_token: string;
+    picture?: { data?: { url?: string } };
 };
 
 class FacebookService {
@@ -41,7 +55,55 @@ class FacebookService {
             verifyToken,
             redirectUri,
             stateSecret: this.getStateSecret(),
+            graphApiVersion: resolveFacebookGraphApiVersion(process.env.FB_GRAPH_API_VERSION),
         };
+    }
+
+    private graphUrl(config: Pick<FacebookRuntimeConfig, 'graphApiVersion'>, path: string): string {
+        return facebookGraphUrl(config.graphApiVersion, path);
+    }
+
+    private async readGraphResponse<T>(response: Response, operation: string, requireSuccess = false): Promise<T> {
+        let data: unknown = null;
+        try {
+            data = await response.json();
+        } catch {
+            data = { message: `HTTP ${response.status}` };
+        }
+        return assertFacebookGraphResponse<T>(response, data, operation, { requireSuccess });
+    }
+
+    private async graphFetch(url: string, init: RequestInit = {}): Promise<Response> {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15_000);
+        try {
+            return await fetch(url, { ...init, signal: controller.signal });
+        } catch (error) {
+            if (controller.signal.aborted) {
+                throw new AppError('Facebook Graph request timed out', 504, 'FACEBOOK_GRAPH_TIMEOUT');
+            }
+            throw error;
+        } finally {
+            clearTimeout(timeout);
+        }
+    }
+
+    private assertEnabled(config: FacebookRuntimeConfig): void {
+        if (!config.enabled) {
+            throw new AppError('Facebook integration is disabled.', 503, 'FACEBOOK_DISABLED');
+        }
+    }
+
+    private async getFacebookProfile(userId: string, accessToken: string): Promise<{
+        first_name?: string;
+        last_name?: string;
+        profile_pic?: string;
+    }> {
+        const config = await this.getRuntimeConfig();
+        this.assertEnabled(config);
+        const url = `${this.graphUrl(config, encodeURIComponent(userId))}?fields=first_name,last_name,profile_pic&access_token=${encodeURIComponent(accessToken)}`;
+        const response = await this.graphFetch(url);
+        return this.readGraphResponse(response, 'Facebook profile lookup');
     }
 
     private assertOAuthConfigured(config: FacebookRuntimeConfig): void {
@@ -68,7 +130,8 @@ class FacebookService {
         return {
             enabled: config.enabled,
             oauthReady: config.enabled && appConfigured && stateConfigured,
-            webhookReady: config.enabled && webhookConfigured,
+            webhookReady: config.enabled && Boolean(config.appSecret) && webhookConfigured,
+            graphApiVersion: config.graphApiVersion,
             redirectUri: config.redirectUri,
             webhookUrl: `${(process.env.BASE_URL || process.env.FRONTEND_URL || 'http://localhost:3010').replace(/\/$/, '')}/api/facebook/webhook`,
             missing: [
@@ -100,7 +163,7 @@ class FacebookService {
         }
         try {
             const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as { workspaceId?: string; issuedAt?: number };
-            if (!parsed.workspaceId || !parsed.issuedAt || Date.now() - parsed.issuedAt > OAUTH_STATE_TTL_MS) {
+            if (!parsed.workspaceId || !parsed.issuedAt || !isFacebookOAuthTimestampValid(parsed.issuedAt, Date.now())) {
                 throw new Error('expired');
             }
             return parsed.workspaceId;
@@ -122,7 +185,7 @@ class FacebookService {
             'pages_show_list',
         ].join(',');
 
-        return `https://www.facebook.com/v19.0/dialog/oauth?client_id=${config.appId}&redirect_uri=${encodeURIComponent(config.redirectUri)}&scope=${scopes}&state=${encodeURIComponent(this.createOAuthState(workspaceId, config.stateSecret))}&response_type=code`;
+        return `${facebookOAuthDialogUrl(config.graphApiVersion)}?client_id=${config.appId}&redirect_uri=${encodeURIComponent(config.redirectUri)}&scope=${scopes}&state=${encodeURIComponent(this.createOAuthState(workspaceId, config.stateSecret))}&response_type=code`;
     }
 
     /**
@@ -131,13 +194,11 @@ class FacebookService {
     async exchangeCodeForToken(code: string): Promise<string> {
         const config = await this.getRuntimeConfig();
         this.assertOAuthConfigured(config);
-        const url = `${FB_GRAPH_URL}/oauth/access_token?client_id=${config.appId}&redirect_uri=${encodeURIComponent(config.redirectUri)}&client_secret=${config.appSecret}&code=${code}`;
+        const url = `${this.graphUrl(config, 'oauth/access_token')}?client_id=${config.appId}&redirect_uri=${encodeURIComponent(config.redirectUri)}&client_secret=${config.appSecret}&code=${encodeURIComponent(code)}`;
 
-        const res = await fetch(url);
-        const data = await res.json() as any;
-        if (data.error) {
-            throw new Error(data.error.message || 'Failed to exchange code');
-        }
+        const res = await this.graphFetch(url);
+        const data = await this.readGraphResponse<{ access_token?: string }>(res, 'Facebook OAuth token exchange');
+        if (!data.access_token) throw new AppError('Facebook OAuth token exchange returned no token', 502, 'FACEBOOK_GRAPH_REQUEST_FAILED');
         return data.access_token;
     }
 
@@ -147,13 +208,11 @@ class FacebookService {
     async getLongLivedToken(shortToken: string): Promise<string> {
         const config = await this.getRuntimeConfig();
         this.assertOAuthConfigured(config);
-        const url = `${FB_GRAPH_URL}/oauth/access_token?grant_type=fb_exchange_token&client_id=${config.appId}&client_secret=${config.appSecret}&fb_exchange_token=${shortToken}`;
+        const url = `${this.graphUrl(config, 'oauth/access_token')}?grant_type=fb_exchange_token&client_id=${config.appId}&client_secret=${config.appSecret}&fb_exchange_token=${encodeURIComponent(shortToken)}`;
 
-        const res = await fetch(url);
-        const data = await res.json() as any;
-        if (data.error) {
-            throw new Error(data.error.message || 'Failed to get long-lived token');
-        }
+        const res = await this.graphFetch(url);
+        const data = await this.readGraphResponse<{ access_token?: string }>(res, 'Facebook long-lived token exchange');
+        if (!data.access_token) throw new AppError('Facebook long-lived token exchange returned no token', 502, 'FACEBOOK_GRAPH_REQUEST_FAILED');
         return data.access_token;
     }
 
@@ -166,14 +225,13 @@ class FacebookService {
         access_token: string;
         picture?: string;
     }>> {
-        const url = `${FB_GRAPH_URL}/me/accounts?fields=id,name,access_token,picture&access_token=${userAccessToken}`;
+        const config = await this.getRuntimeConfig();
+        this.assertOAuthConfigured(config);
+        const url = `${this.graphUrl(config, 'me/accounts')}?fields=id,name,access_token,picture&access_token=${encodeURIComponent(userAccessToken)}`;
 
-        const res = await fetch(url);
-        const data = await res.json() as any;
-        if (data.error) {
-            throw new Error(data.error.message || 'Failed to fetch pages');
-        }
-        return (data.data || []).map((page: any) => ({
+        const res = await this.graphFetch(url);
+        const data = await this.readGraphResponse<{ data?: FacebookManagedPage[] }>(res, 'Facebook managed pages lookup');
+        return (data.data || []).map((page) => ({
             id: page.id,
             name: page.name,
             access_token: page.access_token,
@@ -185,44 +243,55 @@ class FacebookService {
      * Step 4: Connect a page to workspace
      */
     async connectPage(workspaceId: string, pageId: string, pageName: string, pageAvatar: string, pageAccessToken: string, userAccessToken?: string) {
-        // Save to DB
-        const page = await fbPageRepo.upsertPage(workspaceId, pageId, {
-            pageName,
-            pageAvatar,
-            accessToken: pageAccessToken,
-            userAccessToken,
-            status: 'active',
+        return connectFacebookPageTwoPhase({
+            subscribe: () => this.subscribeWebhook(pageId, pageAccessToken),
+            persist: () => fbPageRepo.upsertPage(workspaceId, pageId, {
+                pageName,
+                pageAvatar,
+                accessToken: pageAccessToken,
+                userAccessToken,
+                status: 'active',
+            }),
         });
-
-        // Subscribe to webhook
-        try {
-            await this.subscribeWebhook(pageId, pageAccessToken);
-        } catch (err) {
-            console.warn(`[FacebookService] Failed to subscribe webhook for page ${pageId}:`, err);
-        }
-
-        return page;
     }
 
     /**
      * Subscribe a page to receive webhook events
      */
     private async subscribeWebhook(pageId: string, pageAccessToken: string) {
-        const url = `${FB_GRAPH_URL}/${pageId}/subscribed_apps`;
-        const res = await fetch(url, {
+        const config = await this.getRuntimeConfig();
+        this.assertOAuthConfigured(config);
+        const url = this.graphUrl(config, `${encodeURIComponent(pageId)}/subscribed_apps`);
+        const res = await this.graphFetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                subscribed_fields: ['messages', 'messaging_postbacks'],
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                subscribed_fields: 'messages,messaging_postbacks',
                 access_token: pageAccessToken,
-            }),
+            }).toString(),
         });
-        const data = await res.json() as any;
-        if (data.error) {
-            console.error(`[FacebookService] Webhook subscribe error:`, data.error);
-        } else {
-            console.log(`[FacebookService] ✅ Page ${pageId} subscribed to webhook`);
+        await this.readGraphResponse<{ success: true }>(
+            res,
+            'Facebook webhook subscription',
+            true,
+        );
+
+        // A successful POST is not enough: permission/app-mode issues can leave
+        // the Page unsubscribed. Verify before persisting it as active locally.
+        const verificationUrl = `${url}?fields=id&access_token=${encodeURIComponent(pageAccessToken)}`;
+        const verificationResponse = await this.graphFetch(verificationUrl);
+        const verification = await this.readGraphResponse<{
+            data?: Array<{ id?: string }>;
+        }>(verificationResponse, 'Facebook webhook subscription verification');
+        const isSubscribedToConfiguredApp = verification.data?.some(app => app.id === config.appId) === true;
+        if (!isSubscribedToConfiguredApp) {
+            throw new AppError(
+                'Facebook did not confirm the Page webhook subscription for this app.',
+                502,
+                'FACEBOOK_WEBHOOK_SUBSCRIPTION_UNVERIFIED',
+            );
         }
+        console.log(`[FacebookService] Page ${pageId} subscribed to webhook`);
     }
 
     /**
@@ -244,14 +313,20 @@ class FacebookService {
      * Disconnect a page
      */
     async disconnectPage(workspaceId: string, pageDbId: string) {
-        const page = await fbPageRepo.findById(pageDbId);
-        if (page && page.workspaceId.toString() === workspaceId) {
-            // Unsubscribe webhook
-            try {
-                const url = `${FB_GRAPH_URL}/${page.pageId}/subscribed_apps?access_token=${page.accessToken}`;
-                await fetch(url, { method: 'DELETE' });
-            } catch { /* silent */ }
-            await fbPageRepo.delete(pageDbId);
+        const page = await fbPageRepo.findByIdForWorkspace(workspaceId, pageDbId);
+        if (!page) {
+            throw new AppError('Facebook Page not found', 404, 'FACEBOOK_PAGE_NOT_FOUND');
+        }
+
+        const config = await this.getRuntimeConfig();
+        this.assertOAuthConfigured(config);
+        const url = `${this.graphUrl(config, `${encodeURIComponent(page.pageId)}/subscribed_apps`)}?access_token=${encodeURIComponent(page.accessToken)}`;
+        const response = await this.graphFetch(url, { method: 'DELETE' });
+        await this.readGraphResponse<{ success: true }>(response, 'Facebook webhook unsubscribe', true);
+
+        const deleted = await fbPageRepo.deleteForWorkspace(workspaceId, pageDbId);
+        if (!deleted) {
+            throw new AppError('Facebook Page not found', 404, 'FACEBOOK_PAGE_NOT_FOUND');
         }
         return { success: true };
     }
@@ -267,22 +342,23 @@ class FacebookService {
             const pageId = entry.id;
 
             // Find which workspace owns this page
-            const page = await fbPageRepo.findByPageId(pageId);
-            if (!page || page.status !== 'active') {
+            const pages = await fbPageRepo.findActiveByPageId(pageId);
+            if (pages.length === 0) {
                 console.warn(`[FacebookService] Received webhook for unknown/inactive page ${pageId}`);
                 continue;
             }
 
-            const workspaceId = page.workspaceId.toString();
+            for (const page of pages) {
+                const workspaceId = page.workspaceId.toString();
 
-            for (const event of entry.messaging || []) {
-                const senderId = event.sender?.id;
-                const recipientId = event.recipient?.id;
+                for (const event of entry.messaging || []) {
+                    const senderId = event.sender?.id;
+                    const recipientId = event.recipient?.id;
 
-                if (event.message) {
-                    // Check if message is sent BY the page (echo / page-sent)
-                    const isEcho = event.message.is_echo === true;
-                    const isSentByPage = senderId === pageId || isEcho;
+                    if (event.message) {
+                        // Check if message is sent BY the page (echo / page-sent)
+                        const isEcho = event.message.is_echo === true;
+                        const isSentByPage = senderId === pageId || isEcho;
 
                     if (isSentByPage) {
                         // Page-sent message → route as agent message (2-way sync)
@@ -290,11 +366,16 @@ class FacebookService {
                         const msgContent = event.message.text || '';
                         const hasAttachments = event.message.attachments?.length > 0;
                         if (msgContent || hasAttachments) {
-                            await this.handlePageSentMessage(workspaceId, page, recipientId, event.message, event.timestamp);
+                            if (recipientId) {
+                                await this.handlePageSentMessage(workspaceId, page, recipientId, event.message, event.timestamp);
+                            }
                         }
                     } else {
                         // Customer message → route as visitor message
-                        await this.handleIncomingMessage(workspaceId, page, senderId, event.message, event.timestamp);
+                        if (senderId) {
+                            await this.handleIncomingMessage(workspaceId, page, senderId, event.message, event.timestamp);
+                        }
+                    }
                     }
                 }
             }
@@ -316,9 +397,7 @@ class FacebookService {
             let senderName = `FB User ${senderId.slice(-4)}`;
             let senderAvatar = '';
             try {
-                const profileUrl = `${FB_GRAPH_URL}/${senderId}?fields=first_name,last_name,profile_pic&access_token=${page.accessToken}`;
-                const profileRes = await fetch(profileUrl);
-                const profile = await profileRes.json() as any;
+                const profile = await this.getFacebookProfile(senderId, page.accessToken);
                 if (profile.first_name) {
                     senderName = `${profile.first_name} ${profile.last_name || ''}`.trim();
                 }
@@ -427,9 +506,7 @@ class FacebookService {
             let recipientName = `FB User ${recipientId.slice(-4)}`;
             let recipientAvatar = '';
             try {
-                const profileUrl = `${FB_GRAPH_URL}/${recipientId}?fields=first_name,last_name,profile_pic&access_token=${page.accessToken}`;
-                const profileRes = await fetch(profileUrl);
-                const profile = await profileRes.json() as any;
+                const profile = await this.getFacebookProfile(recipientId, page.accessToken);
                 if (profile.first_name) recipientName = `${profile.first_name} ${profile.last_name || ''}`.trim();
                 if (profile.profile_pic) recipientAvatar = profile.profile_pic;
             } catch { /* silent */ }
@@ -455,9 +532,12 @@ class FacebookService {
         // Find a connected page
         let page;
         if (pageId) {
-            page = await fbPageRepo.findByPageId(pageId);
+            const candidate = await fbPageRepo.findByPageIdForWorkspace(workspaceId, pageId);
+            if (candidate?.status === 'active') {
+                page = candidate;
+            }
         }
-        if (!page) {
+        if (!page && !pageId) {
             const pages = await fbPageRepo.findByWorkspaceId(workspaceId);
             page = pages.find(p => p.status === 'active');
         }
@@ -465,7 +545,9 @@ class FacebookService {
             throw new Error('Không có Facebook Page nào đang kết nối');
         }
 
-        const url = `${FB_GRAPH_URL}/${page.pageId}/messages?access_token=${encodeURIComponent(page.accessToken)}`;
+        const config = await this.getRuntimeConfig();
+        this.assertEnabled(config);
+        const url = `${this.graphUrl(config, `${encodeURIComponent(page.pageId)}/messages`)}?access_token=${encodeURIComponent(page.accessToken)}`;
         const body = {
             recipient: { id: recipientId },
             messaging_type: 'RESPONSE',
@@ -474,16 +556,25 @@ class FacebookService {
 
         console.log(`[FacebookService] Sending message to ${recipientId} via page ${page.pageName} (${page.pageId})`);
 
-        const res = await fetch(url, {
+        const res = await this.graphFetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
         });
 
-        const data = await res.json() as any;
-        if (data.error) {
-            console.error(`[FacebookService] Send error (${res.status}):`, JSON.stringify(data.error));
-            throw new Error(data.error.message || 'Lỗi gửi tin nhắn Facebook');
+        const data = await this.readGraphResponse<{
+            message_id?: string;
+            error?: { message?: string };
+        }>(
+            res,
+            'Facebook message delivery',
+        );
+        if (!data.message_id) {
+            throw new AppError(
+                'Facebook message delivery returned no message id',
+                502,
+                'FACEBOOK_DELIVERY_FAILED',
+            );
         }
 
         console.log(`[FacebookService] ✅ Message sent, messageId: ${data.message_id}`);
@@ -495,11 +586,22 @@ class FacebookService {
      */
     async verifyWebhook(mode: string, token: string, challenge: string): Promise<string | null> {
         const config = await this.getRuntimeConfig();
-        if (config.enabled && mode === 'subscribe' && token === config.verifyToken) {
+        if (config.enabled && config.verifyToken && mode === 'subscribe' && token === config.verifyToken) {
             console.log('[FacebookService] ✅ Webhook verified');
             return challenge;
         }
         return null;
+    }
+
+    async verifyWebhookSignature(rawBody: Buffer | undefined, signature: string | undefined): Promise<void> {
+        const config = await this.getRuntimeConfig();
+        this.assertEnabled(config);
+        if (!config.appSecret) {
+            throw new AppError('Facebook App Secret is not configured.', 503, 'FACEBOOK_APP_NOT_CONFIGURED');
+        }
+        if (!rawBody || !signature || !isValidFacebookWebhookSignature(rawBody, signature, config.appSecret)) {
+            throw new AppError('Invalid Facebook webhook signature.', 401, 'FACEBOOK_WEBHOOK_SIGNATURE_INVALID');
+        }
     }
 
     /**
@@ -507,11 +609,13 @@ class FacebookService {
      * Fetches recent threads and imports messages into the inbox
      */
     async syncPageConversations(workspaceId: string, pageDbId: string) {
-        const page = await fbPageRepo.findById(pageDbId);
-        if (!page || page.workspaceId.toString() !== workspaceId) {
+        const page = await fbPageRepo.findByIdForWorkspace(workspaceId, pageDbId);
+        if (!page) {
             throw new Error('Page không tồn tại hoặc không thuộc workspace này');
         }
 
+        const config = await this.getRuntimeConfig();
+        this.assertEnabled(config);
         const accessToken = page.accessToken;
         const pageId = page.pageId;
         let synced = 0;
@@ -519,14 +623,9 @@ class FacebookService {
 
         try {
             // Fetch conversations (threads) from the page
-            const convsUrl = `${FB_GRAPH_URL}/${pageId}/conversations?fields=id,participants,updated_time&limit=50&access_token=${accessToken}`;
-            const convsRes = await fetch(convsUrl);
-            const convsData = await convsRes.json() as any;
-
-            if (convsData.error) {
-                console.error('[FacebookService] Sync error:', convsData.error);
-                throw new Error(convsData.error.message || 'Failed to fetch conversations');
-            }
+            const convsUrl = `${this.graphUrl(config, `${encodeURIComponent(pageId)}/conversations`)}?fields=id,participants,updated_time&limit=50&access_token=${encodeURIComponent(accessToken)}`;
+            const convsRes = await this.graphFetch(convsUrl);
+            const convsData = await this.readGraphResponse<{ data?: any[] }>(convsRes, 'Facebook conversation sync');
 
             const threads = convsData.data || [];
             console.log(`[FacebookService] Found ${threads.length} threads for page ${page.pageName}`);
@@ -539,15 +638,9 @@ class FacebookService {
                     if (!customer) continue;
 
                     // Fetch messages in this thread
-                    const msgsUrl = `${FB_GRAPH_URL}/${thread.id}/messages?fields=id,message,from,created_time,attachments&limit=25&access_token=${accessToken}`;
-                    const msgsRes = await fetch(msgsUrl);
-                    const msgsData = await msgsRes.json() as any;
-
-                    if (msgsData.error) {
-                        console.warn(`[FacebookService] Skip thread ${thread.id}:`, msgsData.error.message);
-                        skipped++;
-                        continue;
-                    }
+                    const msgsUrl = `${this.graphUrl(config, `${encodeURIComponent(thread.id)}/messages`)}?fields=id,message,from,created_time,attachments&limit=25&access_token=${encodeURIComponent(accessToken)}`;
+                    const msgsRes = await this.graphFetch(msgsUrl);
+                    const msgsData = await this.readGraphResponse<{ data?: any[] }>(msgsRes, 'Facebook thread sync');
 
                     const fbMessages = (msgsData.data || []).reverse(); // oldest first
 
@@ -555,9 +648,7 @@ class FacebookService {
                     let customerName = customer.name || `FB User ${customer.id.slice(-4)}`;
                     let customerAvatar = '';
                     try {
-                        const profileUrl = `${FB_GRAPH_URL}/${customer.id}?fields=first_name,last_name,profile_pic&access_token=${accessToken}`;
-                        const profileRes = await fetch(profileUrl);
-                        const profile = await profileRes.json() as any;
+                        const profile = await this.getFacebookProfile(customer.id, accessToken);
                         if (profile.first_name) {
                             customerName = `${profile.first_name} ${profile.last_name || ''}`.trim();
                         }

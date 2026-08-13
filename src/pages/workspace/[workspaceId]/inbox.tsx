@@ -374,6 +374,7 @@ export default function InboxPage() {
     const [convPage, setConvPage] = useState(1);
     const [convPerPage, setConvPerPage] = useState(50);
     const [hasMoreConvs, setHasMoreConvs] = useState(true);
+    const [serverInboxSummary, setServerInboxSummary] = useState({ total: 0, unread: 0, open: 0 });
     const [loadingMoreConvs, setLoadingMoreConvs] = useState(false);
     const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
     const [messages, setMessages] = useState<Message[]>([]);
@@ -554,8 +555,13 @@ export default function InboxPage() {
             if (workspaceId !== currentWorkspaceId) return; // Prevent race conditions on workspace switch
             if (res.data?.success) {
                 const items = res.data.data.items || res.data.data || [];
-                const total = res.data.data.total || items.length;
+                const total = res.data.data.total ?? items.length;
                 setConversations(normalizeConvs(items));
+                setServerInboxSummary(res.data.data.summary ?? {
+                    total,
+                    unread: items.reduce((sum: number, conv: any) => sum + Math.max(0, Number(conv.unreadCount) || 0), 0),
+                    open: items.filter((conv: any) => conv.status === 'open').length,
+                });
                 setHasMoreConvs(items.length < total);
             }
         } catch { /* handled by interceptor */ }
@@ -602,6 +608,7 @@ export default function InboxPage() {
 
     useEffect(() => {
         setConversations([]);
+        setServerInboxSummary({ total: 0, unread: 0, open: 0 });
         setMessages([]);
         setMsgPage(1);
         setHasMoreMsgs(false);
@@ -1885,12 +1892,18 @@ export default function InboxPage() {
     }, [conversations, filterStatus, filterLabel, filterZaloAccountId, searchQuery, searchResultIds]);
 
     const inboxSummary = useMemo(() => {
+        const hasClientOnlyFilter = Boolean(
+            filterLabel
+            || filterZaloAccountId !== 'all'
+            || searchQuery.trim().length > 0
+        );
+        if (!hasClientOnlyFilter) return serverInboxSummary;
         return {
             total: filteredConvs.length,
             unread: filteredConvs.reduce((sum, conv) => sum + (conv.unreadCount || 0), 0),
             open: filteredConvs.filter((conv) => conv.status === 'open').length,
         };
-    }, [filteredConvs]);
+    }, [filteredConvs, filterLabel, filterZaloAccountId, searchQuery, serverInboxSummary]);
 
     const socketStatusMeta = {
         connected: { label: 'Realtime', color: '#12b76a', background: '#ecfdf5' },

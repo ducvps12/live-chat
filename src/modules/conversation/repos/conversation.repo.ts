@@ -2,6 +2,56 @@ import prisma from '../../../infra/prisma';
 import type { Conversation } from '@prisma/client';
 import { Prisma } from '@prisma/client';
 
+export interface WorkspaceConversationQuery {
+    status?: string;
+    assignee?: string;
+    tags?: string | string[];
+    channel?: string;
+    pageId?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    sortBy?: string;
+    page?: number;
+    limit?: number;
+    domain?: string | string[];
+}
+
+export function buildWorkspaceConversationWhere(
+    workspaceId: string,
+    options?: WorkspaceConversationQuery
+): Prisma.ConversationWhereInput {
+    const where: any = { workspaceId };
+    const and: any[] = [];
+
+    if (options?.status && options.status !== 'all') where.status = options.status;
+    if (options?.assignee) {
+        where.assignedTo = options.assignee === 'unassigned' ? null : options.assignee;
+    }
+    if (options?.channel && options.channel !== 'all') where.channel = options.channel;
+
+    const tags = options?.tags ? (Array.isArray(options.tags) ? options.tags : [options.tags]) : [];
+    if (tags.length > 0) {
+        and.push({ OR: tags.map(tag => ({ tags: { path: '$', array_contains: tag } })) });
+    }
+
+    if (options?.pageId && options.pageId !== 'all') {
+        and.push({ metadata: { path: '$.pageId', equals: options.pageId } });
+    }
+
+    const domains = options?.domain ? (Array.isArray(options.domain) ? options.domain : [options.domain]) : [];
+    if (domains.length > 0) {
+        and.push({ OR: domains.map(domain => ({ metadata: { path: '$.domain', equals: domain } })) });
+    }
+
+    if (options?.dateFrom || options?.dateTo) {
+        where.createdAt = {};
+        if (options.dateFrom) where.createdAt.gte = new Date(options.dateFrom);
+        if (options.dateTo) where.createdAt.lte = new Date(options.dateTo);
+    }
+    if (and.length > 0) where.AND = and;
+    return where;
+}
+
 export const conversationRepo = {
     async create(data: {
         workspaceId: string;
@@ -61,47 +111,9 @@ export const conversationRepo = {
 
     async findByWorkspace(
         workspaceId: string,
-        options?: {
-            status?: string;
-            assignee?: string;
-            tags?: string | string[];
-            channel?: string;
-            pageId?: string;
-            dateFrom?: string;
-            dateTo?: string;
-            sortBy?: string;
-            page?: number;
-            limit?: number;
-            domain?: string | string[];
-        }
+        options?: WorkspaceConversationQuery
     ): Promise<{ items: Conversation[]; total: number }> {
-        const where: any = { workspaceId };
-
-        if (options?.status && options.status !== 'all') where.status = options.status;
-
-        if (options?.assignee) {
-            if (options.assignee === 'unassigned') where.assignedTo = null;
-            else where.assignedTo = options.assignee;
-        }
-
-        if (options?.channel && options.channel !== 'all') where.channel = options.channel;
-
-        // Tags filter: JSON contains check
-        if (options?.tags) {
-            const tagsArray = Array.isArray(options.tags) ? options.tags : [options.tags];
-            if (tagsArray.length > 0) {
-                // Use raw where for JSON array contains
-                where.OR = tagsArray.map(tag => ({
-                    tags: { path: '$', array_contains: tag },
-                }));
-            }
-        }
-
-        if (options?.dateFrom || options?.dateTo) {
-            where.createdAt = {};
-            if (options?.dateFrom) where.createdAt.gte = new Date(options.dateFrom);
-            if (options?.dateTo) where.createdAt.lte = new Date(options.dateTo);
-        }
+        const where = buildWorkspaceConversationWhere(workspaceId, options);
 
         const page = options?.page || 1;
         const limit = options?.limit || 20;
@@ -124,6 +136,13 @@ export const conversationRepo = {
             prisma.conversation.count({ where }),
         ]);
         return { items, total };
+    },
+
+    async findSummaryCandidates(workspaceId: string, options?: WorkspaceConversationQuery) {
+        return prisma.conversation.findMany({
+            where: buildWorkspaceConversationWhere(workspaceId, options),
+            select: { id: true, status: true, readContext: true, lastMessageAt: true },
+        });
     },
 
     async updateStatus(id: string, status: string): Promise<Conversation | null> {

@@ -568,22 +568,25 @@ export const chatbotService = {
             return makeResult(response, 'greeting');
         }
 
+        // Freeze one tenant-scoped retrieval snapshot for the entire turn. The AI
+        // context and direct fallback must never observe different corpus versions.
+        let knowledgeSnapshot: Awaited<ReturnType<typeof knowledgeService.retrieveForAutoReply>> = {
+            results: [],
+            topConfidence: 'none',
+            mode: 'none',
+        };
+        try {
+            knowledgeSnapshot = await knowledgeService.retrieveForAutoReply(workspaceId, knowledgeQuery);
+        } catch (error) {
+            console.warn('[ChatbotService] Knowledge retrieval unavailable:', error);
+        }
+
         try {
             // Gather knowledge base context
-            let knowledgeContext = '';
-            try {
-                const knowledgeResults = lowSignalTurn
-                    ? []
-                    : await knowledgeService.smartSuggest(workspaceId, knowledgeQuery);
-                if (knowledgeResults && knowledgeResults.length > 0) {
-                    knowledgeContext = knowledgeResults
-                        .slice(0, 3)
-                        .map((k: any) => `Q: ${k.question}\nA: ${k.answer}`)
-                        .join('\n\n');
-                }
-            } catch {
-                // Knowledge base may not be available
-            }
+            const knowledgeContext = knowledgeSnapshot.results
+                .slice(0, 3)
+                .map(result => `Q: ${result.entry.question}\nA: ${result.entry.answer}`)
+                .join('\n\n');
 
             // Build system prompt from bot config
             const systemPrompt = buildSystemPrompt(
@@ -646,11 +649,10 @@ export const chatbotService = {
         }
 
         // 4. Fallback: pure knowledge base response (no AI)
-        if (!lowSignalTurn) {
+        if (!lowSignalTurn && knowledgeSnapshot.topConfidence === 'high') {
             try {
-                const knowledgeResults = await knowledgeService.smartSuggest(workspaceId, knowledgeQuery);
-                if (knowledgeResults && knowledgeResults.length > 0) {
-                    const best = knowledgeResults[0];
+                if (knowledgeSnapshot.results.length > 0) {
+                    const best = knowledgeSnapshot.results[0].entry;
                     const guardedKnowledge = guardAutoReplyOutput({
                         candidate: best.answer || best.question,
                         currentMessage: message,

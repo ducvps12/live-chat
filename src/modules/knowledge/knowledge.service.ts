@@ -1,6 +1,7 @@
 import { knowledgeRepo } from './repos/knowledge.repo';
 import { AppError } from '../../middlewares/errorHandler';
 import { fetchPublicPage } from '../radar/radar.service';
+import { knowledgeRetrievalService } from './knowledge-retrieval.service';
 
 const MAX_WEBSITE_TEXT_LENGTH = 24_000;
 const WEBSITE_CHUNK_SIZE = 1_600;
@@ -52,6 +53,15 @@ function buildSheetCsvUrl(sheetUrl: string, gid?: string): string {
     }
 
     return `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&gid=${gid}`;
+}
+
+export function buildSheetSourceIdentity(sheetUrl: string, gid?: string): string {
+    const raw = String(sheetUrl || '');
+    const match = raw.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+    if (!match) throw new Error('INVALID_SHEET_URL');
+    const gidMatch = raw.match(/[?#&]gid=(\d+)/);
+    const tab = String(gid || gidMatch?.[1] || '0');
+    return `google_sheets:${match[1]}:${tab}`.slice(0, 180);
 }
 
 /**
@@ -142,8 +152,6 @@ export const knowledgeService = {
         const parsedUrl = new URL(page.finalUrl);
         const source = `website:${hostname}${parsedUrl.pathname}`.slice(0, 180);
 
-        // Re-importing the same URL replaces its previous snapshot instead of duplicating entries.
-        await knowledgeRepo.removeByWorkspaceAndSource(workspaceId, source);
         const entries = chunks.map((answer, index) => {
             const lead = answer.split(/(?<=[.!?])\s+/)[0]?.trim() || answer;
             return {
@@ -155,7 +163,8 @@ export const knowledgeService = {
                 source,
             };
         });
-        const savedCount = await knowledgeRepo.createMany(entries);
+        // Snapshot replacement is atomic: a failed import keeps the previous corpus intact.
+        const savedCount = await knowledgeRepo.replaceSourceSnapshot(workspaceId, source, entries);
         return {
             finalUrl: page.finalUrl,
             title: page.title || topic,
@@ -169,10 +178,26 @@ export const knowledgeService = {
      */
     async syncFromGoogleSheets(workspaceId: string, sheetUrl: string) {
         const csvUrl = buildSheetCsvUrl(sheetUrl);
+        const source = buildSheetSourceIdentity(sheetUrl);
         console.log(`[KnowledgeService] Fetching CSV from: ${csvUrl}`);
 
         // Fetch CSV data
-        const response = await fetch(csvUrl);
+        const abortController = new AbortController();
+        const timeout = setTimeout(() => abortController.abort(), 15_000);
+        let response: Response;
+        try {
+            response = await fetch(csvUrl, { signal: abortController.signal });
+        } catch (error) {
+            throw new AppError(
+                error instanceof Error && error.name === 'AbortError'
+                    ? 'Google Sheets pháº£n há»“i quÃ¡ cháº­m'
+                    : 'KhÃ´ng thá»ƒ táº£i dá»¯ liá»‡u tá»« Google Sheets',
+                400,
+                'SHEET_FETCH_FAILED',
+            );
+        } finally {
+            clearTimeout(timeout);
+        }
         if (!response.ok) {
             throw new AppError(`Không thể tải dữ liệu từ Google Sheets (${response.status})`, 400, 'SHEET_FETCH_FAILED');
         }
@@ -213,13 +238,13 @@ export const knowledgeService = {
                 answer: answer || question, // If no answer, use question as fallback
                 upsaleText: upsale,
                 keywords,
-                source: 'google_sheets',
+                source,
                 sheetRowIndex: i,
             });
         }
 
-        // Bulk upsert
-        const savedCount = await knowledgeRepo.createMany(entries);
+        // Each spreadsheet tab owns an isolated, atomically replaced snapshot.
+        const savedCount = await knowledgeRepo.replaceSourceSnapshot(workspaceId, source, entries);
 
         console.log(`[KnowledgeService] Synced ${savedCount} entries from Google Sheets`);
         return {
@@ -248,11 +273,19 @@ export const knowledgeService = {
             .replace(/[^\w\sàáảãạăắằẳẵặâấầẩẫậéèẻẽẹêếềểễệíìỉĩịóòỏõọôốồổỗộơớờởỡợúùủũụưứừửữựýỳỷỹỵđ]/g, ' ')
             .trim();
 
-        return knowledgeRepo.search(workspaceId, searchQuery, 3, {
-            // Auto replies should only use entries whose product/question matches.
-            // A word found only incidentally in an answer is too weak to send to a customer.
-            minScore: 3,
-            allowStopwordFallback: false,
+        const snapshot = await knowledgeRetrievalService.retrieve({
+            workspaceId,
+            query: searchQuery,
+            limit: 3,
+        });
+        return snapshot.results.map(result => result.entry);
+    },
+
+    async retrieveForAutoReply(workspaceId: string, customerMessage: string) {
+        return knowledgeRetrievalService.retrieve({
+            workspaceId,
+            query: customerMessage,
+            limit: 3,
         });
     },
 

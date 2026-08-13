@@ -19,12 +19,24 @@ export const fbPageRepo = {
         return prisma.fBPage.findUnique({ where: { id } });
     },
 
+    async findByIdForWorkspace(workspaceId: string, id: string): Promise<FBPage | null> {
+        return prisma.fBPage.findFirst({ where: { id, workspaceId } });
+    },
+
     async findByWorkspaceId(workspaceId: string): Promise<FBPage[]> {
         return prisma.fBPage.findMany({ where: { workspaceId } });
     },
 
     async findByPageId(pageId: string): Promise<FBPage | null> {
         return prisma.fBPage.findFirst({ where: { pageId } });
+    },
+
+    async findByPageIdForWorkspace(workspaceId: string, pageId: string): Promise<FBPage | null> {
+        return prisma.fBPage.findUnique({ where: { pageId_workspaceId: { pageId, workspaceId } } });
+    },
+
+    async findActiveByPageId(pageId: string): Promise<FBPage[]> {
+        return prisma.fBPage.findMany({ where: { pageId, status: 'active' } });
     },
 
     async findActive(): Promise<FBPage[]> {
@@ -43,6 +55,11 @@ export const fbPageRepo = {
 
     async delete(id: string): Promise<void> {
         await prisma.fBPage.delete({ where: { id } });
+    },
+
+    async deleteForWorkspace(workspaceId: string, id: string): Promise<boolean> {
+        const result = await prisma.fBPage.deleteMany({ where: { id, workspaceId } });
+        return result.count === 1;
     },
 
     async upsertPage(workspaceId: string, pageId: string, data: Partial<Omit<FBPage, 'id' | 'createdAt' | 'updatedAt'>>): Promise<FBPage> {

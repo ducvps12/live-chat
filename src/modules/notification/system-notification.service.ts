@@ -6,6 +6,10 @@ import {
     telegramNotifier,
     TelegramNotifierError,
 } from './telegram-notifier.service';
+import {
+    NotificationOutboxDispatcher,
+    prismaNotificationOutboxStore,
+} from './notification-outbox';
 
 const DEFAULT_DEDUP_WINDOW_MS = 5 * 60_000;
 const DEFAULT_RATE_LIMIT = 12;
@@ -15,6 +19,7 @@ export type OperationalNotificationOutcome =
     | 'sent'
     | 'disabled'
     | 'not_configured'
+    | 'queued'
     | 'duplicate'
     | 'rate_limited'
     | 'failed';
@@ -138,6 +143,37 @@ const alertGate = new OperationalAlertGate(
     RATE_WINDOW_MS,
 );
 
+const notificationOutbox = new NotificationOutboxDispatcher(
+    prismaNotificationOutboxStore,
+    {
+        async send(record) {
+            return telegramNotifier.notify(
+                record.text,
+                record.envOnly ? { settings: false } : {},
+            );
+        },
+    },
+);
+
+let outboxFlushInFlight: Promise<unknown> | null = null;
+
+async function flushNotificationOutbox(): Promise<void> {
+    if (outboxFlushInFlight) return;
+    outboxFlushInFlight = notificationOutbox.flushDue().catch(error => {
+        console.warn(`[Telegram] Notification outbox flush failed (${error instanceof Error ? error.name : 'unknown'})`);
+    }).finally(() => {
+        outboxFlushInFlight = null;
+    });
+    await outboxFlushInFlight;
+}
+
+export function startNotificationOutboxWorker(intervalMs = 30_000): () => void {
+    void flushNotificationOutbox();
+    const timer = setInterval(() => void flushNotificationOutbox(), intervalMs);
+    timer.unref();
+    return () => clearInterval(timer);
+}
+
 async function settingToggle(
     keys: string[],
     envKey: string,
@@ -184,13 +220,18 @@ async function notifySafely(input: {
     if (!gate.allowed) return gate.reason;
 
     try {
-        const result = await telegramNotifier.notify(
-            redactOperationalText(input.text, 4_096),
-            input.envOnly ? { settings: false } : {},
-        );
-        alertGate.complete(gate.ticket, result.sent);
-        if (result.sent) return 'sent';
-        return result.reason === 'disabled' ? 'disabled' : 'not_configured';
+        const record = await notificationOutbox.enqueue({
+            event: input.event,
+            dedupKey: input.dedupKey,
+            text: redactOperationalText(input.text, 4_096),
+            envOnly: input.envOnly,
+            dedupWindowMs,
+        });
+        const result = await notificationOutbox.dispatch(record);
+        const sent = result.status === 'sent';
+        alertGate.complete(gate.ticket, sent);
+        if (sent) return 'sent';
+        return 'queued';
     } catch (error) {
         alertGate.complete(gate.ticket, false);
         const code = error instanceof TelegramNotifierError

@@ -1,6 +1,8 @@
 import prisma from '../../infra/prisma';
 import { decryptSecret, encryptSecret } from '../../infra/secretVault';
 
+const INTERNAL_SETTING_PREFIXES = ['notification_outbox:'];
+
 // In-memory cache for settings (avoid hitting DB on every request)
 let settingsCache: Record<string, string> = {};
 let lastCacheTime = 0;
@@ -98,6 +100,7 @@ export const settingsService = {
         const rows = await prisma.systemSetting.findMany();
         const map: Record<string, string> = {};
         for (const row of rows) {
+            if (INTERNAL_SETTING_PREFIXES.some(prefix => row.key.startsWith(prefix))) continue;
             map[row.key] = row.value;
         }
         settingsCache = map;

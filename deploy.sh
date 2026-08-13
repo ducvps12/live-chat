@@ -7,10 +7,22 @@ cd /www/live_chat_nemark
 
 # Pull latest changes
 echo "📥 Pulling latest code..."
-git pull origin main
+git pull --ff-only origin main
+
+# If CI supplied a release SHA, never deploy a different (untested) revision.
+# This remains optional for manual deploys, but fails closed when present.
+if [ -n "${DEPLOY_SHA:-}" ]; then
+  ACTUAL_SHA="$(git rev-parse HEAD)"
+  if [ "$ACTUAL_SHA" != "$DEPLOY_SHA" ]; then
+    echo "Release mismatch: expected $DEPLOY_SHA, got $ACTUAL_SHA"
+    exit 19
+  fi
+fi
 
 # Build first, then apply additive Prisma schema changes before switching the
 # application container. Prisma aborts instead of accepting destructive changes.
+# Dockerfile runs `npm run verify:production` while building this image, so the
+# gate must pass before the database or any running application changes.
 echo "🐳 Building production image..."
 docker compose build app
 docker compose up -d mongo

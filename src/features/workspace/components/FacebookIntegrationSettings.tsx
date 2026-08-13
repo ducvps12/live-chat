@@ -106,6 +106,7 @@ export default function FacebookIntegrationSettings({ workspaceId }: { workspace
                 success?: boolean;
                 workspaceId?: string;
                 pages?: number;
+                failed?: number;
                 error?: string;
             } | null;
             if (!payload || payload.type !== 'nemarkchat:facebook-oauth') return;
@@ -117,7 +118,12 @@ export default function FacebookIntegrationSettings({ workspaceId }: { workspace
             if (payload.success) {
                 void queryClient.invalidateQueries({ queryKey: ['facebook', 'pages', workspaceId] });
                 void queryClient.invalidateQueries({ queryKey: ['facebook', 'config-status', workspaceId] });
-                message.success(`Đã kết nối ${payload.pages || 0} Fanpage Facebook`);
+                const failed = payload.failed || 0;
+                if (failed > 0) {
+                    message.warning(`Kết nối ${payload.pages || 0} Fanpage; ${failed} Fanpage chưa subscribe được webhook`);
+                } else {
+                    message.success(`Đã kết nối ${payload.pages || 0} Fanpage Facebook`);
+                }
             } else {
                 message.error(payload.error || 'Chưa thể kết nối Facebook Fanpage');
             }

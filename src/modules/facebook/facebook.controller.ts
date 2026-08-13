@@ -1,6 +1,11 @@
 import { Request, Response } from 'express';
 import asyncHandler from 'express-async-handler';
 import { facebookService } from './facebook.service';
+import {
+    connectFacebookPages,
+    getFacebookOAuthFailure,
+    sanitizeFacebookProviderError,
+} from './facebook-production.helpers';
 
 function sendOAuthPopupResult(
     res: Response,
@@ -9,6 +14,7 @@ function sendOAuthPopupResult(
         success: boolean;
         workspaceId?: string;
         pages?: number;
+        failed?: number;
         error?: string;
     },
     fallbackUrl: string,
@@ -60,17 +66,16 @@ export const facebookController = {
      * OAuth callback — exchange code, get pages, save
      */
     handleCallback: asyncHandler(async (req: Request, res: Response) => {
-        const code = req.query.code as string;
-        const state = req.query.state as string;
-
-        if (!code || !state) {
-            res.status(400).json({ success: false, error: 'Missing code or state' });
-            return;
-        }
-
+        const code = typeof req.query.code === 'string' ? req.query.code : '';
+        const state = typeof req.query.state === 'string' ? req.query.state : '';
+        const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3010';
         let workspaceId = '';
         try {
-            workspaceId = await facebookService.verifyOAuthState(state);
+            if (state) workspaceId = await facebookService.verifyOAuthState(state);
+            const providerFailure = getFacebookOAuthFailure(req.query as Record<string, unknown>);
+            if (providerFailure) throw new Error(providerFailure);
+            if (!code || !state) throw new Error('Missing Facebook OAuth code or state');
+
             // Exchange code for token
             const shortToken = await facebookService.exchangeCodeForToken(code);
             const longToken = await facebookService.getLongLivedToken(shortToken);
@@ -79,39 +84,37 @@ export const facebookController = {
             const pages = await facebookService.getUserPages(longToken);
 
             // Auto-connect all pages
-            const connectedPages: Array<{ id: string }> = [];
-            for (const page of pages) {
-                const saved = await facebookService.connectPage(
-                    workspaceId,
-                    page.id,
-                    page.name,
-                    page.picture || '',
-                    page.access_token,
-                    longToken,
-                );
-                connectedPages.push(saved);
+            const result = await connectFacebookPages(pages, (page) => facebookService.connectPage(
+                workspaceId,
+                page.id,
+                page.name,
+                page.picture || '',
+                page.access_token,
+                longToken,
+            ));
+            if (result.connected.length === 0) {
+                throw new Error(result.failed[0]?.error || 'No Facebook Page could be connected');
             }
 
             // Auto-sync conversations in background (fire-and-forget)
-            for (const saved of connectedPages) {
+            for (const saved of result.connected) {
                 const pageDbId = saved.id;
                 facebookService.syncPageConversations(workspaceId, pageDbId).catch(err => {
-                    console.warn(`[FacebookController] Background sync error for page ${pageDbId}:`, err);
+                    console.warn(`[FacebookController] Background sync error for page ${pageDbId}: ${sanitizeFacebookProviderError(err)}`);
                 });
             }
 
-            const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3010';
-            const fallbackUrl = `${baseUrl}/workspace/${workspaceId}/settings?tab=facebook&fb_connected=${pages.length}`;
+            const fallbackUrl = `${baseUrl}/workspace/${workspaceId}/settings?tab=facebook&fb_connected=${result.connected.length}&fb_failed=${result.failed.length}`;
             sendOAuthPopupResult(res, {
                 type: 'nemarkchat:facebook-oauth',
                 success: true,
                 workspaceId,
-                pages: pages.length,
+                pages: result.connected.length,
+                failed: result.failed.length,
             }, fallbackUrl);
         } catch (err: unknown) {
-            console.error('[FacebookController] OAuth callback error:', err);
-            const errorMessage = err instanceof Error ? err.message : 'Facebook OAuth failed';
-            const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3010';
+            const errorMessage = sanitizeFacebookProviderError(err, 'Facebook OAuth failed');
+            console.error(`[FacebookController] OAuth callback error: ${errorMessage}`);
             const target = workspaceId ? `/workspace/${workspaceId}/settings?tab=facebook` : '/auth/login';
             const separator = target.includes('?') ? '&' : '?';
             const fallbackUrl = `${baseUrl}${target}${separator}fb_error=${encodeURIComponent(errorMessage)}`;
@@ -144,15 +147,20 @@ export const facebookController = {
      * Webhook handler (POST) — receives incoming messages
      */
     handleWebhook: asyncHandler(async (req: Request, res: Response) => {
-        // Facebook expects 200 OK immediately
+        const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+        const signatureHeader = req.headers['x-hub-signature-256'];
+        const signature = Array.isArray(signatureHeader) ? signatureHeader[0] : signatureHeader;
+
+        // Never acknowledge or process an unauthenticated Meta webhook.
+        await facebookService.verifyWebhookSignature(rawBody, signature);
+
+        // Facebook expects 200 OK immediately after authentication.
         res.sendStatus(200);
 
-        // Process async
-        try {
-            await facebookService.handleWebhook(req.body);
-        } catch (err) {
+        // Process after ACK; transport authentication failures are handled above.
+        void facebookService.handleWebhook(req.body).catch((err) => {
             console.error('[FacebookController] Webhook processing error:', err);
-        }
+        });
     }),
 
     /**

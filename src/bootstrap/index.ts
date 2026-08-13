@@ -14,7 +14,7 @@ import { facebookService } from '../modules/facebook/facebook.service';
 import aiGatewayRoutes from '../modules/ai/ai.routes';
 import { publicAIRoutes } from '../modules/ai/public-api.routes';
 import { mountRuntimeAssets } from './staticAssets';
-import { systemNotificationService } from '../modules/notification/system-notification.service';
+import { startNotificationOutboxWorker, systemNotificationService } from '../modules/notification/system-notification.service';
 import { startRuntimeHealthMonitor } from '../modules/notification/runtime-health-monitor';
 import { campaignService, startCampaignScheduler } from '../modules/campaign/campaign.service';
 import { startSignalRadarScheduler } from '../modules/radar/radar.service';
@@ -55,7 +55,14 @@ const bootstrap = async () => {
         return cors({ origin: corsOrigin, credentials: true })(req, res, next);
     });
 
-    app.use(express.json({ limit: '20mb' }));
+    app.use(express.json({
+        limit: '20mb',
+        verify: (req, _res, buffer) => {
+            if (req.originalUrl.includes('/facebook/webhook')) {
+                (req as typeof req & { rawBody?: Buffer }).rawBody = Buffer.from(buffer);
+            }
+        },
+    }));
     app.use(express.urlencoded({ extended: true, limit: '20mb' }));
     app.use(cookieParser());
 
@@ -84,12 +91,14 @@ const bootstrap = async () => {
     let stopHealthMonitor: () => void = () => undefined;
     let stopSignalRadar: () => void = () => undefined;
     let stopCampaignScheduler: () => void = () => undefined;
+    let stopNotificationOutbox: () => void = () => undefined;
     server.listen(port, () => {
         console.log(`[Server] Backend process running on http://localhost:${port}`);
 
         stopHealthMonitor = startRuntimeHealthMonitor();
         stopSignalRadar = startSignalRadarScheduler();
         stopCampaignScheduler = startCampaignScheduler();
+        stopNotificationOutbox = startNotificationOutboxWorker();
         void systemNotificationService.appStartup({
             port,
             mode: process.env.NODE_ENV || 'development',
@@ -126,6 +135,7 @@ const bootstrap = async () => {
         stopHealthMonitor();
         stopSignalRadar();
         stopCampaignScheduler();
+        stopNotificationOutbox();
         const forceExit = setTimeout(() => process.exit(1), 10_000);
         forceExit.unref();
         const serverClosed = new Promise<void>(resolve => server.close(() => resolve()));
