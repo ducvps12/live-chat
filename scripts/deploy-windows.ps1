@@ -6,24 +6,51 @@ $startupTask = '\Nemark_AutoStart'
 
 Set-Location -LiteralPath $appDirectory
 
-Write-Host 'Installing locked production dependencies...'
-& npm.cmd ci --no-audit --fund=false
-if ($LASTEXITCODE -ne 0) { throw "npm ci failed with exit code $LASTEXITCODE" }
+Write-Host 'Stopping the scheduled runtime before replacing locked Windows build tools...'
+& schtasks.exe /End /TN $startupTask 2>$null
+# /End returns a non-zero code when the task is already stopped. The listener
+# sweep below is authoritative and also catches child processes left behind.
+
+$listenerProcessIds = @(
+    foreach ($port in 4001, 3020) {
+        Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty OwningProcess -Unique
+    }
+) | Sort-Object -Unique
+
+foreach ($processId in $listenerProcessIds) {
+    Write-Host "Stopping process tree $processId that owns a production listener..."
+    & taskkill.exe /PID $processId /T /F
+    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 128) {
+        throw "Could not stop production process tree $processId (exit code $LASTEXITCODE)"
+    }
+}
+
+Start-Sleep -Seconds 3
+
+Write-Host 'Installing locked production dependencies after listeners released their file handles...'
+$dependenciesInstalled = $false
+foreach ($attempt in 1..3) {
+    & npm.cmd ci --no-audit --fund=false
+    if ($LASTEXITCODE -eq 0) {
+        $dependenciesInstalled = $true
+        break
+    }
+
+    if ($attempt -lt 3) {
+        Write-Warning "npm ci attempt $attempt failed; retrying after Windows releases file handles..."
+        Start-Sleep -Seconds 3
+    }
+}
+if (-not $dependenciesInstalled) { throw 'npm ci failed after 3 attempts; production remains stopped.' }
 
 Write-Host 'Generating Prisma Client...'
 & npx.cmd prisma generate
 if ($LASTEXITCODE -ne 0) { throw "Prisma generate failed with exit code $LASTEXITCODE" }
 
-Write-Host 'Running the production test gate before touching the live process...'
+Write-Host 'Running the production test gate before starting the new release...'
 & npm.cmd run verify:production
-if ($LASTEXITCODE -ne 0) { throw "Production test gate failed with exit code $LASTEXITCODE. Existing service was not restarted." }
-
-Write-Host 'Stopping the NemarkChat API process on port 4001 after the gate passed...'
-Get-NetTCPConnection -LocalPort 4001 -State Listen -ErrorAction SilentlyContinue |
-    Select-Object -ExpandProperty OwningProcess -Unique |
-    ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
-
-Start-Sleep -Seconds 2
+if ($LASTEXITCODE -ne 0) { throw "Production test gate failed with exit code $LASTEXITCODE. The failed release was not started." }
 
 Write-Host 'Restarting the existing NemarkChat startup task...'
 & schtasks.exe /Run /TN $startupTask
